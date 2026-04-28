@@ -2061,7 +2061,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexide"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-bench"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "bollard",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-e2e"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "nexide",

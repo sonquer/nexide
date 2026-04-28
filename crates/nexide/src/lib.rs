@@ -24,9 +24,7 @@ pub mod pool;
 pub mod server;
 
 use self::cli::{BuildArgs, Cli, Command, DevArgs, StartArgs};
-use self::entrypoint::{
-    EntrypointKind, EntrypointResolver, ProductionEntrypointResolver, ResolvedEntrypoint,
-};
+use self::entrypoint::{EntrypointKind, ResolvedEntrypoint};
 use self::server::{ServerConfig, ServerError};
 use clap::Parser;
 
@@ -171,105 +169,143 @@ impl AppLayout {
     /// Resolves a Next.js standalone layout under `root` and binds it
     /// to the supplied `SocketAddr`.
     ///
-    /// Three on-disk shapes are accepted, in this order:
+    /// Layout detection is delegated to [`LayoutShape::detect`]; the
+    /// chosen shape declaratively describes where each role
+    /// (entrypoint, app dir, next-static dir, public dir) is expected
+    /// to live. A single resolver pass turns those candidates into a
+    /// [`ServerConfig`].
     ///
-    /// 1. **Standalone directory, flat** (`root` is the deploy artefact,
-    ///    i.e. the contents of `.next/standalone/`). Selected when
-    ///    `<root>/server.js` exists. The resolver then expects:
-    ///    - `<root>/server.js`
-    ///    - `<root>/public/` (you must copy it from the project root;
-    ///      `next build` does NOT copy `public/` and `.next/static/`
-    ///      into the standalone bundle)
-    ///    - `<root>/.next/static/` (likewise, copied manually)
-    ///    - `<root>/.next/server/app/`
-    ///
-    /// 2. **Standalone directory, monorepo-nested** (pnpm/yarn/turbo
-    ///    workspaces). Selected when `<root>/server.js` is absent but
-    ///    exactly one immediate sub-directory `<sub>` contains both
-    ///    `<sub>/server.js` and `<sub>/.next/server/app/`. Next.js emits
-    ///    this layout when `next.config` is not at the workspace root;
-    ///    the workspace `node_modules/` and linked packages live at
-    ///    `<root>/...` while the app sits at `<root>/<sub>/...`. The
-    ///    resolver then expects:
-    ///    - `<root>/<sub>/server.js`
-    ///    - `<root>/<sub>/public/` *or* `<root>/public/` (whichever
-    ///      exists; copied manually from the project)
-    ///    - `<root>/.next/static/` *or* `<root>/<sub>/.next/static/`
-    ///      (whichever exists; copied manually)
-    ///    - `<root>/<sub>/.next/server/app/`
-    ///
-    /// 3. **Project root** (`root` is the directory that holds
-    ///    `package.json`). The resolver expects:
-    ///    - `<root>/public/`
-    ///    - `<root>/.next/static/`
-    ///    - `<root>/.next/standalone/server.js`
-    ///    - `<root>/.next/standalone/.next/server/app/`
+    /// `public/` is treated as optional (Next.js itself does not emit
+    /// it - it must be copied by the operator); a missing directory is
+    /// not an error and yields 404s through `ServeDir`. The other
+    /// roles are required and produce
+    /// [`RuntimeError::MissingDir`] / [`RuntimeError::MissingFile`]
+    /// when absent, with the error path pointing at the
+    /// shape-canonical location so the operator can fix the deploy.
     ///
     /// # Errors
-    /// Returns [`RuntimeError::MissingDir`] / [`RuntimeError::MissingFile`]
-    /// when any required path is absent. The error message points at
-    /// the missing path so the operator can fix the deploy layout.
+    /// See above.
     pub fn resolve(root: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
+        let shape = LayoutShape::detect(root).unwrap_or(LayoutShape::ProjectRoot);
+        let paths = shape.paths(root);
+
+        if !paths.server_js.is_file() {
+            return Err(RuntimeError::MissingFile(paths.server_js));
+        }
+        let app_dir = first_existing_or_err(&paths.app_dir_candidates)?;
+        let next_static_dir = first_existing_or_err(&paths.next_static_candidates)?;
+        let public_dir = first_existing_or_default(&paths.public_candidates);
+
+        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
+        Ok(Self {
+            config,
+            entrypoint: ResolvedEntrypoint {
+                path: paths.server_js,
+                kind: EntrypointKind::NextStandalone,
+            },
+        })
+    }
+}
+
+/// Three on-disk shapes a Next.js `output: "standalone"` deploy can
+/// take, relative to the user-supplied `root`.
+///
+/// Selection is purely structural - each variant is detected by
+/// presence/absence of well-known files, not by parsing config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LayoutShape {
+    /// `root` is the project directory (holds `next.config.*` and
+    /// `package.json`). The standalone bundle lives under
+    /// `<root>/.next/standalone/`.
+    ProjectRoot,
+    /// `root` is itself the standalone bundle, emitted from a project
+    /// where `next.config.*` sat at the workspace root - so the
+    /// bundle's `server.js` lives directly under `<root>`.
+    StandaloneFlat,
+    /// `root` is a monorepo standalone bundle: `next.config.*` was
+    /// nested under a workspace package, so `next build` placed
+    /// `server.js` at `<root>/<app>/server.js` while the workspace
+    /// `node_modules/` and linked packages live next to it under
+    /// `<root>/`. The contained `PathBuf` is the absolute path to
+    /// `<app>`.
+    StandaloneNested(PathBuf),
+}
+
+/// Declarative description of where the four runtime roles
+/// (entrypoint, app dir, next-static dir, public dir) live for a
+/// given [`LayoutShape`]. Multiple candidates per role are tried in
+/// order; the first existing one wins.
+struct LayoutPaths {
+    server_js: PathBuf,
+    app_dir_candidates: Vec<PathBuf>,
+    next_static_candidates: Vec<PathBuf>,
+    public_candidates: Vec<PathBuf>,
+}
+
+impl LayoutShape {
+    /// Probes `root` for a recognised shape. Detection order is
+    /// deterministic and unambiguous: flat-standalone wins over
+    /// nested-standalone (a flat bundle always has `<root>/server.js`
+    /// while a nested bundle never does), and both win over
+    /// project-root (which only matches when the standalone bundle
+    /// has been built into `<root>/.next/standalone/`).
+    fn detect(root: &Path) -> Option<Self> {
         if root.join("server.js").is_file() {
-            return Self::resolve_standalone_dir(root, bind);
+            return Some(Self::StandaloneFlat);
         }
-        if let Some(nested) = detect_nested_standalone(root) {
-            return Self::resolve_nested_standalone_dir(root, &nested, bind);
+        if let Some(app) = find_unique_nested_app(root) {
+            return Some(Self::StandaloneNested(app));
         }
-        Self::resolve_project_root(root, bind)
+        if root.join(".next/standalone/server.js").is_file() {
+            return Some(Self::ProjectRoot);
+        }
+        None
     }
 
-    fn resolve_nested_standalone_dir(
-        root: &Path,
-        nested: &Path,
-        bind: SocketAddr,
-    ) -> Result<Self, RuntimeError> {
-        let public_dir = if nested.join("public").is_dir() {
-            nested.join("public")
-        } else if root.join("public").is_dir() {
-            root.join("public")
-        } else {
-            nested.join("public")
-        };
-        let next_static_dir = if root.join(".next/static").is_dir() {
-            root.join(".next/static")
-        } else if nested.join(".next/static").is_dir() {
-            nested.join(".next/static")
-        } else {
-            return Err(RuntimeError::MissingDir(root.join(".next/static")));
-        };
-        let app_dir = absolute_existing_dir(nested, ".next/server/app")?;
-        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
-        let entrypoint = ResolvedEntrypoint {
-            path: nested.join("server.js"),
-            kind: EntrypointKind::NextStandalone,
-        };
-        Ok(Self { config, entrypoint })
+    fn paths(&self, root: &Path) -> LayoutPaths {
+        match self {
+            Self::ProjectRoot => LayoutPaths {
+                server_js: root.join(".next/standalone/server.js"),
+                app_dir_candidates: vec![root.join(".next/standalone/.next/server/app")],
+                next_static_candidates: vec![root.join(".next/static")],
+                public_candidates: vec![root.join("public")],
+            },
+            Self::StandaloneFlat => LayoutPaths {
+                server_js: root.join("server.js"),
+                app_dir_candidates: vec![root.join(".next/server/app")],
+                next_static_candidates: vec![root.join(".next/static")],
+                public_candidates: vec![root.join("public")],
+            },
+            Self::StandaloneNested(app) => LayoutPaths {
+                server_js: app.join("server.js"),
+                app_dir_candidates: vec![app.join(".next/server/app")],
+                next_static_candidates: vec![root.join(".next/static"), app.join(".next/static")],
+                public_candidates: vec![app.join("public"), root.join("public")],
+            },
+        }
     }
+}
 
-    fn resolve_project_root(root: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
-        let public_dir = root.join("public");
-        let next_static_dir = absolute_existing_dir(root, ".next/static")?;
-        let app_dir = absolute_existing_dir(root, ".next/standalone/.next/server/app")?;
-        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
-        let resolver = ProductionEntrypointResolver::new(root);
-        let entrypoint = resolver
-            .resolve()
-            .ok_or_else(|| RuntimeError::MissingFile(resolver.standalone_path().to_path_buf()))?;
-        Ok(Self { config, entrypoint })
-    }
+/// Returns the first directory in `candidates` that exists on disk,
+/// or [`RuntimeError::MissingDir`] pointing at the canonical
+/// candidate (the first entry) when none do.
+fn first_existing_or_err(candidates: &[PathBuf]) -> Result<PathBuf, RuntimeError> {
+    candidates
+        .iter()
+        .find(|p| p.is_dir())
+        .cloned()
+        .ok_or_else(|| RuntimeError::MissingDir(candidates[0].clone()))
+}
 
-    fn resolve_standalone_dir(root: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
-        let public_dir = root.join("public");
-        let next_static_dir = absolute_existing_dir(root, ".next/static")?;
-        let app_dir = absolute_existing_dir(root, ".next/server/app")?;
-        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
-        let entrypoint = ResolvedEntrypoint {
-            path: root.join("server.js"),
-            kind: EntrypointKind::NextStandalone,
-        };
-        Ok(Self { config, entrypoint })
-    }
+/// Returns the first existing directory in `candidates`, falling
+/// back to the canonical (first) candidate when none exist. Used for
+/// optional roles where downstream code tolerates a non-existent path.
+fn first_existing_or_default(candidates: &[PathBuf]) -> PathBuf {
+    candidates
+        .iter()
+        .find(|p| p.is_dir())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
 }
 
 /// Drives the production runtime against an already-resolved
@@ -937,23 +973,13 @@ fn resolve_default_bind() -> Result<SocketAddr, RuntimeError> {
         .map_err(|source| RuntimeError::InvalidBind { raw, source })
 }
 
-/// Joins `rel` onto `root`, returning [`RuntimeError::MissingDir`] if
-/// the result does not exist on disk.
-fn absolute_existing_dir(root: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    let candidate = root.join(rel);
-    if !candidate.is_dir() {
-        return Err(RuntimeError::MissingDir(candidate));
-    }
-    Ok(candidate)
-}
-
 /// Detects the monorepo-nested Next.js standalone layout. Scans the
 /// immediate children of `root` for the unique sub-directory that
 /// holds both `server.js` and `.next/server/app/`. Returns the nested
 /// path on a clean match, or `None` if zero or more than one candidate
 /// exists (ambiguous layouts must be disambiguated explicitly to keep
 /// the resolver deterministic).
-fn detect_nested_standalone(root: &Path) -> Option<PathBuf> {
+fn find_unique_nested_app(root: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     let mut hit: Option<PathBuf> = None;
     for entry in entries.flatten() {
@@ -1521,7 +1547,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let bind: std::net::SocketAddr = "127.0.0.1:3000".parse().unwrap();
         let err = AppLayout::resolve(tmp.path(), bind).expect_err("missing layout");
-        assert!(matches!(err, RuntimeError::MissingDir(_)));
+        assert!(matches!(
+            err,
+            RuntimeError::MissingDir(_) | RuntimeError::MissingFile(_)
+        ));
     }
 
     #[test]
