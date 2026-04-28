@@ -54,6 +54,6 @@ hickory-resolver = { version = "0.24", default-features = false, features = ["to
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 flate2 = "1"
 nexide = { path = "crates/nexide" }
