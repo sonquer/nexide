@@ -205,6 +205,71 @@ impl AppLayout {
             },
         })
     }
+
+    /// Resolves a layout when the operator points `nexide` directly at
+    /// a `server.js` file - the Node.js-style invocation
+    /// (`nexide start web-ui/server.js`). Static assets and the app
+    /// bundle are derived from the entrypoint's parent directory; the
+    /// CommonJS sandbox root, however, is taken from the current
+    /// working directory so module resolution mirrors `node`'s
+    /// behaviour: workspace-hoisted `node_modules/` sitting next to
+    /// (or above) the entrypoint resolves transparently.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::MissingFile`] when `entrypoint` is not a
+    /// regular file; [`RuntimeError::MissingDir`] when the
+    /// entrypoint-relative `.next/server/app` or `.next/static`
+    /// directories cannot be located.
+    pub fn from_entrypoint(entrypoint: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
+        let entrypoint = if entrypoint.is_absolute() {
+            entrypoint.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(RuntimeError::Tokio)?
+                .join(entrypoint)
+        };
+        if !entrypoint.is_file() {
+            return Err(RuntimeError::MissingFile(entrypoint));
+        }
+        let app_root = entrypoint
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| RuntimeError::MissingDir(entrypoint.clone()))?;
+        // Sandbox root (CWD when invoked Node-style) is the natural
+        // landing spot for the workspace-level outputs that
+        // `next build --output standalone` does NOT relocate into the
+        // app subdirectory: `.next/static` is copied as a sibling of
+        // `node_modules/` by every conventional Dockerfile, and a
+        // shared `public/` may live at either level depending on the
+        // operator's preference. Try the app dir first, then fall back
+        // to the sandbox root so both layouts work without flags.
+        let sandbox_root = std::env::var(SANDBOX_ROOT_ENV)
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && p.is_dir());
+        let alt = |rel: &str| -> Vec<PathBuf> {
+            let mut v = vec![app_root.join(rel)];
+            if let Some(root) = sandbox_root.as_ref() {
+                let candidate = root.join(rel);
+                if candidate != v[0] {
+                    v.push(candidate);
+                }
+            }
+            v
+        };
+        let app_dir = first_existing_or_err(&alt(".next/server/app"))?;
+        let next_static_dir = first_existing_or_err(&alt(".next/static"))?;
+        let public_dir = first_existing_or_default(&alt("public"));
+        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
+        Ok(Self {
+            config,
+            entrypoint: ResolvedEntrypoint {
+                path: entrypoint,
+                kind: EntrypointKind::NextStandalone,
+            },
+        })
+    }
 }
 
 /// Three on-disk shapes a Next.js `output: "standalone"` deploy can
@@ -386,6 +451,43 @@ impl RuntimeMode {
 /// Anything else is logged as a `warn!` and treated as `auto` so a
 /// typo never silently changes deployment behaviour.
 pub const RUNTIME_MODE_ENV: &str = "NEXIDE_RUNTIME_MODE";
+
+/// Process-wide override for the CommonJS resolver sandbox root.
+///
+/// When set, the resolver treats this absolute path as the project
+/// root for module resolution (Node-style `node_modules/` walk and
+/// `within_roots` containment). When unset, callers fall back to the
+/// entrypoint's parent directory - the historical behaviour, which
+/// remains correct for flat standalone bundles where `server.js` sits
+/// at the project root.
+///
+/// `run_start` sets this automatically when the user invokes nexide
+/// with a path to a `server.js` file (the Node.js-style invocation):
+/// the sandbox root becomes the current working directory so hoisted
+/// `node_modules/` siblings of the workspace package resolve, just as
+/// `node web-ui/server.js` from `/app` resolves `/app/node_modules`.
+pub const SANDBOX_ROOT_ENV: &str = "NEXIDE_SANDBOX_ROOT";
+
+/// Returns the directory the CommonJS resolver should treat as the
+/// sandbox root for `entrypoint`.
+///
+/// Reads [`SANDBOX_ROOT_ENV`] first; falls back to the entrypoint's
+/// parent directory (legacy behaviour preserved for tests and direct
+/// `IsolateDispatcher::spawn` callers that do not go through
+/// [`run_start`]). The env-var path must be absolute - otherwise the
+/// `within_roots` check would compare against a CWD-dependent prefix.
+#[must_use]
+pub fn sandbox_root_for(entrypoint: &Path) -> PathBuf {
+    if let Ok(raw) = std::env::var(SANDBOX_ROOT_ENV) {
+        let candidate = PathBuf::from(raw);
+        if candidate.is_absolute() && candidate.is_dir() {
+            return candidate;
+        }
+    }
+    entrypoint
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
 
 /// Resolves the effective runtime mode for the current process.
 ///
@@ -817,17 +919,37 @@ pub fn run() -> Result<(), RuntimeError> {
     }
 }
 
-/// Runs the production runtime against a project directory.
+/// Runs the production runtime against a project directory or a
+/// standalone `server.js` entrypoint.
 ///
-/// Builds a `current_thread` Tokio reactor (as documented for
-/// [`run`]), resolves the [`AppLayout`] under `args.dir`, and serves
-/// until SIGINT.
+/// `args.dir` is dispatched on `is_file()`:
+///
+/// * **File** — Node-style invocation. The file is treated as the
+///   entrypoint, `.next/server/app` and `.next/static` are derived
+///   from its parent directory, and the CommonJS sandbox root is set
+///   to the current working directory via [`SANDBOX_ROOT_ENV`]. This
+///   matches `node web-ui/server.js` semantics for monorepo
+///   deployments where `next` is hoisted to the workspace root.
+/// * **Directory** — legacy invocation. The runtime auto-detects the
+///   standalone bundle layout under the directory; the sandbox root
+///   stays at the entrypoint's parent (no env override emitted).
 fn run_start(args: StartArgs) -> Result<(), RuntimeError> {
     let mode = detect_runtime_mode();
     tracing::info!(mode = mode.label(), "selected runtime mode");
     let bind = parse_bind(&args.hostname, args.port)?;
-    let root = absolute_dir(&args.dir)?;
-    let layout = AppLayout::resolve(&root, bind)?;
+    let layout = if args.dir.is_file() {
+        let cwd = std::env::current_dir().map_err(RuntimeError::Tokio)?;
+        // Safety: `run_start` runs on the main thread before any
+        // worker is spawned, so this set_var precedes every reader.
+        // SAFETY: see comment above.
+        unsafe {
+            std::env::set_var(SANDBOX_ROOT_ENV, &cwd);
+        }
+        AppLayout::from_entrypoint(&args.dir, bind)?
+    } else {
+        let root = absolute_dir(&args.dir)?;
+        AppLayout::resolve(&root, bind)?
+    };
     let rt = tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(rt_blocking_cap())
         .thread_name("nexide-rt")

@@ -56,6 +56,7 @@ use super::worker::{DispatchJob, WorkerError, WorkerHealth};
 use crate::engine::cjs::{FsResolver, ROOT_PARENT};
 use crate::engine::{BootContext, IsolateHandle, V8Engine};
 use crate::ops::{RequestMeta, RequestSlot};
+use crate::sandbox_root_for;
 
 /// Boots a fresh [`V8Engine`], starts the JS pump matching the
 /// configured strategy, and wraps the engine for shared
@@ -78,9 +79,7 @@ pub(super) async fn boot_engine(
         let registry = crate::engine::cjs::default_registry()
             .map_err(|err| WorkerError::Engine(err.to_string()))?;
         let registry = Arc::new(registry);
-        let project_root = entrypoint
-            .parent()
-            .map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
+        let project_root = sandbox_root_for(entrypoint);
         let resolver = Arc::new(FsResolver::new(vec![project_root], registry));
         let ctx = BootContext::new()
             .with_cjs(resolver)
