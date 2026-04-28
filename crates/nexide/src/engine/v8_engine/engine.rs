@@ -169,6 +169,7 @@ impl V8Engine {
             async_completions_rx: channel.receiver(),
             napi_work_tx: napi_tx,
             napi_work_rx: Rc::new(RefCell::new(napi_rx)),
+            napi_wakeup: std::sync::Arc::new(tokio::sync::Notify::new()),
             net_streams: super::handle_table::HandleTable::default(),
             net_listeners: super::handle_table::HandleTable::default(),
             tls_streams: super::handle_table::HandleTable::default(),
@@ -311,6 +312,18 @@ impl V8Engine {
             .expect("bridge state must be installed");
         let state = handle.0.borrow();
         state.queue.is_empty()
+    }
+
+    /// Returns the cross-thread wake-up handle that worker threads
+    /// (e.g. N-API threadsafe-function callers) bump to make the engine
+    /// pump come out of its idle parking.
+    pub fn napi_wakeup(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        let handle = self
+            .isolate
+            .get_slot::<BridgeStateHandle>()
+            .cloned()
+            .expect("bridge state must be installed");
+        handle.0.borrow().napi_wakeup.clone()
     }
 
     /// Resolves pending pop-request promises for any newly-arrived

@@ -21,7 +21,7 @@ use crate::napi::types::{
     NapiAsyncComplete, NapiAsyncExecute, NapiCallback, NapiFinalize, NapiStatus,
     NapiThreadsafeFunctionCallJs, NapiThreadsafeFunctionCallMode,
     NapiThreadsafeFunctionReleaseMode, NapiTypedArrayType, NapiValueType, napi_async_work,
-    napi_callback_info, napi_env, napi_ref, napi_threadsafe_function, napi_value,
+    napi_callback_info, napi_deferred, napi_env, napi_ref, napi_threadsafe_function, napi_value,
 };
 
 unsafe fn scope_from_env<'s, 'i>(env: &NapiEnv) -> &'s mut v8::PinScope<'s, 'i> {
@@ -1842,6 +1842,7 @@ pub unsafe extern "C" fn napi_queue_async_work(
     let scope = unsafe { scope_from_env(env_ref_) };
     let isolate: &v8::Isolate = scope;
     let tx = crate::engine::v8_engine::napi_work_sender(isolate);
+    let wakeup = crate::engine::v8_engine::napi_wakeup(isolate);
 
     let inner_addr = inner_ptr as usize;
     {
@@ -1883,6 +1884,7 @@ pub unsafe extern "C" fn napi_queue_async_work(
             }
         });
         let _ = tx.send(work_box);
+        wakeup.notify_one();
     });
     NapiStatus::Ok
 }
@@ -1929,6 +1931,7 @@ pub unsafe extern "C" fn napi_create_threadsafe_function(
     let scope = unsafe { scope_from_env(env_ref_) };
     let isolate: &v8::Isolate = scope;
     let work_tx = napi_work_sender(isolate);
+    let wakeup = crate::engine::v8_engine::napi_wakeup(isolate);
 
     let inner = TsfnInner {
         js_callback,
@@ -1941,6 +1944,7 @@ pub unsafe extern "C" fn napi_create_threadsafe_function(
         kept_alive: std::sync::atomic::AtomicBool::new(true),
         queued: std::sync::atomic::AtomicIsize::new(0),
         work_tx,
+        wakeup,
     };
     let raw = TsfnInner::boxed(inner);
     unsafe { ptr::write(result, napi_threadsafe_function(raw.cast::<c_void>())) };
@@ -2076,6 +2080,7 @@ pub unsafe extern "C" fn napi_call_threadsafe_function(
     if inner.work_tx.send(work_box).is_err() {
         return NapiStatus::Closing;
     }
+    inner.wakeup.notify_one();
     NapiStatus::Ok
 }
 
@@ -2113,12 +2118,764 @@ pub unsafe extern "C" fn napi_unref_threadsafe_function(
     NapiStatus::Ok
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_create_array_with_length(
+    env: napi_env,
+    length: usize,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let len: i32 = length.try_into().unwrap_or(i32::MAX);
+    let v: v8::Local<v8::Value> = v8::Array::new(scope, len).into();
+    unsafe { write_value_out(env, result, v, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_array_length(
+    env: napi_env,
+    value: napi_value,
+    result: *mut u32,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(local) else {
+        return NapiStatus::ArrayExpected;
+    };
+    unsafe { ptr::write(result, arr.length()) };
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_is_array(
+    env: napi_env,
+    value: napi_value,
+    result: *mut bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    unsafe { ptr::write(result, local.is_array()) };
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_element(
+    env: napi_env,
+    object: napi_value,
+    index: u32,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(g) = env.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(value) = obj.get_index(scope, index) else {
+        return NapiStatus::GenericFailure;
+    };
+    unsafe { write_value_out(env, result, value, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_set_element(
+    env: napi_env,
+    object: napi_value,
+    index: u32,
+    value: napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(val_g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let val_local = v8::Local::new(scope, &val_g);
+    if obj.set_index(scope, index, val_local).is_some() {
+        NapiStatus::Ok
+    } else {
+        NapiStatus::GenericFailure
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_property(
+    env: napi_env,
+    object: napi_value,
+    key: napi_value,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(key_g) = env.resolve(key) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let key_local = v8::Local::new(scope, &key_g);
+    let Some(value) = obj.get(scope, key_local) else {
+        return NapiStatus::GenericFailure;
+    };
+    unsafe { write_value_out(env, result, value, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_has_named_property(
+    env: napi_env,
+    object: napi_value,
+    utf8name: *const c_char,
+    result: *mut bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if utf8name.is_null() || result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(obj_g) = env.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let name_bytes = unsafe { std::ffi::CStr::from_ptr(utf8name) }.to_bytes();
+    let Ok(name) = std::str::from_utf8(name_bytes) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(key) = v8::String::new(scope, name) else {
+        return NapiStatus::GenericFailure;
+    };
+    let Some(has) = obj.has(scope, key.into()) else {
+        return NapiStatus::GenericFailure;
+    };
+    unsafe { ptr::write(result, has) };
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_property_names(
+    env: napi_env,
+    object: napi_value,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(names) = obj.get_property_names(scope, Default::default()) else {
+        return NapiStatus::GenericFailure;
+    };
+    let v: v8::Local<v8::Value> = names.into();
+    unsafe { write_value_out(env, result, v, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_is_error(
+    env: napi_env,
+    value: napi_value,
+    result: *mut bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    unsafe { ptr::write(result, local.is_native_error()) };
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_create_promise(
+    env: napi_env,
+    deferred: *mut napi_deferred,
+    promise: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if deferred.is_null() || promise.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let scope = unsafe { scope_from_env(env) };
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        return NapiStatus::GenericFailure;
+    };
+    let prom: v8::Local<v8::Value> = resolver.get_promise(scope).into();
+    let resolver_global: v8::Global<v8::PromiseResolver> = v8::Global::new(scope, resolver);
+    let boxed = Box::into_raw(Box::new(resolver_global)).cast::<c_void>();
+    unsafe { ptr::write(deferred, napi_deferred(boxed)) };
+    unsafe { write_value_out(env, promise, prom, scope) }
+}
+
+unsafe fn settle_deferred(
+    env: napi_env,
+    deferred: napi_deferred,
+    value: napi_value,
+    resolve: bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if deferred.0.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(val_g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let resolver_box = unsafe {
+        Box::from_raw(deferred.0.cast::<v8::Global<v8::PromiseResolver>>())
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let resolver = v8::Local::new(scope, &*resolver_box);
+    let val_local = v8::Local::new(scope, &val_g);
+    let ok = if resolve {
+        resolver.resolve(scope, val_local)
+    } else {
+        resolver.reject(scope, val_local)
+    };
+    if ok.is_some() {
+        NapiStatus::Ok
+    } else {
+        NapiStatus::GenericFailure
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_resolve_deferred(
+    env: napi_env,
+    deferred: napi_deferred,
+    resolution: napi_value,
+) -> NapiStatus {
+    unsafe { settle_deferred(env, deferred, resolution, true) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_reject_deferred(
+    env: napi_env,
+    deferred: napi_deferred,
+    rejection: napi_value,
+) -> NapiStatus {
+    unsafe { settle_deferred(env, deferred, rejection, false) }
+}
+
+const NAPI_WRAP_KEY: &str = "__napi_wrap__";
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_wrap(
+    env: napi_env,
+    js_object: napi_value,
+    native_object: *mut c_void,
+    _finalize_cb: Option<NapiFinalize>,
+    _finalize_hint: *mut c_void,
+    result: *mut napi_ref,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env.resolve(js_object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(key) = v8::String::new(scope, NAPI_WRAP_KEY) else {
+        return NapiStatus::GenericFailure;
+    };
+    let ext: v8::Local<v8::Value> = v8::External::new(scope, native_object).into();
+    if obj.set(scope, key.into(), ext).is_none() {
+        return NapiStatus::GenericFailure;
+    }
+    if !result.is_null() {
+        let value_g: v8::Global<v8::Value> = v8::Global::new(scope, obj_local);
+        let inner = RefInner::boxed(value_g, 1);
+        unsafe { ptr::write(result, napi_ref(inner.cast::<c_void>())) };
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_unwrap(
+    env: napi_env,
+    js_object: napi_value,
+    result: *mut *mut c_void,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(obj_g) = env.resolve(js_object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(key) = v8::String::new(scope, NAPI_WRAP_KEY) else {
+        return NapiStatus::GenericFailure;
+    };
+    let Some(val) = obj.get(scope, key.into()) else {
+        return NapiStatus::GenericFailure;
+    };
+    let Ok(ext) = v8::Local::<v8::External>::try_from(val) else {
+        return NapiStatus::InvalidArg;
+    };
+    unsafe { ptr::write(result, ext.value()) };
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_remove_wrap(
+    env: napi_env,
+    js_object: napi_value,
+    result: *mut *mut c_void,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env.resolve(js_object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::ObjectExpected;
+    };
+    let Some(key) = v8::String::new(scope, NAPI_WRAP_KEY) else {
+        return NapiStatus::GenericFailure;
+    };
+    let val = obj.get(scope, key.into());
+    if let Some(v) = val
+        && let Ok(ext) = v8::Local::<v8::External>::try_from(v)
+    {
+        if !result.is_null() {
+            unsafe { ptr::write(result, ext.value()) };
+        }
+        let _ = obj.delete(scope, key.into());
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_define_class(
+    env: napi_env,
+    utf8name: *const c_char,
+    length: usize,
+    constructor: NapiCallback,
+    data: *mut c_void,
+    property_count: usize,
+    properties: *const crate::napi::types::napi_property_descriptor,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let mut ctor_val: napi_value = napi_value(std::ptr::null_mut());
+    let status = unsafe {
+        napi_create_function(
+            env,
+            utf8name,
+            length,
+            Some(constructor),
+            data,
+            &mut ctor_val,
+        )
+    };
+    if status != NapiStatus::Ok {
+        return status;
+    }
+    if property_count != 0 && !properties.is_null() {
+        let Some(env_obj) = (unsafe { env_ref(env) }) else {
+            return NapiStatus::InvalidArg;
+        };
+        let scope = unsafe { scope_from_env(env_obj) };
+        let Some(ctor_g) = env_obj.resolve(ctor_val) else {
+            return NapiStatus::InvalidArg;
+        };
+        let ctor_local = v8::Local::new(scope, &ctor_g);
+        let Ok(ctor_fn) = v8::Local::<v8::Function>::try_from(ctor_local) else {
+            return NapiStatus::InvalidArg;
+        };
+        let proto_key = v8::String::new(scope, "prototype").unwrap();
+        let proto_val = ctor_fn.get(scope, proto_key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+        let Ok(proto_obj) = v8::Local::<v8::Object>::try_from(proto_val) else {
+            return NapiStatus::InvalidArg;
+        };
+        let ctor_obj: v8::Local<v8::Object> = ctor_fn.into();
+        let descs = unsafe { std::slice::from_raw_parts(properties, property_count) };
+        for d in descs {
+            let target = if (d.attributes & crate::napi::types::NAPI_ATTR_STATIC) != 0 {
+                ctor_obj
+            } else {
+                proto_obj
+            };
+            if unsafe { apply_descriptor(env_obj, scope, target, d) } != NapiStatus::Ok {
+                return NapiStatus::GenericFailure;
+            }
+        }
+    }
+    unsafe { ptr::write(result, ctor_val) };
+    NapiStatus::Ok
+}
+
+unsafe fn apply_descriptor<'s>(
+    env: &NapiEnv,
+    scope: &mut v8::PinScope<'s, '_>,
+    target: v8::Local<'s, v8::Object>,
+    d: &crate::napi::types::napi_property_descriptor,
+) -> NapiStatus {
+    let env_ptr = env as *const NapiEnv as napi_env;
+    // Resolve the property name
+    let name_local: v8::Local<v8::Name> = if !d.utf8name.is_null() {
+        let cstr = unsafe { std::ffi::CStr::from_ptr(d.utf8name) };
+        let Ok(s) = cstr.to_str() else { return NapiStatus::InvalidArg };
+        let Some(v) = v8::String::new(scope, s) else { return NapiStatus::GenericFailure };
+        v.into()
+    } else if !d.name.0.is_null() {
+        let Some(g) = env.resolve(d.name) else { return NapiStatus::InvalidArg };
+        let l = v8::Local::new(scope, &g);
+        let Ok(n) = v8::Local::<v8::Name>::try_from(l) else { return NapiStatus::InvalidArg };
+        n
+    } else {
+        return NapiStatus::InvalidArg;
+    };
+
+    if let Some(method) = d.method {
+        let mut fn_val: napi_value = napi_value(std::ptr::null_mut());
+        let st = unsafe {
+            napi_create_function(
+                env_ptr,
+                std::ptr::null(),
+                0,
+                Some(method),
+                d.data,
+                &mut fn_val,
+            )
+        };
+        if st != NapiStatus::Ok {
+            return st;
+        }
+        let Some(fn_g) = env.resolve(fn_val) else { return NapiStatus::InvalidArg };
+        let fn_local = v8::Local::new(scope, &fn_g);
+        target.set(scope, name_local.into(), fn_local);
+    } else if d.getter.is_some() || d.setter.is_some() {
+        // Accessor — minimal viable: skip if neither side compiles cleanly.
+        // For Prisma we don't need accessors; ignore for now to avoid
+        // pulling in v8 accessor APIs that vary across versions.
+        let _ = (d.getter, d.setter);
+    } else if !d.value.0.is_null() {
+        let Some(val_g) = env.resolve(d.value) else { return NapiStatus::InvalidArg };
+        let val_local = v8::Local::new(scope, &val_g);
+        target.set(scope, name_local.into(), val_local);
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_define_properties(
+    env: napi_env,
+    object: napi_value,
+    property_count: usize,
+    properties: *const crate::napi::types::napi_property_descriptor,
+) -> NapiStatus {
+    if property_count == 0 {
+        return NapiStatus::Ok;
+    }
+    if properties.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(env_obj) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(obj_g) = env_obj.resolve(object) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env_obj) };
+    let obj_local = v8::Local::new(scope, &obj_g);
+    let Ok(obj) = v8::Local::<v8::Object>::try_from(obj_local) else {
+        return NapiStatus::InvalidArg;
+    };
+    let descs = unsafe { std::slice::from_raw_parts(properties, property_count) };
+    for d in descs {
+        if unsafe { apply_descriptor(env_obj, scope, obj, d) } != NapiStatus::Ok {
+            return NapiStatus::GenericFailure;
+        }
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_fatal_error(
+    location: *const c_char,
+    _location_len: usize,
+    message: *const c_char,
+    _message_len: usize,
+) -> ! {
+    let loc = if location.is_null() {
+        "<unknown>".to_owned()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(location) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let msg = if message.is_null() {
+        "<unknown>".to_owned()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    tracing::error!(target: "nexide::napi", location = %loc, message = %msg, "fatal error");
+    std::process::abort();
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_fatal_exception(
+    env: napi_env,
+    err: napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let Some(g) = env.resolve(err) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let msg = local.to_rust_string_lossy(scope);
+    tracing::error!(target: "nexide::napi", message = %msg, "unhandled exception from native addon");
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_add_env_cleanup_hook(
+    _env: napi_env,
+    _fun: Option<unsafe extern "C" fn(*mut c_void)>,
+    _arg: *mut c_void,
+) -> NapiStatus {
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_remove_env_cleanup_hook(
+    _env: napi_env,
+    _fun: Option<unsafe extern "C" fn(*mut c_void)>,
+    _arg: *mut c_void,
+) -> NapiStatus {
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_create_bigint_int64(
+    env: napi_env,
+    value: i64,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let v: v8::Local<v8::Value> = v8::BigInt::new_from_i64(scope, value).into();
+    unsafe { write_value_out(env, result, v, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_create_bigint_uint64(
+    env: napi_env,
+    value: u64,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let v: v8::Local<v8::Value> = v8::BigInt::new_from_u64(scope, value).into();
+    unsafe { write_value_out(env, result, v, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_create_bigint_words(
+    env: napi_env,
+    sign_bit: i32,
+    word_count: usize,
+    words: *const u64,
+    result: *mut napi_value,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if words.is_null() && word_count != 0 {
+        return NapiStatus::InvalidArg;
+    }
+    let scope = unsafe { scope_from_env(env) };
+    let slice = if word_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(words, word_count) }
+    };
+    let Some(big) = v8::BigInt::new_from_words(scope, sign_bit != 0, slice) else {
+        return NapiStatus::GenericFailure;
+    };
+    let v: v8::Local<v8::Value> = big.into();
+    unsafe { write_value_out(env, result, v, scope) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_value_bigint_int64(
+    env: napi_env,
+    value: napi_value,
+    result: *mut i64,
+    lossless: *mut bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let Ok(big) = v8::Local::<v8::BigInt>::try_from(local) else {
+        return NapiStatus::BigintExpected;
+    };
+    let (v, ok) = big.i64_value();
+    unsafe { ptr::write(result, v) };
+    if !lossless.is_null() {
+        unsafe { ptr::write(lossless, ok) };
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_value_bigint_uint64(
+    env: napi_env,
+    value: napi_value,
+    result: *mut u64,
+    lossless: *mut bool,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if result.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let Ok(big) = v8::Local::<v8::BigInt>::try_from(local) else {
+        return NapiStatus::BigintExpected;
+    };
+    let (v, ok) = big.u64_value();
+    unsafe { ptr::write(result, v) };
+    if !lossless.is_null() {
+        unsafe { ptr::write(lossless, ok) };
+    }
+    NapiStatus::Ok
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_get_value_bigint_words(
+    env: napi_env,
+    value: napi_value,
+    sign_bit: *mut i32,
+    word_count: *mut usize,
+    words: *mut u64,
+) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if word_count.is_null() {
+        return NapiStatus::InvalidArg;
+    }
+    let Some(g) = env.resolve(value) else {
+        return NapiStatus::InvalidArg;
+    };
+    let scope = unsafe { scope_from_env(env) };
+    let local = v8::Local::new(scope, &g);
+    let Ok(big) = v8::Local::<v8::BigInt>::try_from(local) else {
+        return NapiStatus::BigintExpected;
+    };
+    let cap = unsafe { *word_count };
+    if words.is_null() || sign_bit.is_null() {
+        unsafe { ptr::write(word_count, big.word_count()) };
+        return NapiStatus::Ok;
+    }
+    let buf = unsafe { std::slice::from_raw_parts_mut(words, cap) };
+    let (sign, written) = big.to_words_array(buf);
+    unsafe {
+        ptr::write(sign_bit, i32::from(sign));
+        ptr::write(word_count, written.len());
+    }
+    NapiStatus::Ok
+}
+
 #[repr(transparent)]
 struct ForceExport(*const c_void);
 unsafe impl Sync for ForceExport {}
 
 #[used]
-static NAPI_EXPORTS: [ForceExport; 78] = [
+static NAPI_EXPORTS: [ForceExport; 105] = [
     ForceExport(napi_get_undefined as *const c_void),
     ForceExport(napi_get_null as *const c_void),
     ForceExport(napi_get_boolean as *const c_void),
@@ -2197,4 +2954,31 @@ static NAPI_EXPORTS: [ForceExport; 78] = [
     ForceExport(napi_call_threadsafe_function as *const c_void),
     ForceExport(napi_ref_threadsafe_function as *const c_void),
     ForceExport(napi_unref_threadsafe_function as *const c_void),
+    ForceExport(napi_create_array_with_length as *const c_void),
+    ForceExport(napi_get_array_length as *const c_void),
+    ForceExport(napi_is_array as *const c_void),
+    ForceExport(napi_get_element as *const c_void),
+    ForceExport(napi_set_element as *const c_void),
+    ForceExport(napi_get_property as *const c_void),
+    ForceExport(napi_has_named_property as *const c_void),
+    ForceExport(napi_get_property_names as *const c_void),
+    ForceExport(napi_is_error as *const c_void),
+    ForceExport(napi_create_promise as *const c_void),
+    ForceExport(napi_resolve_deferred as *const c_void),
+    ForceExport(napi_reject_deferred as *const c_void),
+    ForceExport(napi_wrap as *const c_void),
+    ForceExport(napi_unwrap as *const c_void),
+    ForceExport(napi_remove_wrap as *const c_void),
+    ForceExport(napi_define_class as *const c_void),
+    ForceExport(napi_define_properties as *const c_void),
+    ForceExport(napi_fatal_error as *const c_void),
+    ForceExport(napi_fatal_exception as *const c_void),
+    ForceExport(napi_add_env_cleanup_hook as *const c_void),
+    ForceExport(napi_remove_env_cleanup_hook as *const c_void),
+    ForceExport(napi_create_bigint_int64 as *const c_void),
+    ForceExport(napi_create_bigint_uint64 as *const c_void),
+    ForceExport(napi_create_bigint_words as *const c_void),
+    ForceExport(napi_get_value_bigint_int64 as *const c_void),
+    ForceExport(napi_get_value_bigint_uint64 as *const c_void),
+    ForceExport(napi_get_value_bigint_words as *const c_void),
 ];

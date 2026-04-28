@@ -275,10 +275,18 @@
     binding() {
       throw new Error("process.binding is not supported by nexide");
     },
-    dlopen() {
-      const err = new Error("process.dlopen is not supported by nexide");
-      err.code = "ENOSYS";
-      throw err;
+    dlopen(module, filename, _flags) {
+      if (!module || typeof module !== "object") {
+        const err = new TypeError("process.dlopen: module must be an object");
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      if (typeof filename !== "string" || filename.length === 0) {
+        const err = new TypeError("process.dlopen: filename must be a non-empty string");
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      module.exports = ops.op_napi_load(filename);
     },
     umask() { return 0; },
     geteuid: () => 0,

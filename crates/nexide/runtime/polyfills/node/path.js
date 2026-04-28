@@ -204,6 +204,10 @@ const posix = {
     if (dir === parsed.root) return dir + base;
     return dir + "/" + base;
   },
+
+  toNamespacedPath(p) {
+    return typeof p === "string" ? p : p;
+  },
 };
 
 const win32 = {
@@ -236,6 +240,21 @@ const win32 = {
   extname(p) { return posix.extname(p.replace(/\\/g, "/")); },
   parse(p) { return posix.parse(p.replace(/\\/g, "/")); },
   format(parsed) { return posix.format(parsed).replace(/\//g, "\\"); },
+  toNamespacedPath(p) {
+    if (typeof p !== "string" || p.length === 0) return p;
+    const resolved = win32.resolve(p);
+    if (resolved.length >= 3) {
+      const c0 = resolved.charCodeAt(0);
+      if ((c0 === 92 || c0 === 47) && resolved.charCodeAt(1) === c0) {
+        return resolved;
+      }
+      if (resolved.charCodeAt(1) === 58 &&
+          (resolved.charCodeAt(2) === 92 || resolved.charCodeAt(2) === 47)) {
+        return "\\\\?\\" + resolved;
+      }
+    }
+    return p;
+  },
 };
 
 const isWindows = typeof globalThis.process !== "undefined"

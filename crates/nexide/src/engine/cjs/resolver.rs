@@ -250,6 +250,58 @@ impl FsResolver {
         })
     }
 
+    fn resolve_subpath_imports(
+        &self,
+        base_dir: &Path,
+        request: &str,
+    ) -> Result<Resolved, CjsError> {
+        let mut current = Some(base_dir.to_path_buf());
+        while let Some(dir) = current {
+            let pkg_path = dir.join("package.json");
+            if pkg_path.is_file()
+                && let Ok(text) = std::fs::read_to_string(&pkg_path)
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(imports) = json.get("imports")
+                && let Some(rel) = match_exports(imports, request)
+            {
+                return self.resolve_imports_target(&dir, &rel, request, base_dir);
+            }
+            current = dir.parent().map(Path::to_path_buf);
+        }
+        Err(CjsError::NotFound {
+            request: request.to_owned(),
+            parent: base_dir.to_string_lossy().into_owned(),
+        })
+    }
+
+    fn resolve_imports_target(
+        &self,
+        pkg_dir: &Path,
+        target: &str,
+        request: &str,
+        base_dir: &Path,
+    ) -> Result<Resolved, CjsError> {
+        if target.starts_with("./") || target.starts_with("../") {
+            let candidate = pkg_dir.join(target.trim_start_matches("./"));
+            let resolved = if candidate.is_file() {
+                Some(candidate.clone())
+            } else {
+                Self::try_extensions(&candidate).or_else(|| Self::try_directory(&candidate))
+            };
+            return resolved
+                .filter(|p| self.within_roots(p))
+                .map(Self::classify)
+                .ok_or_else(|| CjsError::NotFound {
+                    request: request.to_owned(),
+                    parent: base_dir.to_string_lossy().into_owned(),
+                });
+        }
+        if target.starts_with('#') {
+            return self.resolve_subpath_imports(pkg_dir, target);
+        }
+        self.resolve_node_modules(pkg_dir, target)
+    }
+
     fn resolve_in_package(pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
         let pkg_path = pkg_dir.join("package.json");
         let pkg_json = if pkg_path.is_file() {
@@ -388,6 +440,11 @@ impl CjsResolver for FsResolver {
         }
 
         let base_dir = self.parent_dir(parent);
+
+        if request.starts_with('#') {
+            return self.resolve_subpath_imports(&base_dir, request);
+        }
+
         if is_relative {
             self.resolve_file_path(&base_dir, request)
         } else {
@@ -530,6 +587,56 @@ mod tests {
         let resolver = FsResolver::new(vec![dir.path().to_path_buf()], registry_with(&[]));
         let r = resolver.resolve(ROOT_PARENT, "lib").expect("ok");
         assert!(matches!(r, Resolved::File(p) if p.ends_with("index.js")));
+    }
+
+    #[test]
+    fn resolves_subpath_imports_with_conditions() {
+        let dir = tmp_root();
+        let pkg = dir.path().join("node_modules").join("inner");
+        fs::create_dir_all(&pkg).expect("mkdir");
+        fs::write(pkg.join("index.js"), "module.exports = 42;").expect("entry");
+        fs::write(
+            pkg.join("package.json"),
+            r##"{
+              "name": "inner",
+              "imports": {
+                "#main-entry-point": {
+                  "require": { "node": "./index.js", "default": "./index.js" },
+                  "import": { "node": "./index.js" }
+                }
+              }
+            }"##,
+        )
+        .expect("pkg");
+        let resolver = FsResolver::new(vec![dir.path().to_path_buf()], registry_with(&[]));
+        let parent = pkg.join("caller.js");
+        let r = resolver
+            .resolve(parent.to_str().unwrap(), "#main-entry-point")
+            .expect("ok");
+        assert!(matches!(r, Resolved::File(p) if p.ends_with("index.js")));
+    }
+
+    #[test]
+    fn subpath_imports_walk_up_to_outer_package() {
+        let dir = tmp_root();
+        let outer = dir.path().join("node_modules").join("outer");
+        let inner = outer.join("nested");
+        fs::create_dir_all(&inner).expect("mkdirs");
+        fs::write(outer.join("target.js"), "module.exports = 'outer';").expect("target");
+        fs::write(
+            outer.join("package.json"),
+            r##"{
+              "name": "outer",
+              "imports": { "#alias": "./target.js" }
+            }"##,
+        )
+        .expect("pkg");
+        let resolver = FsResolver::new(vec![dir.path().to_path_buf()], registry_with(&[]));
+        let parent = inner.join("caller.js");
+        let r = resolver
+            .resolve(parent.to_str().unwrap(), "#alias")
+            .expect("ok");
+        assert!(matches!(r, Resolved::File(p) if p.ends_with("target.js")));
     }
 
     #[test]

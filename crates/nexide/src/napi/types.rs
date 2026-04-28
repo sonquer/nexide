@@ -118,6 +118,27 @@ pub struct napi_async_work(pub *mut std::ffi::c_void);
 pub struct napi_threadsafe_function(pub *mut std::ffi::c_void);
 
 #[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct napi_deferred(pub *mut std::ffi::c_void);
+
+#[repr(C)]
+pub struct napi_property_descriptor {
+    pub utf8name: *const std::os::raw::c_char,
+    pub name: napi_value,
+    pub method: Option<NapiCallback>,
+    pub getter: Option<NapiCallback>,
+    pub setter: Option<NapiCallback>,
+    pub value: napi_value,
+    pub attributes: u32,
+    pub data: *mut std::ffi::c_void,
+}
+
+pub const NAPI_ATTR_WRITABLE: u32 = 1 << 0;
+pub const NAPI_ATTR_ENUMERABLE: u32 = 1 << 1;
+pub const NAPI_ATTR_CONFIGURABLE: u32 = 1 << 2;
+pub const NAPI_ATTR_STATIC: u32 = 1 << 10;
+
+#[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NapiThreadsafeFunctionCallMode {
     Nonblocking = 0,

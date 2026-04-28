@@ -23,22 +23,12 @@ pub struct TsfnInner {
     pub context: *mut c_void,
     pub finalize: Option<NapiFinalize>,
     pub finalize_data: *mut c_void,
-    /// Live thread acquisitions. Initial = `initial_thread_count`. Each
-    /// `napi_acquire_threadsafe_function` adds 1; each release subs 1.
-    /// When it hits 0 the tsfn is finalised on the JS thread.
     pub thread_count: AtomicUsize,
-    /// Set once `Abort` has been requested; subsequent calls fail with
-    /// `Closing` and queued items are dropped on the JS side.
     pub aborted: AtomicBool,
-    /// Refcounting flag for libuv-style "keep the loop alive". Nexide's
-    /// loop is driven by the engine pump; we record the toggle so
-    /// addons that ref/unref aren't surprised, but it has no effect on
-    /// shutdown today.
     pub kept_alive: AtomicBool,
-    /// Pending items queued towards the JS thread. Kept for parity with
-    /// Node's max_queue_size (0 = unbounded).
     pub queued: AtomicIsize,
     pub work_tx: UnboundedSender<NapiWorkItem>,
+    pub wakeup: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl TsfnInner {

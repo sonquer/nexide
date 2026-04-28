@@ -80,16 +80,11 @@ pub(super) struct BridgeState {
     pub exit_requested: Option<i32>,
     pub pending_pop: VecDeque<v8::Global<v8::PromiseResolver>>,
     pub pending_pop_batch: VecDeque<(v8::Global<v8::PromiseResolver>, u32)>,
-    /// Sender cloned into spawned async-op tasks; their completions
-    /// land on `async_completions_rx` and are flushed by the engine
-    /// pump. Keeping the sender on the bridge state means individual
-    /// ops only need to borrow the bridge to schedule work.
     pub async_completions_tx: mpsc::UnboundedSender<Completion>,
     pub async_completions_rx: Rc<RefCell<mpsc::UnboundedReceiver<Completion>>>,
-    /// Closures pushed by N-API async-work and threadsafe-fn callers
-    /// from worker threads. Drained on each pump tick on the JS thread.
     pub napi_work_tx: mpsc::UnboundedSender<NapiWorkItem>,
     pub napi_work_rx: Rc<RefCell<mpsc::UnboundedReceiver<NapiWorkItem>>>,
+    pub napi_wakeup: Arc<tokio::sync::Notify>,
     pub net_streams: HandleTable<TcpStreamSlot>,
     pub net_listeners: HandleTable<TcpListenerSlot>,
     pub tls_streams: HandleTable<TlsStreamSlot>,
@@ -118,6 +113,7 @@ impl Default for BridgeState {
             async_completions_rx: channel.receiver(),
             napi_work_tx: napi_tx,
             napi_work_rx: Rc::new(RefCell::new(napi_rx)),
+            napi_wakeup: Arc::new(tokio::sync::Notify::new()),
             net_streams: HandleTable::default(),
             net_listeners: HandleTable::default(),
             tls_streams: HandleTable::default(),
@@ -165,4 +161,10 @@ pub(crate) fn napi_work_sender(
     isolate: &v8::Isolate,
 ) -> mpsc::UnboundedSender<NapiWorkItem> {
     from_isolate(isolate).0.borrow().napi_work_tx.clone()
+}
+
+/// Returns the cross-thread wake-up handle used to notify the engine
+/// pump that new N-API work is available.
+pub(crate) fn napi_wakeup(isolate: &v8::Isolate) -> Arc<tokio::sync::Notify> {
+    from_isolate(isolate).0.borrow().napi_wakeup.clone()
 }
