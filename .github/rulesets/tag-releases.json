@@ -1,5 +1,5 @@
 {
-  "name": "release tags (vX.Y.Z immutable)",
+  "name": "release tags",
   "target": "tag",
   "enforcement": "active",
   "bypass_actors": [
@@ -17,17 +17,7 @@
   },
   "rules": [
     { "type": "deletion" },
-    { "type": "non_fast_forward" },
     { "type": "update" },
-    { "type": "required_signatures" },
-    {
-      "type": "tag_name_pattern",
-      "parameters": {
-        "operator": "regex",
-        "pattern": "^v\\d+\\.\\d+\\.\\d+(-[A-Za-z0-9.]+)?$",
-        "negate": false,
-        "name": "semver tag (vMAJOR.MINOR.PATCH[-pre])"
-      }
-    }
+    { "type": "required_signatures" }
   ]
 }
