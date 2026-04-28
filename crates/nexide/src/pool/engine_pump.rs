@@ -120,6 +120,7 @@ pub(super) async fn boot_engine(
 /// expected to recycle/rebuild the worker in that case) or the task
 /// is cancelled.
 pub(super) async fn run_pump(engine: Rc<RefCell<V8Engine>>, pump_signal: Rc<Notify>) {
+    let napi_wakeup = engine.borrow().napi_wakeup();
     loop {
         engine.borrow_mut().pump_once();
         let queue_empty = {
@@ -127,7 +128,10 @@ pub(super) async fn run_pump(engine: Rc<RefCell<V8Engine>>, pump_signal: Rc<Noti
             e.queue_is_empty()
         };
         if queue_empty {
-            pump_signal.notified().await;
+            tokio::select! {
+                () = pump_signal.notified() => {},
+                () = napi_wakeup.notified() => {},
+            }
         } else {
             tokio::task::yield_now().await;
         }

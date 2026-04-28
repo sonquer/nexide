@@ -130,12 +130,12 @@ Requirements: Rust 1.85+ (for edition 2024), a built Next.js standalone bundle.
 # build the runtime
 cargo build --release
 
-# build the bundled example app
-pnpm --dir example install
-pnpm --dir example build
+# build the next-fixture e2e app
+pnpm --dir e2e/next-fixture install
+pnpm --dir e2e/next-fixture build
 
 # serve it
-./target/release/nexide start example --port 3000
+./target/release/nexide start e2e/next-fixture --port 3000
 
 # probe it
 curl -s http://127.0.0.1:3000/api/ping
@@ -242,7 +242,9 @@ nexide/
 │   │   └── tests/           ← integration tests (266 total)
 │   ├── nexide-bench/        ← bench harness: local + docker-suite
 │   └── nexide-e2e/          ← end-to-end tests against real Next.js
-├── example/                 ← Next.js 16 reference app used in tests + bench
+├── e2e/
+│   ├── next-fixture/        ← Next.js 16 reference app used in tests + bench
+│   └── prisma-sqlite/       ← Prisma library engine (N-API) + SQLite fixture
 ├── docs/                    ← design docs and historic task breakdowns
 ├── DESCRIPTION.md           ← original feasibility study
 ├── README.md                ← this file
@@ -262,24 +264,37 @@ same instance.
 | Module               | Status      | Notes                                              |
 |----------------------|-------------|----------------------------------------------------|
 | `path`               | full        | POSIX + Win32, picked from `process.platform`      |
+| `path/posix` / `path/win32` | full | always-platform variants (Node parity)             |
 | `url`                | full        | `URL`, `URLSearchParams`, legacy parse/format      |
 | `querystring`        | full        | parse / stringify / escape / unescape              |
+| `punycode`           | full        | RFC 3492 (vendored upstream `punycode.js` v2.1.0)  |
 | `util`               | pragmatic   | `format`, `inspect`, `promisify`, `callbackify`    |
+| `util/types`         | full        | re-export of `util.types`                          |
+| `assert` / `assert/strict` | full  | strict-equality semantics by default               |
 | `os`                 | full        | live + injectable backend (`OsInfoSource`)         |
 | `events`             | full        | `EventEmitter` + `once` / `on` static helpers      |
 | `buffer` / `Buffer`  | full        | UTF-8 / base64 / hex / latin1 / ascii / ucs2       |
 | `stream`             | core        | `Readable` / `Writable` / `Duplex` / `Transform`   |
+| `stream/web`         | full        | re-export of WHATWG Streams from `globalThis`      |
+| `stream/promises`    | full        | promise-returning `pipeline` / `finished`          |
+| `stream/consumers`   | full        | `buffer` / `text` / `json` / `arrayBuffer` / `blob`|
+| `string_decoder`     | full        | UTF-8 / UTF-16LE / Latin-1 multi-chunk safe        |
 | `fs` + `fs/promises` | sandboxed   | path sandbox; only configured roots are admitted   |
 | `zlib`               | full        | gzip, deflate, brotli (sync + async wrappers)      |
 | `crypto`             | core        | sha1/256/512, md5, HMAC, AES-256-GCM, randomUUID   |
 | `http` / `https`     | server-side | enough for Next.js standalone server entrypoint    |
+| `http2`              | stub        | loads + constants; `createServer`/`connect` throw  |
 | `net` / `tls`        | client-side | enough for outbound `fetch` and DB drivers         |
 | `dns` / `dns/promises` | full      | uses Tokio's resolver via Rust ops                 |
+| `diagnostics_channel`| full        | `Channel` + `TracingChannel` (undici, OTel, APMs)  |
+| `readline` / `readline/promises` | functional | line buffering over any Readable; no TTY UI |
 | `child_process`      | core        | `spawn` / `exec` with stdio piping                 |
 | `worker_threads`     | not supported | throws on `new Worker(...)`                      |
 | `vm`                 | core        | `runInNewContext`, `compileFunction`               |
 | `async_hooks`        | ALS only    | `AsyncLocalStorage` works; full hooks do not       |
 | `perf_hooks`         | core        | monotonic clock, basic marks                       |
+| `timers` / `timers/promises` | full | backed by Tokio                                    |
+| `inspector` / `tty` / `v8` / `module` / `constants` | core | enough surface for transitive deps |
 
 | Global               | Status      | Notes                                              |
 |----------------------|-------------|----------------------------------------------------|
@@ -293,6 +308,17 @@ same instance.
 | `ReadableStream`, `WritableStream`, `TransformStream` | full | WHATWG Streams                  |
 | `TextEncoder` / `TextDecoder`, `URL`, `URLSearchParams` | full | WHATWG                          |
 | `crypto.subtle` / `crypto.getRandomValues` / `crypto.randomUUID` | full | WebCrypto subset            |
+
+## Known limitations
+
+Nexide is a V8-only Next.js runtime; some Node platform surfaces are
+intentionally absent or partial. The full list — N-API/native addons,
+`http2`, worker threads, ICU, inspector, ESM at runtime, source maps,
+corporate proxies, log rotation, etc. — lives in
+[`docs/known-limitations.md`](docs/known-limitations.md).
+
+If you hit something that isn't on that list, open an issue with the
+exact `MODULE_NOT_FOUND` / runtime error and a minimal repro.
 
 ## Docker
 
@@ -311,12 +337,12 @@ and serves the Next.js standalone bundle mounted at `/app`.
 
 ```bash
 # build your Next.js app first (produces .next/standalone)
-pnpm --dir example install
-pnpm --dir example build
+pnpm --dir e2e/next-fixture install
+pnpm --dir e2e/next-fixture build
 
 # run nexide against it
 docker run --rm -p 3000:3000 \
-    -v "$(pwd)/example:/app:ro" \
+    -v "$(pwd)/e2e/next-fixture:/app:ro" \
     ghcr.io/sonquer/nexide:latest
 ```
 
@@ -324,7 +350,7 @@ To build the image locally:
 
 ```bash
 docker build -t nexide:dev .
-docker run --rm -p 3000:3000 -v "$(pwd)/example:/app:ro" nexide:dev
+docker run --rm -p 3000:3000 -v "$(pwd)/e2e/next-fixture:/app:ro" nexide:dev
 ```
 
 ## Migrating from Node.js or Deno

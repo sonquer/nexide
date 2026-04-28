@@ -19,6 +19,7 @@ pub mod dispatch;
 pub mod engine;
 pub mod entrypoint;
 pub mod image;
+pub mod napi;
 pub mod ops;
 pub mod pool;
 pub mod server;
@@ -378,7 +379,7 @@ fn first_existing_or_default(candidates: &[PathBuf]) -> PathBuf {
 ///
 /// This is the seam used by both the binary's `start` subcommand and
 /// integration tests - they construct an [`AppLayout`] explicitly
-/// instead of relying on the legacy `example/` discovery in
+/// instead of relying on the legacy `e2e/next-fixture/` discovery in
 /// [`serve_until`].
 ///
 /// # Errors
@@ -1082,7 +1083,7 @@ fn detected_blocking_cap() -> usize {
 
 const DEFAULT_BIND: &str = "127.0.0.1:3000";
 const BIND_ENV: &str = "NEXIDE_BIND";
-const EXAMPLE_ROOT: &str = "example";
+const EXAMPLE_ROOT: &str = "e2e/next-fixture";
 
 /// Returns the bind address from `NEXIDE_BIND`, falling back to
 /// [`DEFAULT_BIND`] when the env var is absent or unparseable.
@@ -1273,6 +1274,8 @@ mod tests {
         resolve_runtime_mode, resolve_v8_flags,
     };
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn runtime_error_display_uses_stable_prefixes() {
         let tracing_err = RuntimeError::Tracing("boom".into());
@@ -1297,8 +1300,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_falls_back_to_default_when_env_missing() {
-        // SAFETY: tests run sequentially in this module; manipulating
-        // process-global env is acceptable for the duration of the test.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var(BIND_ENV) };
         let addr = resolve_default_bind().expect("bind");
         assert_eq!(addr.to_string(), DEFAULT_BIND);
@@ -1306,6 +1308,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_honors_env_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var(BIND_ENV, "127.0.0.1:54321") };
         let addr = resolve_default_bind().expect("bind");
         assert_eq!(addr.port(), 54321);
@@ -1314,6 +1317,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_returns_error_for_unparseable_value() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var(BIND_ENV, "not an address") };
         assert!(resolve_default_bind().is_err());
         unsafe { std::env::remove_var(BIND_ENV) };

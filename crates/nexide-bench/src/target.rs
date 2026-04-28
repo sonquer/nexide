@@ -18,7 +18,7 @@ use tokio::time::{Instant, sleep};
 pub enum TargetKind {
     /// The `nexide` release binary built from this workspace.
     Nexide,
-    /// `node` running `example/.next/standalone/server.js`.
+    /// `node` running `e2e/next-fixture/.next/standalone/server.js`.
     Node,
     /// `deno run` against the same standalone `server.js` (Deno's
     /// Node-compatibility mode).
@@ -130,10 +130,10 @@ pub async fn spawn_target(
             if !bin.is_file() {
                 bail!("missing release binary: {}", bin.display());
             }
-            let example_dir = workspace_root.join("example");
+            let fixture_dir = workspace_root.join("e2e/next-fixture");
             let mut c = Command::new(bin);
             c.arg("start")
-                .arg(&example_dir)
+                .arg(&fixture_dir)
                 .arg("--hostname")
                 .arg(addr.ip().to_string())
                 .arg("--port")
@@ -142,7 +142,8 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Node => {
-            let server_js: PathBuf = workspace_root.join("example/.next/standalone/server.js");
+            let server_js: PathBuf =
+                workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }
@@ -154,7 +155,8 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Deno => {
-            let server_js: PathBuf = workspace_root.join("example/.next/standalone/server.js");
+            let server_js: PathBuf =
+                workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }

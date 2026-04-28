@@ -18,7 +18,7 @@
 //     `ServerResponse` instances.
 //
 // Compatibility shim: an entrypoint that predates `node:http`
-// (`example/nexide_app.mjs`) accesses `globalThis.http.createServer`.
+// accesses `globalThis.http.createServer`.
 // At polyfill install time we lazily wire that to
 // `require('node:http')` once the CJS loader is present, preserving
 // drop-in behaviour without keeping a duplicate synthetic

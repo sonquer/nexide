@@ -4,7 +4,7 @@
 /crates/nexide/          @sonquer
 /crates/nexide-bench/    @sonquer
 /crates/nexide-e2e/      @sonquer
-/example/                @sonquer
+/e2e/                     @sonquer
 /Cargo.toml              @sonquer
 /Cargo.lock              @sonquer
 /Dockerfile              @sonquer

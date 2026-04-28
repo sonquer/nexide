@@ -6,6 +6,7 @@
 //! the isolate's slot store so V8 callbacks can fetch them through a
 //! raw `&Isolate` reference.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Once;
@@ -148,7 +149,9 @@ impl V8Engine {
         let create_params = heap_limit.to_create_params();
         let mut isolate = v8::Isolate::new(create_params);
 
-        let channel = super::async_ops::CompletionChannel::new();
+        let napi_wakeup = std::sync::Arc::new(tokio::sync::Notify::new());
+        let channel = super::async_ops::CompletionChannel::new(std::sync::Arc::clone(&napi_wakeup));
+        let (napi_tx, napi_rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = BridgeState {
             queue: Rc::new(RequestQueue::new()),
             dispatch_table: DispatchTable::default(),
@@ -165,6 +168,9 @@ impl V8Engine {
             pending_pop_batch: std::collections::VecDeque::new(),
             async_completions_tx: channel.sender(),
             async_completions_rx: channel.receiver(),
+            napi_work_tx: napi_tx,
+            napi_work_rx: Rc::new(RefCell::new(napi_rx)),
+            napi_wakeup,
             net_streams: super::handle_table::HandleTable::default(),
             net_listeners: super::handle_table::HandleTable::default(),
             tls_streams: super::handle_table::HandleTable::default(),
@@ -309,29 +315,59 @@ impl V8Engine {
         state.queue.is_empty()
     }
 
+    /// Returns the cross-thread wake-up handle that worker threads
+    /// (e.g. N-API threadsafe-function callers) bump to make the engine
+    /// pump come out of its idle parking.
+    pub fn napi_wakeup(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        let handle = self
+            .isolate
+            .get_slot::<BridgeStateHandle>()
+            .cloned()
+            .expect("bridge state must be installed");
+        handle.0.borrow().napi_wakeup.clone()
+    }
+
     /// Resolves pending pop-request promises for any newly-arrived
     /// requests, settles every completed asynchronous op, runs a
     /// microtask checkpoint, and refreshes [`Self::heap_stats`].
     /// Cheap; safe to call from a hot loop.
     pub fn pump_once(&mut self) {
         let context = self.context.clone();
-        let async_rx = {
+        let (async_rx, napi_rx) = {
             let handle = self
                 .isolate
                 .get_slot::<BridgeStateHandle>()
                 .cloned()
                 .expect("bridge state must be installed");
-            handle.0.borrow().async_completions_rx.clone()
+            let bridge = handle.0.borrow();
+            (
+                bridge.async_completions_rx.clone(),
+                bridge.napi_work_rx.clone(),
+            )
         };
         {
             v8::scope!(let scope, &mut self.isolate);
             let context = v8::Local::new(scope, context);
             let scope_cs = &mut v8::ContextScope::new(scope, context);
             super::async_ops::drain(scope_cs, &async_rx);
+            drain_napi_work(scope_cs, &napi_rx);
             ops_bridge::drain_pending_pops(scope_cs);
         }
         self.isolate.perform_microtask_checkpoint();
         self.last_stats = capture_heap_stats(&mut self.isolate);
+    }
+}
+
+fn drain_napi_work<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    rx: &Rc<RefCell<tokio::sync::mpsc::UnboundedReceiver<super::bridge::NapiWorkItem>>>,
+) {
+    loop {
+        let next = rx.borrow_mut().try_recv();
+        match next {
+            Ok(work) => work(scope),
+            Err(_) => return,
+        }
     }
 }
 

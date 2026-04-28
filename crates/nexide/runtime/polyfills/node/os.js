@@ -46,5 +46,16 @@ module.exports = {
       homedir: ops.op_os_homedir() || "",
     };
   },
-  constants: { signals: {}, errno: {}, priority: {} },
+  constants: {
+    signals: {},
+    errno: {},
+    priority: {},
+    dlopen: {
+      RTLD_LAZY: 0x1,
+      RTLD_NOW: 0x2,
+      RTLD_GLOBAL: 0x8,
+      RTLD_LOCAL: 0x4,
+      RTLD_DEEPBIND: 0x10,
+    },
+  },
 };

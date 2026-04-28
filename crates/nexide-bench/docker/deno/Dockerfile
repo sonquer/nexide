@@ -10,15 +10,15 @@
 # Stage 2: slim Deno runtime that only carries the standalone bundle
 #          and serves it via `deno run`.
 #
-# Build context: workspace root (only `example/` is needed).
+# Build context: workspace root (only `e2e/next-fixture/` is needed).
 
 FROM node:24-bookworm-slim AS next-builder
-WORKDIR /build/example
+WORKDIR /build/next-fixture
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1
-COPY example/package.json example/package-lock.json ./
+COPY e2e/next-fixture/package.json e2e/next-fixture/package-lock.json ./
 RUN npm install --no-audit --no-fund
-COPY example/ ./
+COPY e2e/next-fixture/ ./
 RUN npx next build
 
 FROM denoland/deno:2.4.5 AS runtime
@@ -28,9 +28,9 @@ ENV NODE_ENV=production \
     PORT=3000 \
     NEXT_TELEMETRY_DISABLED=1 \
     DENO_NO_UPDATE_CHECK=1
-COPY --from=next-builder /build/example/.next/standalone/  /app/
-COPY --from=next-builder /build/example/.next/static       /app/.next/static
-COPY --from=next-builder /build/example/public             /app/public
+COPY --from=next-builder /build/e2e/next-fixture/.next/standalone/  /app/
+COPY --from=next-builder /build/e2e/next-fixture/.next/static       /app/.next/static
+COPY --from=next-builder /build/e2e/next-fixture/public             /app/public
 EXPOSE 3000
 # Deno 2 detects CJS automatically but the Next.js standalone bundle
 # mixes CJS `require` with bare-builtin imports (`require('node:fs')`).

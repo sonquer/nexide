@@ -27,4 +27,5 @@ mod handle_table;
 mod modules;
 mod ops_bridge;
 
+pub(crate) use bridge::{NapiWorkItem, napi_wakeup, napi_work_sender};
 pub use engine::{BootContext, V8Engine};

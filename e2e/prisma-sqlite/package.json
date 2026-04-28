@@ -1,0 +1,26 @@
+{
+  "name": "nexide-e2e-prisma-sqlite",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build",
+    "dev": "next dev",
+    "start": "next start",
+    "db:reset": "rm -f prisma/dev.db && prisma migrate deploy && tsx prisma/seed.ts",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.1",
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "prisma": "^6.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^6"
+  }
+}

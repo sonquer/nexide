@@ -20,7 +20,7 @@ Requirements:
 
 - Rust 1.85 or newer (we use edition 2024).
 - A C++ toolchain (V8 build prerequisites: `clang`, `python3`, `pkg-config`).
-- `pnpm` or `npm`, only if you are touching `example/` or running E2E tests.
+- `pnpm` or `npm`, only if you are touching `e2e/` fixtures or running E2E tests.
 
 Clone, then:
 

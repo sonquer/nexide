@@ -84,6 +84,8 @@
     try {
       if (kind === 1) {
         module.exports = JSON.parse(source);
+      } else if (kind === 3) {
+        module.exports = ops.op_napi_load(source);
       } else {
         const fn = compileWrapper(source, specifier);
         const __filename = specifier;
