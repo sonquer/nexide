@@ -37,7 +37,7 @@ scrypt = { version = "0.11", default-features = false, features = ["std"] }
 rsa = { version = "0.9", features = ["sha2"] }
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 ed25519-dalek = { version = "2", features = ["pem", "pkcs8"] }
-spki = { version = "0.7", features = ["pem"] }
+spki = { version = "0.8", features = ["pem"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand = "0.8"
 hex = "0.4"
