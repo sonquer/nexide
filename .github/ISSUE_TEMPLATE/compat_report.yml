@@ -1,0 +1,56 @@
+name: Compatibility report
+description: A real Next.js application or middleware does not work under nexide.
+title: "[compat] "
+labels: ["compat", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Compatibility reports are valuable. Please include enough detail
+        that a maintainer can reproduce without guessing.
+
+  - type: input
+    id: package
+    attributes:
+      label: Failing package or feature
+      placeholder: "next-auth, drizzle-orm, route handler with formData(), ..."
+    validations:
+      required: true
+
+  - type: input
+    id: nextjs
+    attributes:
+      label: Next.js version
+    validations:
+      required: true
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: Symptom
+      description: What error do you see? Stack trace, response body, log line.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A small Next.js app or a single route that fails. Link to a repo
+        if possible.
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: nexide commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Known workaround
+      description: Anything that makes it work, even hacky.

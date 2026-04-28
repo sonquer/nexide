@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b0b0f;
+  --color-ink-soft: #15151c;
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-display);
+  background: var(--color-ink);
+  color: #f5f5f7;
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+}

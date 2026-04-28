@@ -1,0 +1,55 @@
+name: Feature request
+description: Propose a new feature or behaviour change.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim the README's roadmap and non-goals
+        sections. Requests that fall under explicit non-goals will be
+        closed.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: |
+        What problem are you trying to solve? Describe the use case, not the
+        solution. "Next.js fails to render route X because Y" is a problem;
+        "add option Z" is a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like nexide to behave? Be specific.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, other approaches you rejected, and why.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: |
+        Is this strictly required for Next.js compatibility, or a general
+        Node.js feature? nexide intentionally does not implement everything
+        Node does. See the non-goals section in the README.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I have searched existing issues and discussions.
+          required: true
+        - label: This proposal is consistent with the README's non-goals.
+          required: true

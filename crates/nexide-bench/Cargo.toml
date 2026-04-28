@@ -1,0 +1,33 @@
+[package]
+name = "nexide-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Benchmark harness for nexide vs Node.js"
+
+[[bin]]
+name = "nexide-bench"
+path = "src/main.rs"
+
+[features]
+default = []
+
+[dependencies]
+anyhow = { workspace = true }
+bollard = "0.20"
+clap = { workspace = true }
+comfy-table = { workspace = true }
+futures = { workspace = true }
+hdrhistogram = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { workspace = true }
+tokio = { workspace = true, features = ["process", "sync", "rt-multi-thread"] }
+tokio-stream = "0.1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

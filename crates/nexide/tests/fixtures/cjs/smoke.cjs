@@ -1,0 +1,1 @@
+module.exports = { hello: (n) => 'hi ' + n };

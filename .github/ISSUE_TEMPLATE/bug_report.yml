@@ -1,0 +1,96 @@
+name: Bug report
+description: Something does not work the way the README claims it should.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much of
+        the form as you reasonably can. Reports without a reproduction are
+        almost always closed.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What is broken?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Minimal steps to reproduce. A failing test, a curl command, or a
+        small Next.js route is ideal. "It does not work in my big app" is
+        not a reproduction.
+      placeholder: |
+        1. cargo run --release
+        2. curl -X POST http://127.0.0.1:3000/api/echo -d '{"a":1}'
+        3. observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include error messages, stack traces, or response bodies.
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: nexide version / commit SHA
+      placeholder: "v0.1.0 or 7f3a9c2"
+    validations:
+      required: true
+
+  - type: input
+    id: nextjs
+    attributes:
+      label: Next.js version
+      placeholder: "16.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS aarch64
+        - macOS x86_64
+        - Windows x86_64
+        - Other (please specify in the summary)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output. Run with `RUST_LOG=nexide=debug` if helpful.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I have searched existing issues for duplicates.
+          required: true
+        - label: I have read the README and confirmed this is not documented behaviour.
+          required: true

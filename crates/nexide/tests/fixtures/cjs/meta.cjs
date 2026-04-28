@@ -1,0 +1,1 @@
+module.exports = { d: __dirname, f: __filename };

@@ -1,0 +1,80 @@
+[package]
+name = "nexide"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Native Next.js runtime in Rust"
+
+[lib]
+name = "nexide"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexide"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = "0.1"
+axum = "0.8"
+bytes = "1"
+v8 = "147"
+flate2 = "1"
+brotli = "8"
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+digest = "0.10"
+aes-gcm = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["std"] }
+ctr = "0.9"
+chacha20poly1305 = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+scrypt = { version = "0.11", default-features = false, features = ["std"] }
+rsa = { version = "0.9", features = ["sha2"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+ed25519-dalek = { version = "2", features = ["pem", "pkcs8"] }
+spki = { version = "0.7", features = ["pem"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rand = "0.8"
+hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+libc = "0.2.186"
+tikv-jemallocator = { version = "0.6", optional = true }
+hickory-resolver = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+webpki-roots = { workspace = true }
+reqwest = { workspace = true }
+
+[features]
+default = []
+# Switches the global allocator to jemalloc. Recommended for Linux
+# release builds: jemalloc returns memory to the OS aggressively
+# (decay ms tuning) and reduces RSS fragmentation versus glibc
+# malloc. Off by default because tikv-jemallocator requires a C
+# build dependency that some downstream embedders cannot satisfy.
+jemalloc = ["dep:tikv-jemallocator"]
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true
