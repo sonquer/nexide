@@ -15,24 +15,41 @@ currently works:
   strings (UTF-8), objects, arrays, dates, BigInt, externals.
 - **Properties**: get/set named, define properties with attributes,
   prototype chain.
-- **Functions & classes**: `napi_create_function`, `napi_define_class`,
-  `napi_new_instance`, `napi_call_function`, `napi_get_cb_info`.
+- **Functions & classes**: `napi_create_function`, `napi_define_class`
+  (with property descriptors — methods, values, static), `napi_wrap` /
+  `napi_unwrap`, `napi_new_instance`, `napi_call_function`,
+  `napi_get_cb_info`.
 - **Errors**: `napi_throw_*`, `napi_create_error`, type/range error
-  variants, pending exception propagation.
+  variants, pending exception propagation, `napi_fatal_error` /
+  `napi_fatal_exception`.
 - **Buffers & typed arrays**: `napi_create_buffer*`,
   `napi_create_typedarray`, `napi_create_arraybuffer`, finalizers (with
   caveats — backing-store deleters fired off-thread by V8 currently
   pass `napi_env=NULL`).
 - **References**: `napi_create_reference`, `_ref` / `_unref` / `_value` /
   `_delete`.
+- **Promises & deferreds**: `napi_create_promise`,
+  `napi_resolve_deferred`, `napi_reject_deferred` — single-shot
+  resolvers driven from JS or N-API thread callbacks.
+- **BigInt**: `napi_create_bigint_int64` / `_uint64` / `_words` and the
+  matching `napi_get_value_bigint_*` getters.
 - **Async work**: `napi_create_async_work` / `_queue` / `_cancel` /
   `_delete` — execute runs on tokio's blocking pool, complete is
-  trampolined back to the V8 thread.
+  trampolined back to the V8 thread (the engine pump is woken so
+  callbacks fire even on otherwise-idle isolates).
 - **Threadsafe-functions**: `napi_create_threadsafe_function`,
   `napi_call_threadsafe_function`, `_acquire` / `_release` /
   `_get_context` / `_ref` / `_unref` — calls from any thread are
   funnelled through the engine pump and dispatched under a real V8
-  scope.
+  scope. Cross-thread wake-up is wired so the pump comes out of idle as
+  soon as a worker thread pushes a callback.
+
+Confirmed working end-to-end (see `e2e/prisma-sqlite/`):
+
+- **`@prisma/client` library engine** (`libquery_engine-*.dylib.node`)
+  against SQLite — full N-API path: tsfn-driven async query pipeline,
+  promise-based connect / query, BigInt cursors, `process.dlopen`,
+  Node-style subpath imports (`#main-entry-point`).
 
 What still doesn't work:
 
@@ -49,8 +66,25 @@ What still doesn't work:
 For pure-JS swap-ins still recommended where they exist:
 
 - **`bcrypt`** native → `bcryptjs`.
-- **`better-sqlite3`** / `sqlite3` → HTTP-fronted SQLite (Turso, D1) or
-  a pure-JS driver.
+- **`better-sqlite3`** / `sqlite3` → use `@prisma/client` (works,
+  see above), an HTTP-fronted SQLite (Turso, D1), or a pure-JS driver.
+
+### Async Server Components that block on N-API
+
+Async Server Components whose render `await`s an N-API addon (e.g.
+`await prisma.user.findMany()` directly inside `app/page.tsx`) currently
+hang the streaming HTML response. The query itself runs to completion
+(and the same call from a route handler returning `NextResponse.json`
+works), but the React 19 streaming renderer doesn't resume after the
+threadsafe-function-driven `await` resolves. Workarounds:
+
+- Move the data fetch into a route handler (`app/api/.../route.ts`) and
+  call it from a Client Component, **or**
+- Wrap the async call in `cache()` + a separate `<Suspense>` boundary
+  so the render isn't suspended on the N-API resume directly.
+
+This is a runtime bug in nexide's React-streaming + tsfn interaction,
+not a Prisma limitation; it's tracked separately.
 
 ## HTTP/2 server / client
 
