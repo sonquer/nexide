@@ -262,24 +262,37 @@ same instance.
 | Module               | Status      | Notes                                              |
 |----------------------|-------------|----------------------------------------------------|
 | `path`               | full        | POSIX + Win32, picked from `process.platform`      |
+| `path/posix` / `path/win32` | full | always-platform variants (Node parity)             |
 | `url`                | full        | `URL`, `URLSearchParams`, legacy parse/format      |
 | `querystring`        | full        | parse / stringify / escape / unescape              |
+| `punycode`           | full        | RFC 3492 (vendored upstream `punycode.js` v2.1.0)  |
 | `util`               | pragmatic   | `format`, `inspect`, `promisify`, `callbackify`    |
+| `util/types`         | full        | re-export of `util.types`                          |
+| `assert` / `assert/strict` | full  | strict-equality semantics by default               |
 | `os`                 | full        | live + injectable backend (`OsInfoSource`)         |
 | `events`             | full        | `EventEmitter` + `once` / `on` static helpers      |
 | `buffer` / `Buffer`  | full        | UTF-8 / base64 / hex / latin1 / ascii / ucs2       |
 | `stream`             | core        | `Readable` / `Writable` / `Duplex` / `Transform`   |
+| `stream/web`         | full        | re-export of WHATWG Streams from `globalThis`      |
+| `stream/promises`    | full        | promise-returning `pipeline` / `finished`          |
+| `stream/consumers`   | full        | `buffer` / `text` / `json` / `arrayBuffer` / `blob`|
+| `string_decoder`     | full        | UTF-8 / UTF-16LE / Latin-1 multi-chunk safe        |
 | `fs` + `fs/promises` | sandboxed   | path sandbox; only configured roots are admitted   |
 | `zlib`               | full        | gzip, deflate, brotli (sync + async wrappers)      |
 | `crypto`             | core        | sha1/256/512, md5, HMAC, AES-256-GCM, randomUUID   |
 | `http` / `https`     | server-side | enough for Next.js standalone server entrypoint    |
+| `http2`              | stub        | loads + constants; `createServer`/`connect` throw  |
 | `net` / `tls`        | client-side | enough for outbound `fetch` and DB drivers         |
 | `dns` / `dns/promises` | full      | uses Tokio's resolver via Rust ops                 |
+| `diagnostics_channel`| full        | `Channel` + `TracingChannel` (undici, OTel, APMs)  |
+| `readline` / `readline/promises` | functional | line buffering over any Readable; no TTY UI |
 | `child_process`      | core        | `spawn` / `exec` with stdio piping                 |
 | `worker_threads`     | not supported | throws on `new Worker(...)`                      |
 | `vm`                 | core        | `runInNewContext`, `compileFunction`               |
 | `async_hooks`        | ALS only    | `AsyncLocalStorage` works; full hooks do not       |
 | `perf_hooks`         | core        | monotonic clock, basic marks                       |
+| `timers` / `timers/promises` | full | backed by Tokio                                    |
+| `inspector` / `tty` / `v8` / `module` / `constants` | core | enough surface for transitive deps |
 
 | Global               | Status      | Notes                                              |
 |----------------------|-------------|----------------------------------------------------|
@@ -293,6 +306,99 @@ same instance.
 | `ReadableStream`, `WritableStream`, `TransformStream` | full | WHATWG Streams                  |
 | `TextEncoder` / `TextDecoder`, `URL`, `URLSearchParams` | full | WHATWG                          |
 | `crypto.subtle` / `crypto.getRandomValues` / `crypto.randomUUID` | full | WebCrypto subset            |
+
+## Known limitations
+
+Things that **do not** work in nexide today and will bite a Next.js production
+deploy if you rely on them. Each item is a deliberate trade-off (V8-only
+runtime, no N-API, no full Node platform), not a missing-feature backlog item.
+
+### Native addons (`.node` files / N-API / node-gyp)
+
+Nexide is V8-only. Anything compiled against Node's N-API will fail to load.
+The most common offenders in Next.js stacks:
+
+- **`sharp`** — used by `next/image` when `images.unoptimized !== true`.
+  Nexide ships its own native `/_next/image` optimizer (Rust + `image` crate),
+  which transparently replaces `sharp` for the built-in image route. Custom
+  loaders that call `require('sharp')` directly will still fail.
+- **`@prisma/engines`** (binary engine) — switch to the data-proxy /
+  Accelerate driver, or the WASM engine (`?engineType=wasm`).
+- **`bcrypt`** native — use `bcryptjs` (pure JS) or `argon2-browser`.
+- **`better-sqlite3`** / `sqlite3` — use HTTP-fronted SQLite (Turso, D1) or a
+  pure-JS driver.
+- **`canvas`** (node-canvas) — render server-side via `@napi-rs/canvas`
+  alternative? No: also native. Use `satori` + `resvg-js`? Also native. In
+  practice: render on the edge or pre-render at build time.
+
+### HTTP/2 server / client
+
+`require('node:http2')` loads, exposes `constants`, but `createServer` and
+`connect` throw. Most deps probe via `try { require('http2') } catch {}` and
+fall back to HTTP/1.1, so this is usually transparent. gRPC clients that
+hard-require HTTP/2 will not work.
+
+### Worker threads
+
+`require('node:worker_threads')` resolves but `new Worker(...)` throws.
+Next.js uses workers for ISR background revalidation; in nexide that path is
+serialised onto the request loop. For most workloads this is invisible; if
+you have heavy CPU-bound revalidation, scale horizontally instead.
+
+### ICU / `Intl` data
+
+V8 is built with `small-icu` (English-only ICU data). `Intl.DateTimeFormat`,
+`Intl.NumberFormat`, `Intl.RelativeTimeFormat`, `Intl.Collator` and
+`Intl.Segmenter` will silently fall back to `en-US` for any other locale.
+If your app uses `next-intl`, `date-fns/locale`, or hand-rolled formatters
+keyed off `Intl`, format the strings on the client or precompute them at
+build time. Full-ICU support is on the roadmap.
+
+### Inspector / debugger protocol
+
+`require('node:inspector')` loads (so deps probing it don't crash) but the
+DevTools wire protocol is not implemented. CPU profiles and heap snapshots
+must be captured externally (e.g. via the host process).
+
+### `cluster`, `dgram`, `repl`, `domain`, `wasi`, `trace_events`
+
+Not shipped. These are server-side primitives nexide replaces with native
+equivalents (multi-process scaling via `SO_REUSEPORT` instead of `cluster`,
+OpenTelemetry instead of `trace_events`, etc.) or that are simply not used
+by the Next.js server runtime.
+
+### ESM at runtime
+
+Next.js standalone bundles every dependency as CommonJS via webpack, so
+`import` statements that survive bundling are extremely rare. Pure-ESM
+packages that ship `.mjs` and rely on dynamic `import()` at runtime are
+not currently routed through nexide's resolver. Workaround: pin the
+package to a version that still provides a CJS build, or pre-bundle it
+into your app code via webpack's `transpilePackages`.
+
+### Source maps in stack traces
+
+Stack frames currently show positions inside the bundled chunk
+(`/.next/server/chunks/3660.js:2:78064`) rather than original sources.
+Wire your error reporter (Sentry, Datadog) with the build's `.map` files
+the same way you would for stock Node.
+
+### Custom CA / corporate proxies
+
+`NODE_EXTRA_CA_CERTS` is honoured by the outbound `https` polyfill but
+proxy-related env vars (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`) are not
+threaded through `fetch` / `https.request` yet. Set them on a sidecar
+proxy if you need outbound proxy support.
+
+### Crash-consistent log rotation
+
+`SIGUSR2` is not handled (`pino`/`winston` rotation hooks are silently
+no-ops). Rotate via the orchestrator (Kubernetes log driver, journald)
+instead of inside the app.
+
+If you hit a limitation that isn't on this list — open an issue with the
+exact `MODULE_NOT_FOUND` / runtime error and a minimal repro. Everything
+above started life as a production bug report.
 
 ## Docker
 
