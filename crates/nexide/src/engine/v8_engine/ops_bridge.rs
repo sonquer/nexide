@@ -1146,10 +1146,11 @@ fn cpu_usage_micros() -> (u64, u64) {
     if rc != 0 {
         return (0, 0);
     }
+    #[allow(clippy::useless_conversion)] // tv_usec is i32 on macOS, i64 on Linux
     let to_micros = |t: libc::timeval| {
         (t.tv_sec)
             .saturating_mul(1_000_000)
-            .saturating_add(t.tv_usec.into())
+            .saturating_add(i64::from(t.tv_usec))
     };
     let user = to_micros(usage.ru_utime).max(0) as u64;
     let sys = to_micros(usage.ru_stime).max(0) as u64;
