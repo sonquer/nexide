@@ -8,7 +8,7 @@
 mod errors;
 mod heap_config;
 mod isolate;
-mod v8_engine;
+pub(crate) mod v8_engine;
 
 pub mod cjs;
 

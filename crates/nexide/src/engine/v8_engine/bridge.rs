@@ -19,6 +19,8 @@ use super::handle_table::HandleTable;
 use crate::engine::cjs::CjsResolver;
 use crate::ops::{DispatchTable, EnvOverlay, FsHandle, ProcessConfig, RequestQueue, WorkerId};
 
+pub(crate) type NapiWorkItem = Box<dyn FnOnce(&mut v8::PinScope<'_, '_>) + Send + 'static>;
+
 /// TCP socket entry: shared, async-locked stream so reads and writes
 /// from JS land on the same FD without racing. `Rc` because each
 /// isolate is single-threaded; `tokio::sync::Mutex` because read /
@@ -84,6 +86,10 @@ pub(super) struct BridgeState {
     /// ops only need to borrow the bridge to schedule work.
     pub async_completions_tx: mpsc::UnboundedSender<Completion>,
     pub async_completions_rx: Rc<RefCell<mpsc::UnboundedReceiver<Completion>>>,
+    /// Closures pushed by N-API async-work and threadsafe-fn callers
+    /// from worker threads. Drained on each pump tick on the JS thread.
+    pub napi_work_tx: mpsc::UnboundedSender<NapiWorkItem>,
+    pub napi_work_rx: Rc<RefCell<mpsc::UnboundedReceiver<NapiWorkItem>>>,
     pub net_streams: HandleTable<TcpStreamSlot>,
     pub net_listeners: HandleTable<TcpListenerSlot>,
     pub tls_streams: HandleTable<TlsStreamSlot>,
@@ -95,6 +101,7 @@ pub(super) struct BridgeState {
 impl Default for BridgeState {
     fn default() -> Self {
         let channel = CompletionChannel::new();
+        let (napi_tx, napi_rx) = mpsc::unbounded_channel();
         Self {
             queue: Rc::new(RequestQueue::new()),
             dispatch_table: DispatchTable::default(),
@@ -109,6 +116,8 @@ impl Default for BridgeState {
             pending_pop_batch: VecDeque::new(),
             async_completions_tx: channel.sender(),
             async_completions_rx: channel.receiver(),
+            napi_work_tx: napi_tx,
+            napi_work_rx: Rc::new(RefCell::new(napi_rx)),
             net_streams: HandleTable::default(),
             net_listeners: HandleTable::default(),
             tls_streams: HandleTable::default(),
@@ -121,7 +130,7 @@ impl Default for BridgeState {
 
 /// Handle parked in the isolate slot. Cheap to clone (`Rc`).
 #[derive(Clone)]
-pub(super) struct BridgeStateHandle(pub(super) Rc<RefCell<BridgeState>>);
+pub(crate) struct BridgeStateHandle(pub(super) Rc<RefCell<BridgeState>>);
 
 impl Default for BridgeStateHandle {
     fn default() -> Self {
@@ -149,4 +158,11 @@ pub(super) fn from_isolate(isolate: &v8::Isolate) -> BridgeStateHandle {
         .get_slot::<BridgeStateHandle>()
         .cloned()
         .expect("BridgeStateHandle must be installed before any op fires")
+}
+
+/// Returns a clonable sender for the per-isolate N-API work channel.
+pub(crate) fn napi_work_sender(
+    isolate: &v8::Isolate,
+) -> mpsc::UnboundedSender<NapiWorkItem> {
+    from_isolate(isolate).0.borrow().napi_work_tx.clone()
 }

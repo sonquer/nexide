@@ -315,30 +315,58 @@ runtime, no N-API, no full Node platform), not a missing-feature backlog item.
 
 ### Native addons (`.node` files / N-API / node-gyp)
 
-Nexide is V8-only. Anything compiled against Node's N-API will fail to load.
-The most common offenders in Next.js stacks:
+Nexide implements a substantial subset of the N-API ABI directly against
+V8 — enough for many Next.js–adjacent addons to load and run. What
+currently works:
 
-- **`sharp`** — used by `next/image` when `images.unoptimized !== true`.
-  Nexide ships its own native `/_next/image` optimizer (Rust + `image` crate),
-  which transparently replaces `sharp` for the built-in image route. Custom
-  loaders that call `require('sharp')` directly will still fail.
-- **`@prisma/engines`** (default binary engine) — **not required**: nexide
-  runs Prisma via the WASM query engine + driver adapters. See
-  [Running Prisma](#running-prisma) below for the exact configuration.
-- **`bcrypt`** native — use `bcryptjs` (pure JS) or `argon2-browser`.
-- **`better-sqlite3`** / **`sqlite3`** — use HTTP-fronted SQLite (Turso, D1) or a
-  pure-JS driver.
-- **`canvas`** (node-canvas) — render server-side via `@napi-rs/canvas`
-  alternative? No: also native. Use `satori` + `resvg-js`? Also native. In
-  practice: render on the edge or pre-render at build time.
+- **Values & types**: `napi_get_*` / `napi_create_*` for primitives,
+  strings (UTF-8), objects, arrays, dates, BigInt, externals.
+- **Properties**: get/set named, define properties with attributes,
+  prototype chain.
+- **Functions & classes**: `napi_create_function`, `napi_define_class`,
+  `napi_new_instance`, `napi_call_function`, `napi_get_cb_info`.
+- **Errors**: `napi_throw_*`, `napi_create_error`, type/range error
+  variants, pending exception propagation.
+- **Buffers & typed arrays**: `napi_create_buffer*`, `napi_create_typedarray`,
+  `napi_create_arraybuffer`, finalizers (with caveats — see below).
+- **References**: `napi_create_reference`, `_ref` / `_unref` / `_value` /
+  `_delete`.
+- **Async work**: `napi_create_async_work` / `_queue` / `_cancel` /
+  `_delete` — execute runs on tokio's blocking pool, complete is
+  trampolined back to the V8 thread.
+- **Threadsafe-functions**: `napi_create_threadsafe_function`,
+  `napi_call_threadsafe_function`, `_acquire` / `_release` /
+  `_get_context` / `_ref` / `_unref` — calls from any thread are
+  funnelled through the engine pump and dispatched under a real V8
+  scope.
 
-### Running Prisma
+What still doesn't work:
 
-Prisma's default binary/library engine is N-API (won't load), but the
-**WASM query engine + driver adapter** path runs end-to-end on nexide today.
-WebAssembly is intrinsic to V8 in nexide builds (verified by the
-`wasm_smoke` test suite), TCP / TLS go through real Tokio + rustls ops,
-and `Buffer` is full-fidelity, so the WASM engine has everything it needs.
+- **`sharp`** — `next/image` doesn't need it (nexide's native
+  `/_next/image` optimizer covers the built-in route). Custom loaders
+  that call `require('sharp')` directly still fail.
+- **`canvas`** (node-canvas) and other addons that link non-trivial
+  third-party C++ libraries (Cairo, Pango, …) — the surface they
+  consume is much wider than what's implemented above.
+- **Anything using Node's `uv_*` / libuv API directly** (some database
+  drivers, FFI bridges) — N-API lives entirely above libuv, so addons
+  that bypass it are out of scope.
+
+For most pure-JS swap-ins still recommended where they exist:
+
+- **`bcrypt`** native → `bcryptjs`.
+- **`better-sqlite3`** / `sqlite3` → HTTP-fronted SQLite (Turso, D1) or
+  a pure-JS driver.
+
+### Prisma
+
+Prisma's library engine (the default `.node` binary in
+`@prisma/engines`) **loads on nexide**. The N-API surface it consumes
+(threadsafe-functions, references, async-work, errors, buffers, typed
+arrays) is implemented natively. WASM + driver-adapter mode also works
+and is recommended on platforms where the binary engine isn't shipped.
+
+If you do want the WASM path:
 
 **1. Pick a driver adapter for your database** (Postgres example):
 

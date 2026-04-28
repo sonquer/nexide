@@ -25,6 +25,8 @@ pub enum Resolved {
     File(PathBuf),
     /// Concrete file containing JSON.
     Json(PathBuf),
+    /// Native (`.node`) addon loaded via N-API.
+    Native(PathBuf),
     /// Built-in module (`node:<name>`).
     Builtin(String),
 }
@@ -35,7 +37,7 @@ impl Resolved {
     #[must_use]
     pub fn to_specifier(&self) -> String {
         match self {
-            Self::File(p) | Self::Json(p) => p.to_string_lossy().into_owned(),
+            Self::File(p) | Self::Json(p) | Self::Native(p) => p.to_string_lossy().into_owned(),
             Self::Builtin(name) => format!("node:{name}"),
         }
     }
@@ -62,6 +64,11 @@ impl Resolved {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         {
             Ok(Self::Json(path))
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("node"))
+        {
+            Ok(Self::Native(path))
         } else {
             Ok(Self::File(path))
         }
@@ -155,13 +162,18 @@ impl FsResolver {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         {
             Resolved::Json(path)
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("node"))
+        {
+            Resolved::Native(path)
         } else {
             Resolved::File(path)
         }
     }
 
     fn try_extensions(base: &Path) -> Option<PathBuf> {
-        const CANDIDATES: &[&str] = &["js", "cjs", "json", "mjs"];
+        const CANDIDATES: &[&str] = &["js", "cjs", "json", "mjs", "node"];
         if base.is_file() {
             return Some(base.to_path_buf());
         }

@@ -87,6 +87,7 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_cjs_root_parent", op_cjs_root_parent);
     install_fn(scope, ops, "op_cjs_resolve", op_cjs_resolve);
     install_fn(scope, ops, "op_cjs_read_source", op_cjs_read_source);
+    install_fn(scope, ops, "op_napi_load", op_napi_load);
 
     install_fn(scope, ops, "op_os_arch", op_os_arch);
     install_fn(scope, ops, "op_os_platform", op_os_platform);
@@ -1307,6 +1308,16 @@ fn op_cjs_read_source<'s>(
                 }
             }
         }
+        crate::engine::cjs::Resolved::Native(path) => {
+            if !resolver.is_path_admitted(path.as_path()) {
+                throw_error(
+                    scope,
+                    &format!("EACCES: read denied for '{}'", path.display()),
+                );
+                return;
+            }
+            (3u32, path.to_string_lossy().into_owned())
+        }
     };
     let arr = v8::Array::new(scope, 2);
     let src_str = v8::String::new(scope, &source).unwrap();
@@ -1314,6 +1325,39 @@ fn op_cjs_read_source<'s>(
     arr.set_index(scope, 0, src_str.into());
     arr.set_index(scope, 1, kind_num.into());
     rv.set(arr.into());
+}
+
+fn op_napi_load<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = args.get(0).to_rust_string_lossy(scope);
+    if path.is_empty() {
+        throw_error(scope, "EINVAL: napi load requires absolute path");
+        return;
+    }
+    let resolver = {
+        let handle = from_isolate(scope);
+        let cjs = handle.0.borrow().cjs.clone();
+        match cjs {
+            Some(r) => r,
+            None => {
+                throw_error(scope, "cjs resolver not configured");
+                return;
+            }
+        }
+    };
+    let abs = std::path::PathBuf::from(&path);
+    if !resolver.is_path_admitted(abs.as_path()) {
+        throw_error(scope, &format!("EACCES: load denied for '{path}'"));
+        return;
+    }
+    let context = scope.get_current_context();
+    match crate::napi::load_native_module(scope, context, abs.as_path()) {
+        Ok(exports) => rv.set(exports),
+        Err(err) => throw_error(scope, &err.to_string()),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────

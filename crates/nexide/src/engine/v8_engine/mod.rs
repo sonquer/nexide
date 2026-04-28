@@ -28,3 +28,4 @@ mod modules;
 mod ops_bridge;
 
 pub use engine::{BootContext, V8Engine};
+pub(crate) use bridge::{NapiWorkItem, napi_work_sender};
