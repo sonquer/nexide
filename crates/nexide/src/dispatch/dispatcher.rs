@@ -1,6 +1,6 @@
 //! Trait + concrete implementation of the cross-thread dispatcher.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -12,6 +12,7 @@ use super::errors::DispatchError;
 use crate::engine::cjs::{FsResolver, ROOT_PARENT, default_registry};
 use crate::engine::{BootContext, V8Engine};
 use crate::ops::{HeaderPair, RequestMeta, RequestSlot, ResponsePayload};
+use crate::sandbox_root_for;
 
 /// Plain-data view of an HTTP request used to cross thread boundaries.
 ///
@@ -165,9 +166,7 @@ async fn run_worker(
             return;
         }
     };
-    let project_root = entrypoint
-        .parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let project_root = sandbox_root_for(&entrypoint);
     let resolver = Arc::new(FsResolver::new(vec![project_root], registry));
     let ctx = BootContext::new()
         .with_cjs(resolver)

@@ -59,8 +59,17 @@ pub enum Command {
 /// Arguments for [`Command::Start`].
 #[derive(Debug, Parser)]
 pub struct StartArgs {
-    /// Path to the Next.js project root. Defaults to the current
-    /// working directory.
+    /// Path to the Next.js project root, OR a path to the standalone
+    /// `server.js` entrypoint. Defaults to the current working
+    /// directory.
+    ///
+    /// When a directory is supplied the runtime auto-detects the
+    /// standalone bundle layout under it. When a file is supplied the
+    /// runtime treats it as the Node.js-style entrypoint and uses the
+    /// current working directory as the module-resolution sandbox -
+    /// matching `node web-ui/server.js` semantics for monorepo
+    /// deployments where `node_modules/` is hoisted to the workspace
+    /// root.
     #[arg(default_value = ".")]
     pub dir: PathBuf,
 

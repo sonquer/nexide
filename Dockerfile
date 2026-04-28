@@ -1,13 +1,4 @@
 # syntax=docker/dockerfile:1.7
-#
-# Multi-stage build for nexide.
-#
-# Build stage runs on Debian because the `v8` crate (rusty_v8) is built and
-# linked against glibc; building it under musl requires either bespoke V8
-# patches or an unsupported toolchain. The runtime image is also Debian-slim
-# (glibc) so the dynamically-linked binary loads without resorting to Alpine
-# `gcompat`, which historically misses libresolv symbols (e.g. `__res_init`)
-# pulled in transitively through glibc's NSS / `getaddrinfo` chain.
 
 ARG RUST_VERSION=1.95
 ARG DEBIAN_VERSION=bookworm
@@ -38,11 +29,10 @@ RUN apt-get update \
         ca-certificates \
         libgcc-s1 \
         libstdc++6 \
+        tini \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system nexide \
-    && useradd --system --gid nexide --uid 10001 --no-create-home nexide \
-    && groupadd --system --gid 1001 nodejs \
-    && useradd --system --gid nodejs --uid 1001 --no-create-home nextjs
+    && groupadd --system --gid 1000 nexide \
+    && useradd --system --gid nexide --uid 1000 --no-create-home nexide
 
 COPY --from=builder /usr/local/bin/nexide /usr/local/bin/nexide
 
@@ -55,5 +45,5 @@ ENV HOSTNAME=0.0.0.0 \
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/nexide"]
-CMD ["start", "/app"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/nexide"]
+CMD ["start"]
