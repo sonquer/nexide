@@ -64,7 +64,7 @@ server), `deno` (Deno 2.x with `--unstable-node-modules-dir`).
 | `rsc/about`  | nexide  | 20 829 |  2.6ms |  5.0ms |  7.8ms |  218 MB |
 | `rsc/about`  | node    |  3 548 | 14.1ms | 39.5ms | 50.4ms |   56 MB |
 
-### Δ vs Node.js across all four container presets
+### RPS uplift vs Node.js across all four container presets
 
 | Preset           | api-ping RPS | api-time RPS | ssg RPS  | rsc RPS  |
 |------------------|-------------:|-------------:|---------:|---------:|
@@ -72,6 +72,20 @@ server), `deno` (Deno 2.x with `--unstable-node-modules-dir`).
 | 1 vCPU /  512 MB |       +79.6% |       +79.4% |  +312.2% |  +487.0% |
 | 1 vCPU / 1024 MB |       +57.9% |       +59.0% |  +289.6% |  +447.3% |
 | 2 vCPU / 1024 MB |      +137.7% |      +144.8% |  +240.0% |  +381.9% |
+
+### RPS uplift vs Deno across all four container presets
+
+| Preset           | api-ping RPS | api-time RPS | ssg RPS  | rsc RPS  |
+|------------------|-------------:|-------------:|---------:|---------:|
+| 1 vCPU /  256 MB |       +54.8% |       +42.0% |  +272.2% |  +414.1% |
+| 1 vCPU /  512 MB |       +58.0% |       +62.8% |  +270.6% |  +414.4% |
+| 1 vCPU / 1024 MB |        +5.4% |        +3.7% |  +198.1% |  +258.3% |
+| 2 vCPU / 1024 MB |       +38.0% |       +43.9% |  +122.1% |  +174.9% |
+
+Deno closes the gap noticeably on dynamic API routes once it has 1 GB of RAM
+to play with (its V8 instance gets room for code-cache + JIT tiering), but
+prerendered SSG and RSC routes stay 2-4x ahead because that path bypasses
+JavaScript entirely on Nexide.
 
 ### What this means honestly
 
