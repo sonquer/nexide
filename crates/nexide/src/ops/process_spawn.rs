@@ -109,13 +109,13 @@ pub fn spawn(req: SpawnRequest) -> Result<ChildHandle, NetError> {
             ));
         }
     }
-    if let Some(cwd) = &req.cwd {
-        if cwd.contains('\0') {
-            return Err(NetError::new(
-                "ERR_INVALID_ARG_VALUE",
-                "cwd contains a NUL byte",
-            ));
-        }
+    if let Some(cwd) = &req.cwd
+        && cwd.contains('\0')
+    {
+        return Err(NetError::new(
+            "ERR_INVALID_ARG_VALUE",
+            "cwd contains a NUL byte",
+        ));
     }
 
     let mut cmd = Command::new(OsStr::new(&req.command));

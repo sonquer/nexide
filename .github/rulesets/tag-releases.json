@@ -1,0 +1,33 @@
+{
+  "name": "release tags (vX.Y.Z immutable)",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/v*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "update" },
+    { "type": "required_signatures" },
+    {
+      "type": "tag_name_pattern",
+      "parameters": {
+        "operator": "regex",
+        "pattern": "^v\\d+\\.\\d+\\.\\d+(-[A-Za-z0-9.]+)?$",
+        "negate": false,
+        "name": "semver tag (vMAJOR.MINOR.PATCH[-pre])"
+      }
+    }
+  ]
+}

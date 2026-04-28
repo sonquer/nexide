@@ -139,7 +139,9 @@ pub(crate) fn detect_format(bytes: &[u8]) -> SourceFormat {
             return SourceFormat::Heic;
         }
     }
-    if bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(&[0x00, 0x00, 0x00, 0x0C, b'J', b'X', b'L', b' ']) {
+    if bytes.starts_with(&[0xFF, 0x0A])
+        || bytes.starts_with(&[0x00, 0x00, 0x00, 0x0C, b'J', b'X', b'L', b' '])
+    {
         return SourceFormat::Jxl;
     }
     SourceFormat::Unknown
@@ -147,7 +149,12 @@ pub(crate) fn detect_format(bytes: &[u8]) -> SourceFormat {
 
 fn trimmed_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
     let mut i = 0;
-    while i < haystack.len() && (haystack[i] == b' ' || haystack[i] == b'\t' || haystack[i] == b'\n' || haystack[i] == b'\r') {
+    while i < haystack.len()
+        && (haystack[i] == b' '
+            || haystack[i] == b'\t'
+            || haystack[i] == b'\n'
+            || haystack[i] == b'\r')
+    {
         i += 1;
     }
     haystack[i..].starts_with(needle)
@@ -171,7 +178,8 @@ pub(crate) fn resize(img: &DynamicImage, target_w: u32) -> Result<DynamicImage, 
     if target_w >= img.width() {
         return Ok(img.clone());
     }
-    let target_h = ((u64::from(target_w) * u64::from(img.height())) / u64::from(img.width())) as u32;
+    let target_h =
+        ((u64::from(target_w) * u64::from(img.height())) / u64::from(img.width())) as u32;
     let target_h = target_h.max(1);
 
     let rgba = img.to_rgba8();

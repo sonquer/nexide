@@ -1,0 +1,47 @@
+{
+  "name": "feature branch hygiene",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "always"
+    }
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/**"],
+      "exclude": ["refs/heads/main", "refs/heads/dependabot/**", "refs/heads/copilot/**"]
+    }
+  },
+  "rules": [
+    {
+      "type": "branch_name_pattern",
+      "parameters": {
+        "operator": "regex",
+        "pattern": "^(feat|fix|chore|docs|refactor|perf|test|ci|build|revert)/[a-z0-9._-]+$",
+        "negate": false,
+        "name": "kebab-case feature branch (<type>/<slug>)"
+      }
+    },
+    {
+      "type": "commit_message_pattern",
+      "parameters": {
+        "operator": "regex",
+        "pattern": "^(feat|fix|chore|docs|refactor|perf|test|ci|build|revert)(\\(.+\\))?!?: .{1,100}",
+        "negate": false,
+        "name": "Conventional Commits"
+      }
+    },
+    {
+      "type": "commit_author_email_pattern",
+      "parameters": {
+        "operator": "regex",
+        "pattern": ".+@.+\\..+",
+        "negate": false,
+        "name": "non-empty author email"
+      }
+    }
+  ]
+}

@@ -1076,7 +1076,7 @@ fn op_process_kill<'s>(
         let allowed = state
             .process
             .as_ref()
-            .map_or(true, crate::ops::ProcessConfig::subprocess_allowed);
+            .is_none_or(crate::ops::ProcessConfig::subprocess_allowed);
         if !allowed {
             drop(state);
             let err = NetError::new("EPERM", "process.kill is disabled by ProcessConfig");
@@ -1147,7 +1147,9 @@ fn cpu_usage_micros() -> (u64, u64) {
         return (0, 0);
     }
     let to_micros = |t: libc::timeval| {
-        (t.tv_sec as i64).saturating_mul(1_000_000).saturating_add(t.tv_usec as i64)
+        (t.tv_sec)
+            .saturating_mul(1_000_000)
+            .saturating_add(t.tv_usec.into())
     };
     let user = to_micros(usage.ru_utime).max(0) as u64;
     let sys = to_micros(usage.ru_stime).max(0) as u64;
@@ -1212,9 +1214,7 @@ fn op_cjs_resolve<'s>(
 ) {
     let parent = args.get(0).to_rust_string_lossy(scope);
     let request = args.get(1).to_rust_string_lossy(scope);
-    let bad = |s: &str| {
-        s.chars().any(|c| c == '\n' || c == '\r' || c == '\0')
-    };
+    let bad = |s: &str| s.chars().any(|c| c == '\n' || c == '\r' || c == '\0');
     if bad(&parent) || bad(&request) {
         throw_error(scope, "EINVAL: invalid module specifier");
         return;
@@ -3189,13 +3189,10 @@ fn op_proc_spawn<'s>(
         let allowed = state
             .process
             .as_ref()
-            .map_or(true, crate::ops::ProcessConfig::subprocess_allowed);
+            .is_none_or(crate::ops::ProcessConfig::subprocess_allowed);
         if !allowed {
             drop(state);
-            let err = NetError::new(
-                "EPERM",
-                "subprocess spawning is disabled by ProcessConfig",
-            );
+            let err = NetError::new("EPERM", "subprocess spawning is disabled by ProcessConfig");
             let exc = make_node_error(scope, &err);
             scope.throw_exception(exc);
             return;

@@ -114,10 +114,19 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
         .map(|s| s.trim_matches('"').to_owned());
 
     if let Some(provisional) = preselect_output(&accept, &ctx.config.formats) {
-        let key = cache::cache_key(&params.url, params.width, params.quality, provisional.mime());
+        let key = cache::cache_key(
+            &params.url,
+            params.width,
+            params.quality,
+            provisional.mime(),
+        );
         if let Some(hot) = ctx.mem.get(&key) {
             let now = current_unix_ms();
-            let cache_state = if hot.expire_at_ms > now { "HIT" } else { "STALE" };
+            let cache_state = if hot.expire_at_ms > now {
+                "HIT"
+            } else {
+                "STALE"
+            };
             return Ok(serve_hot(
                 &hot,
                 provisional,
@@ -144,10 +153,7 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
         ));
     }
 
-    let max_age = ctx
-        .config
-        .minimum_cache_ttl
-        .max(source.upstream_max_age);
+    let max_age = ctx.config.minimum_cache_ttl.max(source.upstream_max_age);
 
     if detected.is_bypass() || matches!(detected, SourceFormat::Svg) {
         return Ok(serve_bypass(ctx, &params, &source, detected, max_age));
@@ -159,7 +165,11 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
 
     if let Some(hot) = ctx.mem.get(&key) {
         let now = current_unix_ms();
-        let cache_state = if hot.expire_at_ms > now { "HIT" } else { "STALE" };
+        let cache_state = if hot.expire_at_ms > now {
+            "HIT"
+        } else {
+            "STALE"
+        };
         return Ok(serve_hot(
             &hot,
             chosen,
@@ -172,7 +182,11 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
 
     if let Some(hit) = cache::read(&ctx.app_dir, &key) {
         let now = current_unix_ms();
-        let cache_state = if hit.expire_at_ms > now { "HIT" } else { "STALE" };
+        let cache_state = if hit.expire_at_ms > now {
+            "HIT"
+        } else {
+            "STALE"
+        };
         let hot = Arc::new(super::memory::HotEntry::from_disk(&hit));
         ctx.mem.put(key.clone(), Arc::clone(&hot));
         return Ok(serve_hot(
@@ -364,10 +378,7 @@ fn attach_headers(
         headers.insert(ETAG, v);
     }
     if let Ok(v) = HeaderValue::from_str(cache_state) {
-        let _ = headers.insert(
-            axum::http::HeaderName::from_static(X_NEXTJS_CACHE),
-            v,
-        );
+        let _ = headers.insert(axum::http::HeaderName::from_static(X_NEXTJS_CACHE), v);
     }
     if let Ok(v) = HeaderValue::from_str(&cfg.content_security_policy) {
         headers.insert(CONTENT_SECURITY_POLICY, v);
@@ -472,8 +483,8 @@ impl ValidatedParams {
         if width_count > 1 {
             return Err(bad_request("\"w\" parameter (width) cannot be an array"));
         }
-        let width_str = width_raw
-            .ok_or_else(|| bad_request("\"w\" parameter (width) is required"))?;
+        let width_str =
+            width_raw.ok_or_else(|| bad_request("\"w\" parameter (width) is required"))?;
         if !width_str.chars().all(|c| c.is_ascii_digit()) || width_str.is_empty() {
             return Err(bad_request(
                 "\"w\" parameter (width) must be an integer greater than 0",
@@ -496,8 +507,8 @@ impl ValidatedParams {
         if quality_count > 1 {
             return Err(bad_request("\"q\" parameter (quality) cannot be an array"));
         }
-        let quality_str = quality_raw
-            .ok_or_else(|| bad_request("\"q\" parameter (quality) is required"))?;
+        let quality_str =
+            quality_raw.ok_or_else(|| bad_request("\"q\" parameter (quality) is required"))?;
         if !quality_str.chars().all(|c| c.is_ascii_digit()) || quality_str.is_empty() {
             return Err(bad_request(
                 "\"q\" parameter (quality) must be an integer between 1 and 100",
@@ -537,10 +548,7 @@ struct Source {
     config_snapshot: ImageConfig,
 }
 
-async fn resolve_source(
-    ctx: &Arc<Ctx>,
-    params: &ValidatedParams,
-) -> Result<Source, HandlerError> {
+async fn resolve_source(ctx: &Arc<Ctx>, params: &ValidatedParams) -> Result<Source, HandlerError> {
     if params.url.starts_with("http://") || params.url.starts_with("https://") {
         return fetch_remote(ctx, &params.url).await;
     }
@@ -584,24 +592,19 @@ async fn fetch_remote(ctx: &Arc<Ctx>, href: &str) -> Result<Source, HandlerError
     let mut current = parsed.clone();
     let mut redirects_left = ctx.config.maximum_redirects;
     loop {
-        let resp = ctx
-            .http
-            .get(current.as_str())
-            .send()
-            .await
-            .map_err(|err| {
-                if err.is_timeout() {
-                    HandlerError::new(
-                        StatusCode::GATEWAY_TIMEOUT,
-                        "\"url\" parameter is valid but upstream response timed out",
-                    )
-                } else {
-                    HandlerError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "\"url\" parameter is valid but upstream response is invalid",
-                    )
-                }
-            })?;
+        let resp = ctx.http.get(current.as_str()).send().await.map_err(|err| {
+            if err.is_timeout() {
+                HandlerError::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "\"url\" parameter is valid but upstream response timed out",
+                )
+            } else {
+                HandlerError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "\"url\" parameter is valid but upstream response is invalid",
+                )
+            }
+        })?;
         let status = resp.status();
         if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
             let location = resp
@@ -721,12 +724,13 @@ fn percent_decode(input: &str) -> String {
             i += 1;
             continue;
         }
-        if c == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
-                out.push((h << 4) | l);
-                i += 3;
-                continue;
-            }
+        if c == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2]))
+        {
+            out.push((h << 4) | l);
+            i += 3;
+            continue;
         }
         out.push(c);
         i += 1;

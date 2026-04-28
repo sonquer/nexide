@@ -91,14 +91,7 @@ fn delta_table(results: &[BenchResult], protagonist: TargetKind) -> Option<Table
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            "route",
-            "vs",
-            "Δ RPS",
-            "Δ p50",
-            "Δ p95",
-            "Δ p99",
-            "Δ cpu",
-            "Δ mem",
+            "route", "vs", "Δ RPS", "Δ p50", "Δ p95", "Δ p99", "Δ cpu", "Δ mem",
         ]);
     for (route, cells) in &by_route {
         let Some(new) = cells.get(&protagonist) else {

@@ -155,8 +155,8 @@ where
 /// Filesystem layout of a built Next.js project plus the bind address
 /// the runtime should listen on.
 ///
-/// All paths are absolute and verified to exist at construction time
-/// - downstream code can therefore consume them without further I/O
+/// All paths are absolute and verified to exist at construction time;
+/// downstream code can therefore consume them without further I/O
 /// validation. Construct via [`AppLayout::resolve`].
 #[derive(Debug, Clone)]
 pub struct AppLayout {

@@ -26,8 +26,8 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// HTTP shield handler that bridges Axum to the JavaScript handler.
 ///
-/// Generic over the dispatcher to keep the production wiring testable
-/// - the `next_bridge.rs` integration test substitutes an in-memory
+/// Generic over the dispatcher to keep the production wiring testable;
+/// the `next_bridge.rs` integration test substitutes an in-memory
 /// [`EngineDispatcher`] double.
 pub struct NextBridgeHandler<D> {
     dispatcher: Arc<D>,

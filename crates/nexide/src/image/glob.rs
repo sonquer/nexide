@@ -22,9 +22,20 @@ fn matches_impl(p: &[u8], t: &[u8], pi: usize, ti: usize, dot: bool, at_seg: boo
     match p[pi] {
         b'*' if pi + 1 < p.len() && p[pi + 1] == b'*' => {
             let np = pi + 2;
-            let np = if np < p.len() && p[np] == b'/' { np + 1 } else { np };
+            let np = if np < p.len() && p[np] == b'/' {
+                np + 1
+            } else {
+                np
+            };
             for end in ti..=t.len() {
-                if matches_impl(p, t, np, end, dot, end == 0 || t.get(end - 1) == Some(&b'/')) {
+                if matches_impl(
+                    p,
+                    t,
+                    np,
+                    end,
+                    dot,
+                    end == 0 || t.get(end - 1) == Some(&b'/'),
+                ) {
                     return true;
                 }
             }
@@ -36,7 +47,7 @@ fn matches_impl(p: &[u8], t: &[u8], pi: usize, ti: usize, dot: bool, at_seg: boo
                     continue;
                 }
                 let slice = &t[ti..end];
-                if slice.iter().any(|&b| b == b'/') {
+                if slice.contains(&b'/') {
                     break;
                 }
                 if !dot && at_seg && slice.first() == Some(&b'.') {
