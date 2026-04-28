@@ -322,14 +322,81 @@ The most common offenders in Next.js stacks:
   Nexide ships its own native `/_next/image` optimizer (Rust + `image` crate),
   which transparently replaces `sharp` for the built-in image route. Custom
   loaders that call `require('sharp')` directly will still fail.
-- **`@prisma/engines`** (binary engine) — switch to the data-proxy /
-  Accelerate driver, or the WASM engine (`?engineType=wasm`).
+- **`@prisma/engines`** (default binary engine) — **not required**: nexide
+  runs Prisma via the WASM query engine + driver adapters. See
+  [Running Prisma](#running-prisma) below for the exact configuration.
 - **`bcrypt`** native — use `bcryptjs` (pure JS) or `argon2-browser`.
-- **`better-sqlite3`** / `sqlite3` — use HTTP-fronted SQLite (Turso, D1) or a
+- **`better-sqlite3`** / **`sqlite3`** — use HTTP-fronted SQLite (Turso, D1) or a
   pure-JS driver.
 - **`canvas`** (node-canvas) — render server-side via `@napi-rs/canvas`
   alternative? No: also native. Use `satori` + `resvg-js`? Also native. In
   practice: render on the edge or pre-render at build time.
+
+### Running Prisma
+
+Prisma's default binary/library engine is N-API (won't load), but the
+**WASM query engine + driver adapter** path runs end-to-end on nexide today.
+WebAssembly is intrinsic to V8 in nexide builds (verified by the
+`wasm_smoke` test suite), TCP / TLS go through real Tokio + rustls ops,
+and `Buffer` is full-fidelity, so the WASM engine has everything it needs.
+
+**1. Pick a driver adapter for your database** (Postgres example):
+
+```bash
+pnpm add @prisma/client @prisma/adapter-pg pg
+pnpm add -D prisma
+```
+
+**2. Tell Prisma to emit the WASM client in `schema.prisma`:**
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+  engineType      = "wasm"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+**3. Construct the client with the adapter:**
+
+```ts
+// src/lib/prisma.ts
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const adapter = new PrismaPg(pool);
+
+export const prisma = new PrismaClient({ adapter });
+```
+
+**4. Generate + build as usual:**
+
+```bash
+pnpm prisma generate
+pnpm next build
+```
+
+**Caveats:**
+
+- The WASM engine is ~30-40% slower than the native binary engine on
+  cold queries; warm-path latency overhead is single-digit %.
+- Driver adapters available today: `@prisma/adapter-pg` (Postgres),
+  `@prisma/adapter-libsql` (Turso/SQLite over HTTP),
+  `@prisma/adapter-d1` (Cloudflare D1), `@prisma/adapter-planetscale`
+  (PlanetScale serverless). MySQL via `mysql2` works through the
+  community adapter but is not officially supported by Prisma yet.
+- Migrations (`prisma migrate dev`/`deploy`) still use the native binary
+  CLI — run them at build/deploy time, not inside the nexide container.
+- `process.env.DATABASE_URL` must be on the env allow-list (nexide
+  whitelists `NEXT_*`, `NODE_*`, `DATABASE_*`, `POSTGRES_*` by default;
+  otherwise extend `NEXIDE_ENV_ALLOW`).
 
 ### HTTP/2 server / client
 
