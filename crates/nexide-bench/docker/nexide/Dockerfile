@@ -20,7 +20,7 @@ COPY crates ./crates
 RUN cargo build --release -p nexide && \
     strip target/release/nexide
 
-FROM node:20-bookworm-slim AS next-builder
+FROM node:24-bookworm-slim AS next-builder
 WORKDIR /build/example
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1
@@ -29,7 +29,7 @@ RUN npm install --no-audit --no-fund
 COPY example/ ./
 RUN npx next build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 WORKDIR /app/example
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY example/package.json example/package-lock.json ./

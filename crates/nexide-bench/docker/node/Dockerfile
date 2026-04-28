@@ -7,7 +7,7 @@
 #
 # Build context: workspace root (only `example/` is needed).
 
-FROM node:20-bookworm-slim AS next-builder
+FROM node:24-bookworm-slim AS next-builder
 WORKDIR /build/example
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1
@@ -16,7 +16,7 @@ RUN npm install --no-audit --no-fund
 COPY example/ ./
 RUN npx next build
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
