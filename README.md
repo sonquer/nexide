@@ -285,6 +285,112 @@ docker build -t nexide:dev .
 docker run --rm -p 3000:3000 -v "$(pwd)/example:/app:ro" nexide:dev
 ```
 
+## Migrating from Node.js or Deno
+
+Nexide uses Next.js's standard `output: 'standalone'` build artefact, so the
+build pipeline does not change. Only the runtime stage of your Dockerfile
+needs swapping. Make sure your `next.config.js` has:
+
+```js
+module.exports = {
+  output: 'standalone',
+};
+```
+
+### From Node.js
+
+**Before** (typical Node.js Dockerfile):
+
+```dockerfile
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+**After** (Nexide):
+
+```dockerfile
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm build
+
+FROM ghcr.io/sonquer/nexide:latest AS runtime
+WORKDIR /app
+COPY --from=builder --chown=nexide:nexide /app/.next/standalone ./
+COPY --from=builder --chown=nexide:nexide /app/.next/static ./.next/static
+COPY --from=builder --chown=nexide:nexide /app/public ./public
+EXPOSE 3000
+# ENTRYPOINT and CMD are inherited from the Nexide image
+```
+
+What changed:
+
+- Runtime image: `node:22-alpine` → `ghcr.io/sonquer/nexide:latest`.
+- No `CMD ["node", "server.js"]`. The Nexide image already entrypoints into
+  the runtime and serves whatever is mounted at `/app`.
+- `--chown=nexide:nexide` because the Nexide image runs as the non-root
+  `nexide` user (uid 10001).
+
+### From Deno
+
+**Before** (typical Deno Dockerfile):
+
+```dockerfile
+FROM denoland/deno:2.0.0 AS builder
+WORKDIR /app
+COPY . .
+RUN deno task build
+
+FROM denoland/deno:2.0.0 AS runtime
+WORKDIR /app
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+EXPOSE 3000
+CMD ["deno", "run", "-A", "--unstable-node-modules-dir", "server.js"]
+```
+
+**After** (Nexide): identical to the Node.js "after" example above. Nexide
+does not care which runtime built the bundle, only that the resulting
+`.next/standalone` directory is laid out correctly.
+
+### Pinning to a specific Nexide version
+
+Production images should pin a full version, not `latest`:
+
+```dockerfile
+FROM ghcr.io/sonquer/nexide:0.1.0 AS runtime
+```
+
+Nexide is pre-1.0 and the runtime ABI is unstable. A point release can
+change which Node.js compatibility surface ships, which heap defaults are
+applied, and which environment variables are read. Pin, then upgrade
+deliberately.
+
+### Environment variables
+
+| Variable        | Default          | Effect                                   |
+|-----------------|------------------|------------------------------------------|
+| `NEXIDE_BIND`   | `0.0.0.0:3000`   | Listen address. Set to `0.0.0.0:8080` for typical k8s.   |
+| `RUST_LOG`      | `info`           | Standard `tracing-subscriber` filter syntax.             |
+| `NODE_ENV`      | inherited        | Forwarded to the JS runtime; Next.js reads it.           |
+| `NEXT_*`        | inherited        | Whitelisted into `process.env` for Next.js.              |
+| `NEXT_PUBLIC_*` | inherited        | Whitelisted for client-side env injection.               |
+
 ## Building and testing
 
 ```bash
