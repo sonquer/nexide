@@ -51,13 +51,13 @@ pub trait EngineDispatcher: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// See [`DispatchError`] — propagates worker, engine and response
+    /// See [`DispatchError`] - propagates worker, engine and response
     /// failures to the caller (Axum maps them to HTTP `502` /
     /// `504`).
     async fn dispatch(&self, request: ProtoRequest) -> Result<ResponsePayload, DispatchError>;
 
     /// Total number of requests dispatched since the worker started
-    /// (Query — telemetry only, no side effects).
+    /// (Query - telemetry only, no side effects).
     fn dispatch_count(&self) -> usize;
 }
 

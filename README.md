@@ -1,5 +1,3 @@
-# Nexide
-
 <p align="center">
   <img src="./img/nexide.png" alt="Nexide logo" width="420" />
 </p>
@@ -43,7 +41,7 @@ optimised for the Next.js critical path. Nexide asks a narrower question:
 
 ## Benchmarks
 
-All numbers below come from `nexide-bench docker-suite`: 4 routes × 3 runtimes
+All numbers below come from `nexide-bench docker-suite`: 5 routes × 3 runtimes
 × 4 container presets × 30 s window @ 64 connections, on identical Docker
 images of the same Next.js 16 application.
 
@@ -52,35 +50,43 @@ server), `deno` (Deno 2.x with `--unstable-node-modules-dir`).
 
 ### 1 vCPU, 512 MB RAM (typical small container)
 
-| Route        | Runtime | RPS    | p50    | p95    | p99    | Mem avg |
-|--------------|---------|-------:|-------:|-------:|-------:|--------:|
-| `api/ping`   | nexide  |  4 790 |  9.3ms | 43.0ms | 55.7ms |  196 MB |
-| `api/ping`   | node    |  2 667 | 18.0ms | 45.3ms | 57.2ms |   57 MB |
-| `api/ping`   | deno    |  3 094 | 13.7ms | 53.4ms | 64.8ms |   84 MB |
-| `api/time`   | nexide  |  4 672 |  9.5ms | 43.2ms | 58.0ms |  158 MB |
-| `api/time`   | node    |  2 604 | 18.2ms | 46.6ms | 68.7ms |   55 MB |
-| `ssg/about`  | nexide  | 14 474 |  4.1ms |  6.2ms |  7.7ms |  218 MB |
-| `ssg/about`  | node    |  3 511 | 14.6ms | 39.3ms | 49.7ms |   54 MB |
-| `rsc/about`  | nexide  | 20 829 |  2.6ms |  5.0ms |  7.8ms |  218 MB |
-| `rsc/about`  | node    |  3 548 | 14.1ms | 39.5ms | 50.4ms |   56 MB |
+| Route          | Runtime | RPS    | p50    | p95    | p99    | Mem avg | CPU avg |
+|----------------|---------|-------:|-------:|-------:|-------:|--------:|--------:|
+| `api/ping`     | nexide  |  4 664 |  9.9ms | 39.7ms | 52.0ms |  171 MB |   97.9% |
+| `api/ping`     | node    |  2 562 | 18.9ms | 47.7ms | 59.7ms |   60 MB |   97.9% |
+| `api/ping`     | deno    |  2 994 | 14.1ms | 54.4ms | 61.2ms |  103 MB |   97.3% |
+| `api/time`     | nexide  |  4 658 | 10.0ms | 40.4ms | 54.4ms |  146 MB |   97.8% |
+| `api/time`     | node    |  2 531 | 19.0ms | 47.7ms | 64.8ms |   60 MB |   97.8% |
+| `ssg/about`    | nexide  | 14 130 |  4.3ms |  6.2ms |  7.2ms |  174 MB |   92.3% |
+| `ssg/about`    | node    |  3 343 | 15.3ms | 41.1ms | 51.1ms |   59 MB |   98.4% |
+| `rsc/about`    | nexide  | 20 846 |  2.7ms |  4.8ms |  9.0ms |  173 MB |  104.1% |
+| `rsc/about`    | node    |  3 360 | 15.0ms | 41.4ms | 53.7ms |   59 MB |   98.4% |
+| `_next/image`  | nexide  | 13 159 |  4.8ms |  6.5ms |  7.5ms |  175 MB |   29.2% |
+| `_next/image`  | node    |  5 934 |  6.5ms | 41.6ms | 52.3ms |   69 MB |   97.6% |
+| `_next/image`  | deno    |  5 568 |  7.3ms | 41.3ms | 51.8ms |  126 MB |   97.9% |
+
+The `_next/image` row is the headline: same image, same query string, same
+`Accept: image/webp` — Nexide answers it from a native Rust pipeline (decode
+→ resize → encode → in-memory LRU + on-disk cache) and never enters V8. CPU
+sits at ~30% under the same load that pegs Node and Deno at 100%.
 
 ### RPS uplift vs Node.js across all four container presets
 
-| Preset           | api-ping RPS | api-time RPS | ssg RPS  | rsc RPS  |
-|------------------|-------------:|-------------:|---------:|---------:|
-| 1 vCPU /  256 MB |       +66.3% |       +58.1% |  +302.5% |  +472.9% |
-| 1 vCPU /  512 MB |       +79.6% |       +79.4% |  +312.2% |  +487.0% |
-| 1 vCPU / 1024 MB |       +57.9% |       +59.0% |  +289.6% |  +447.3% |
-| 2 vCPU / 1024 MB |      +137.7% |      +144.8% |  +240.0% |  +381.9% |
+| Preset           | api-ping | api-time |  ssg     |  rsc     | _next/image |
+|------------------|---------:|---------:|---------:|---------:|------------:|
+| 1 vCPU /  256 MB |   +71.1% |   +64.9% |  +303.1% |  +478.1% |     +110.9% |
+| 1 vCPU /  512 MB |   +82.1% |   +84.1% |  +322.7% |  +520.4% |     +121.8% |
+| 1 vCPU / 1024 MB |   +58.1% |   +76.5% |  +302.7% |  +490.6% |      +52.9% |
+| 2 vCPU / 1024 MB |  +145.2% |  +130.5% |  +230.7% |  +394.3% |       +6.0% |
 
 ### RPS uplift vs Deno across all four container presets
 
-| Preset           | api-ping RPS | api-time RPS | ssg RPS  | rsc RPS  |
-|------------------|-------------:|-------------:|---------:|---------:|
-| 1 vCPU /  256 MB |       +54.8% |       +42.0% |  +272.2% |  +414.1% |
-| 1 vCPU /  512 MB |       +58.0% |       +62.8% |  +270.6% |  +414.4% |
-| 1 vCPU / 1024 MB |        +5.4% |        +3.7% |  +198.1% |  +258.3% |
-| 2 vCPU / 1024 MB |       +38.0% |       +43.9% |  +122.1% |  +174.9% |
+| Preset           | api-ping | api-time |  ssg     |  rsc     | _next/image |
+|------------------|---------:|---------:|---------:|---------:|------------:|
+| 1 vCPU /  256 MB |   +49.8% |   +46.9% |  +261.3% |  +411.9% |     +112.7% |
+| 1 vCPU /  512 MB |   +55.8% |   +65.6% |  +279.5% |  +458.5% |     +136.3% |
+| 1 vCPU / 1024 MB |    +8.0% |   +17.9% |  +206.8% |  +280.4% |      +61.4% |
+| 2 vCPU / 1024 MB |   +44.3% |   +33.8% |  +140.6% |  +206.9% |      +11.0% |
 
 Deno closes the gap noticeably on dynamic API routes once it has 1 GB of RAM
 to play with (its V8 instance gets room for code-cache + JIT tiering), but
@@ -94,16 +100,23 @@ JavaScript entirely on Nexide.
 - **Route handlers are ~60-80% faster on a single core, ~140% faster on two.**
   V8 dispatch overhead is the dominant cost; Rust does not magically make your
   JS faster, it makes the path *to* your JS shorter.
+- **`/_next/image` is 2x faster at one third of the CPU.** Image optimization
+  in Node/Deno goes through the JS `image-optimizer` + `sharp`; in Nexide it
+  is a fully native Rust pipeline (`image` + `webp` + `imagequant`) with a
+  bounded in-memory LRU in front of the on-disk cache. CPU stays low even
+  under saturation, leaving headroom for the rest of the app. The advantage
+  shrinks at 2 vCPU because the JS path can finally use the second core.
 - **Memory cost is real.** Nexide uses 2-4x the memory of Node.js because it
   pre-warms a pool of V8 isolates. This is the central trade-off.
-- **CPU utilisation is broadly comparable.** No magic; the wins come from
-  parallelism in the pool and a leaner request path, not from running V8 less.
+- **CPU utilisation is broadly comparable on JS routes.** No magic; the wins
+  come from parallelism in the pool and a leaner request path, not from
+  running V8 less.
 
 Reproduce locally:
 
 ```bash
 cargo run --release -p nexide-bench -- docker-suite \
-    --routes api-ping,api-time,ssg-about,rsc-about \
+    --routes api-ping,api-time,ssg-about,rsc-about,next-image \
     --runtimes nexide,node,deno \
     --presets 1cpu-512mb,2cpu-1024mb \
     --duration 30s --connections 64
@@ -137,39 +150,68 @@ curl -s http://127.0.0.1:3000/api/ping
                            │  (crates/nexide/src/server)  │
                            └──────────────┬───────────────┘
                                           │
-                ┌─────────────────────────┴─────────────────────────┐
-                │                                                   │
-       static / prerender                                    dynamic dispatch
-       (Rust, no V8)                                                │
-       ssg, rsc, _next/static, public                               │
-                                                                    ▼
-                                                ┌────────────────────────────────┐
-                                                │  EngineDispatcher              │
-                                                │  (crates/nexide/src/dispatch)  │
-                                                └────────────────┬───────────────┘
-                                                                 │
-                                                                 ▼
-                                                ┌────────────────────────────────┐
-                                                │  IsolatePool: hot V8 isolates  │
-                                                │  (crates/nexide/src/pool)      │
-                                                │  + per-isolate event pump      │
-                                                │  + RecyclePolicy (heap/req)    │
-                                                └────────────────┬───────────────┘
-                                                                 │
-                                                                 ▼
-                                                ┌────────────────────────────────┐
-                                                │  V8 isolate (raw rusty_v8)     │
-                                                │  + Node compat polyfills (JS)  │
-                                                │  + Rust ops bridge (op_*)      │
-                                                │  (crates/nexide/src/engine,    │
-                                                │   crates/nexide/runtime)       │
-                                                └────────────────────────────────┘
+        ┌─────────────────────────────────┼─────────────────────────────────┐
+        │                                 │                                 │
+ static / prerender               /_next/image                       dynamic dispatch
+ (Rust, no V8)                    (Rust, no V8)                            │
+ ssg, rsc,                        decode → resize → encode                 │
+ _next/static (immutable),        + in-mem LRU + on-disk cache             │
+ public                           (crates/nexide/src/image)                │
+                                                                           ▼
+                                                 ┌────────────────────────────────┐
+                                                 │  EngineDispatcher              │
+                                                 │  (crates/nexide/src/dispatch)  │
+                                                 └────────────────┬───────────────┘
+                                                                  │
+                                                                  ▼
+                                                 ┌────────────────────────────────┐
+                                                 │  IsolatePool: hot V8 isolates  │
+                                                 │  (crates/nexide/src/pool)      │
+                                                 │  + per-isolate event pump      │
+                                                 │  + RecyclePolicy (heap/req)    │
+                                                 └────────────────┬───────────────┘
+                                                                  │
+                                                                  ▼
+                                                 ┌────────────────────────────────┐
+                                                 │  V8 isolate (raw rusty_v8)     │
+                                                 │  + Node compat polyfills (JS)  │
+                                                 │  + Rust ops bridge (op_*)      │
+                                                 │  (crates/nexide/src/engine,    │
+                                                 │   crates/nexide/runtime)       │
+                                                 └────────────────────────────────┘
 ```
 
 The runtime does **not** depend on `deno_core`, `deno_runtime`, `node-api`,
 or `napi`. V8 is embedded directly via the [`v8`](https://crates.io/crates/v8)
 crate (v147), which gives full control over isolate lifecycle, microtask
 checkpoints, heap limits, and the op call ABI.
+
+### Native `/_next/image` optimizer
+
+Image optimization is the second hot-path that bypasses V8 entirely. Nexide
+ships a Next.js-compatible `/_next/image` implementation in
+`crates/nexide/src/image/` that mirrors Next 16.2.4 behaviour:
+
+- **Validation** — same `images:` config from `next.config.mjs`
+  (`deviceSizes`, `imageSizes`, `formats`, `qualities`, `domains`,
+  `remotePatterns`, `localPatterns`, `dangerouslyAllowSVG`,
+  `contentDispositionType`, `minimumCacheTTL`).
+- **Source resolution** — local files under `public/` and `.next/static/`
+  via a canonicalising `FsResolver`, plus remote fetch with allow-list
+  matching (`picomatch`-style globs).
+- **Pipeline** — decode (PNG/JPEG/WebP/GIF/AVIF/SVG), resize (Lanczos3),
+  encode WebP/AVIF/JPEG/PNG with quality-aware quantisation
+  (`imagequant` for PNG palette, `webp` for WebP, `ravif` for AVIF).
+- **Caching** — bounded in-memory LRU (256 entries / 64 MB, zero-copy
+  `bytes::Bytes`) in front of an SHA-256-keyed on-disk cache that respects
+  the upstream `Cache-Control` and `minimumCacheTTL`. Repeat requests are
+  answered with `x-nextjs-cache: HIT` without ever resolving the source.
+- **`/_next/static` immutable** — Next.js's hashed asset folder is served
+  with `Cache-Control: public, max-age=31536000, immutable` so browsers and
+  CDNs can cache forever.
+
+The benchmark above (`_next/image` row) measures exactly this path against
+Next.js's own JS-based optimizer running in Node 22 / Deno 2.
 
 ## Repository layout
 
@@ -345,7 +387,7 @@ What changed:
 
 - Runtime image: `node:22-alpine` → `ghcr.io/sonquer/nexide:latest`.
 - `CMD ["node", "server.js"]` is **replaced** by the inherited Nexide
-  entrypoint `nexide start /app`. There is no `node` process — Nexide
+  entrypoint `nexide start /app`. There is no `node` process - Nexide
   loads the standalone bundle directly into V8.
 - `--chown=nexide:nexide` because the Nexide image runs as the non-root
   `nexide` user (uid 10001).
@@ -393,7 +435,7 @@ What changed:
 - `CMD ["deno", "run", "-A", "--unstable-node-modules-dir", "server.js"]`
   is **replaced** by the inherited Nexide entrypoint `nexide start /app`.
   No `-A` permission flags, no `--unstable-*` flags, no `node_modules`
-  resolver toggles — Nexide loads the Next.js standalone bundle directly
+  resolver toggles - Nexide loads the Next.js standalone bundle directly
   into V8 via its native HTTP server.
 - `--chown=nexide:nexide` because Nexide runs as the non-root `nexide`
   user (uid 10001).
@@ -565,3 +607,19 @@ Nexide stands on the shoulders of [V8](https://v8.dev),
 Deno project maintains), [Tokio](https://tokio.rs),
 [Axum](https://github.com/tokio-rs/axum), [Hyper](https://hyper.rs), and the
 WHATWG / Node.js spec bodies whose work made any of this tractable.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=sonquer%2Fnexide&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&legend=top-left" />
+ </picture>
+</a>
+
+## Contributors Hall of Fame
+
+<a href="https://github.com/sonquer/nexide/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=sonquer/nexide" alt="Nexide contributors" />
+</a>

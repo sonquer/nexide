@@ -2,7 +2,7 @@
 //!
 //! Maintains a `HashMap<PathBuf, v8::Global<v8::Module>>` keyed by
 //! the absolute filesystem path of each loaded module. Resolution is
-//! filesystem-relative — the entrypoint's parent directory is the
+//! filesystem-relative - the entrypoint's parent directory is the
 //! anchor for relative imports. `node_modules` walks and Next.js
 //! bundle rewrites are handled by the resolver layer.
 
@@ -15,7 +15,7 @@ use crate::engine::EngineError;
 ///
 /// Lookup is path-keyed; the same source loaded under two different
 /// path normalisations would compile twice. `canonicalize` is *not*
-/// applied — symlink-aware semantics belong to the resolver layer
+/// applied - symlink-aware semantics belong to the resolver layer
 /// (the resolver layer is responsible for symlink-aware semantics).
 #[derive(Default)]
 pub(super) struct ModuleMap {

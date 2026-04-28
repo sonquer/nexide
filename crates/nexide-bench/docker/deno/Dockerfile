@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Deno bench image — runs the canonical Next.js standalone bundle on
+# Deno bench image - runs the canonical Next.js standalone bundle on
 # Deno's Node-compatibility runtime so the comparison is apples-to-
 # apples with `nexide` and `node`.
 #

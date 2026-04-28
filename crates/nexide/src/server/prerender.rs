@@ -6,7 +6,7 @@
 //! isolate, dropping TTFB from ~20ms (full dispatch) down to a single
 //! `fs::metadata` call plus a memcpy from the in-process cache.
 //!
-//! Freshness is validated via `mtime + size` — when ISR regenerates a
+//! Freshness is validated via `mtime + size` - when ISR regenerates a
 //! prerender (writing a new `.html`/`.meta` pair on disk), the next
 //! request observes the change and reloads the cache entry.
 
@@ -181,7 +181,7 @@ fn resolve_asset(inner: &PrerenderInner, key: &str, is_rsc: bool) -> Option<Cach
 }
 
 /// Returns `true` when the file at `<root>/<key>` matches the cached
-/// entry's mtime + size — i.e. the cache is still authoritative.
+/// entry's mtime + size - i.e. the cache is still authoritative.
 fn file_matches(root: &Path, key: &str, asset: &CachedAsset) -> bool {
     let Ok(meta) = std::fs::metadata(root.join(key)) else {
         return false;
@@ -194,7 +194,7 @@ fn file_matches(root: &Path, key: &str, asset: &CachedAsset) -> bool {
 
 /// Loads `<root>/<key>` and its `.meta` sidecar (if present) into a
 /// freshly built [`CachedAsset`]. Returns `None` when the payload is
-/// missing — the request will fall through to the dynamic handler.
+/// missing - the request will fall through to the dynamic handler.
 fn load_asset(root: &Path, key: &str, is_rsc: bool) -> Option<CachedAsset> {
     let payload_path = root.join(key);
     let meta = std::fs::metadata(&payload_path).ok()?;
@@ -222,7 +222,7 @@ fn load_asset(root: &Path, key: &str, is_rsc: bool) -> Option<CachedAsset> {
 
 /// Reads the `<key-without-suffix>.meta` JSON sidecar and converts
 /// recognized header keys into `(HeaderName, HeaderValue)` pairs.
-/// Unknown / malformed keys are silently dropped — Next.js owns this
+/// Unknown / malformed keys are silently dropped - Next.js owns this
 /// schema and we never want a bad sidecar to break the hot path.
 fn load_meta_headers(root: &Path, key: &str) -> Vec<(HeaderName, HeaderValue)> {
     let Some((stem, _ext)) = key.rsplit_once('.') else {
@@ -247,7 +247,7 @@ fn load_meta_headers(root: &Path, key: &str) -> Vec<(HeaderName, HeaderValue)> {
 }
 
 /// Stable content-addressed `ETag` (SHA-1, base16 truncated to 13
-/// chars — same width Next.js produces). Quoting matches RFC 7232
+/// chars - same width Next.js produces). Quoting matches RFC 7232
 /// strong-validator syntax.
 fn compute_etag(bytes: &[u8]) -> String {
     let digest = Sha1::digest(bytes);

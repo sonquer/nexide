@@ -7,20 +7,20 @@
 
 /// Order matters: each polyfill builds on the previous ones.
 ///
-/// 1. `nexide_bridge.js` — wraps raw ops in the `__nexide` façade.
-/// 2. `console.js`       — replaces V8 default `console`.
-/// 3. `process.js`       — installs `globalThis.process`.
-/// 4. `buffer.js`        — Node-style `Buffer`.
-/// 5. `timers.js`        — `setTimeout` / `setInterval` /
+/// 1. `nexide_bridge.js` - wraps raw ops in the `__nexide` façade.
+/// 2. `console.js`       - replaces V8 default `console`.
+/// 3. `process.js`       - installs `globalThis.process`.
+/// 4. `buffer.js`        - Node-style `Buffer`.
+/// 5. `timers.js`        - `setTimeout` / `setInterval` /
 ///    `queueMicrotask`.
-/// 6. `web_apis.js`      — `TextEncoder`, `URL`, etc.
-/// 7. `async_local_storage.js` — `AsyncLocalStorage`.
-/// 8. `late_globals.js`  — final `globalThis.*` shims that
+/// 6. `web_apis.js`      - `TextEncoder`, `URL`, etc.
+/// 7. `async_local_storage.js` - `AsyncLocalStorage`.
+/// 8. `late_globals.js`  - final `globalThis.*` shims that
 ///    intentionally run after every other polyfill.
-/// 9. `http_bridge.js`   — receives requests and dispatches to the
+/// 9. `http_bridge.js`   - receives requests and dispatches to the
 ///    user-supplied handler installed via
 ///    `globalThis.__nexide_handler`.
-/// 10. `cjs_loader.js`   — `require()` shim used by Next.js bundles.
+/// 10. `cjs_loader.js`   - `require()` shim used by Next.js bundles.
 pub(super) const POLYFILL_SCRIPTS: &[(&str, &str)] = &[
     (
         "nexide:nexide_bridge.js",

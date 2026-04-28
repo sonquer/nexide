@@ -1,4 +1,4 @@
-// node:perf_hooks — minimal `performance` surface backed by Date.now.
+// node:perf_hooks - minimal `performance` surface backed by Date.now.
 
 (function () {
   const start = Date.now();

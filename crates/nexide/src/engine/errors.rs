@@ -14,10 +14,10 @@ use thiserror::Error;
 /// hierarchy down to three categories that the rest of the runtime can
 /// react to meaningfully:
 ///
-/// * [`EngineError::Bootstrap`] — V8 / `JsRuntime` could not be created.
-/// * [`EngineError::ModuleResolution`] — the entrypoint cannot be located
+/// * [`EngineError::Bootstrap`] - V8 / `JsRuntime` could not be created.
+/// * [`EngineError::ModuleResolution`] - the entrypoint cannot be located
 ///   or read from disk.
-/// * [`EngineError::JsRuntime`] — a JavaScript-level failure (uncaught
+/// * [`EngineError::JsRuntime`] - a JavaScript-level failure (uncaught
 ///   exception, parse error, evaluation termination, ...).
 #[derive(Debug, Error)]
 pub enum EngineError {

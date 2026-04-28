@@ -1,6 +1,6 @@
 "use strict";
 
-// node:https — thin wrapper that forwards to the `node:http` client
+// node:https - thin wrapper that forwards to the `node:http` client
 // pipeline with a default `https:` protocol so the same
 // `op_http_request` host op handles plain and TLS-secured requests
 // (reqwest auto-selects based on the URL scheme).

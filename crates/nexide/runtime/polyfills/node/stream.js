@@ -1,6 +1,6 @@
 "use strict";
 
-// node:stream — minimal Readable/Writable/Duplex/Transform/PassThrough
+// node:stream - minimal Readable/Writable/Duplex/Transform/PassThrough
 // implementation sufficient for the surface Next.js standalone uses
 // (mostly Readable.from + pipeline + finished + simple piping).
 

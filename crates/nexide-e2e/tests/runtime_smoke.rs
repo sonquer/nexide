@@ -14,7 +14,7 @@ use tokio::time::timeout;
 /// Run explicitly with:
 /// `cargo test -p nexide-e2e -- --ignored runtime_smoke`.
 #[tokio::test]
-#[ignore = "exercises full runtime boot — gated behind --ignored"]
+#[ignore = "exercises full runtime boot - gated behind --ignored"]
 async fn shuts_down_when_external_signal_resolves() {
     let (tx, rx) = oneshot::channel::<()>();
 

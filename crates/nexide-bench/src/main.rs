@@ -1,4 +1,4 @@
-//! `nexide-bench` — head-to-head benchmark CLI.
+//! `nexide-bench` - head-to-head benchmark CLI.
 //!
 //! Two execution modes:
 //! - `docker` / `docker-suite`: drive the bench inside resource-capped

@@ -16,8 +16,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::http::HeaderValue;
+use axum::http::header::CACHE_CONTROL;
 use thiserror::Error;
 use tokio::net::TcpListener;
+use tower::ServiceBuilder;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 pub use self::accept_loop::{AcceptError, run_accept_loop};
@@ -53,11 +57,11 @@ pub enum ServerError {
 /// injected dynamic handler.
 ///
 /// Layering (highest priority first):
-///   1. `/_next/static/*` — build chunks served zero-copy.
-///   2. `/<route>` — `public/` static files (zero-copy).
-///   3. `/<route>` — prerendered HTML/RSC out of `app_dir` (RAM cache,
+///   1. `/_next/static/*` - build chunks served zero-copy.
+///   2. `/<route>` - `public/` static files (zero-copy).
+///   3. `/<route>` - prerendered HTML/RSC out of `app_dir` (RAM cache,
 ///      mtime-validated). Bypasses V8 entirely for SSG/ISR pages.
-///   4. `/<route>` — dynamic handler (V8 isolate pool) for everything
+///   4. `/<route>` - dynamic handler (V8 isolate pool) for everything
 ///      else (API routes, force-dynamic SSR, not-found, etc.).
 ///
 /// The router is decoupled from any concrete [`DynamicHandler`]
@@ -68,11 +72,20 @@ pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Rou
     let dynamic = static_assets::dynamic_service(handler);
     let prerender = prerender::prerender_with_fallback(cfg.app_dir().to_path_buf(), dynamic);
     let public = static_assets::public_with_fallback_service(cfg.public_dir(), prerender);
+    let next_image = crate::image::next_image_service(
+        cfg.app_dir().to_path_buf(),
+        cfg.public_dir().to_path_buf(),
+    );
+    let immutable_cache = ServiceBuilder::new().layer(SetResponseHeaderLayer::overriding(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    ));
     Router::new()
         .nest_service(
             "/_next/static",
-            static_assets::next_static_only(cfg.next_static_dir()),
+            immutable_cache.service(static_assets::next_static_only(cfg.next_static_dir())),
         )
+        .nest_service("/_next/image", next_image)
         .fallback_service(public)
         .layer(TraceLayer::new_for_http())
 }
@@ -109,7 +122,7 @@ where
 /// per-worker fast path.
 ///
 /// Recognised values are `0`, `false`, `off`, `no` (case-insensitive).
-/// Any other value — or unset — keeps the fast path enabled on Linux.
+/// Any other value - or unset - keeps the fast path enabled on Linux.
 ///
 /// On non-Linux platforms (`target_os != "linux"`) the env var is
 /// ignored: the shared-listener path is the only supported model
@@ -136,12 +149,12 @@ pub fn reuseport_disabled_by_env(raw: Option<&str>) -> bool {
 /// V8 isolate, and its own copy of the Axum router. Two acceptance
 /// strategies are supported:
 ///
-/// 1. **Linux fast path** — every worker binds its own
+/// 1. **Linux fast path** - every worker binds its own
 ///    `TcpListener` with `SO_REUSEPORT`; the kernel distributes
 ///    incoming connections via 4-tuple hash. There is no central
 ///    accept loop, no mpsc hop, and the main reactor only awaits
 ///    `shutdown` and broadcasts it to every worker.
-/// 2. **Shared-listener fallback** — the main reactor
+/// 2. **Shared-listener fallback** - the main reactor
 ///    binds a single [`TcpListener`] and runs [`run_accept_loop`]
 ///    which routes incoming connections to per-worker mpsc
 ///    mailboxes via adaptive *power of two choices* over their
@@ -182,7 +195,7 @@ where
         Err(ReusePortFallback { reason, shutdown }) => {
             tracing::warn!(
                 %reason,
-                "SO_REUSEPORT fast path unavailable — falling back to shared listener"
+                "SO_REUSEPORT fast path unavailable - falling back to shared listener"
             );
             serve_with_shared_listener(cfg, entrypoint, worker_count, shutdown).await
         }

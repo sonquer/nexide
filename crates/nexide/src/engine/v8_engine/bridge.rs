@@ -1,10 +1,10 @@
-//! Per-isolate bridge state — the single point of contact between
+//! Per-isolate bridge state - the single point of contact between
 //! `__nexide` ops and the host runtime.
 //!
 //! [`BridgeState`] is parked in V8's isolate slot so any
 //! [`v8::FunctionCallback`] can pull it out without indirection. Every
 //! op in [`super::ops_bridge`] reads / mutates this struct, never the
-//! enclosing [`super::V8Engine`] directly — the engine merely owns
+//! enclosing [`super::V8Engine`] directly - the engine merely owns
 //! the state's lifetime.
 
 use std::cell::RefCell;

@@ -25,7 +25,7 @@ pub(super) type DynamicService = BoxCloneSyncService<Request<Body>, Response<Bod
 ///
 /// `ServeDir::fallback` keeps the inner service's response intact
 /// (unlike `not_found_service`, which forces HTTP 404). This lets the
-/// fallback chain return arbitrary status codes — e.g. 200 for SSR
+/// fallback chain return arbitrary status codes - e.g. 200 for SSR
 /// hits, 501 while the bridge is unimplemented, 502 on engine errors.
 pub(super) type PublicService = ServeDir<DynamicService>;
 
@@ -42,7 +42,7 @@ pub(super) fn public_with_fallback_service(
 
 /// Builds the service serving `_next/static/` chunks only.
 ///
-/// No fallback is wired here on purpose — the chunk set is fully
+/// No fallback is wired here on purpose - the chunk set is fully
 /// determined at build time, so a missing chunk is a build error
 /// rather than an SSR concern.
 pub(super) fn next_static_only(next_static_dir: &Path) -> ServeDir {

@@ -1,12 +1,12 @@
 "use strict";
 
-// node:http — full Node-shaped surface backed by the `__nexide`
+// node:http - full Node-shaped surface backed by the `__nexide`
 // handler stack on the server side and by the `op_http_*` host ops
 // on the client side.
 //
 // **Server**: `Server` registers a function with
 // `globalThis.__nexide.pushHandler` at `listen()` time; `close()`
-// pops it. Only the top-of-stack handler receives traffic — fresh
+// pops it. Only the top-of-stack handler receives traffic - fresh
 // listeners preempt older ones, and closing the top one hands
 // traffic back to the previous server (LIFO). The Rust shield
 // never opens a real socket on behalf of the JS code; `address()`

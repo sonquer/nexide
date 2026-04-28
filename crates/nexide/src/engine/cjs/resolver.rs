@@ -68,7 +68,7 @@ impl Resolved {
     }
 }
 
-/// Resolves `require(...)` specifiers (Query — pure).
+/// Resolves `require(...)` specifiers (Query - pure).
 pub trait CjsResolver: Send + Sync + 'static {
     /// Resolves `request` from the perspective of `parent`.
     ///
@@ -82,6 +82,18 @@ pub trait CjsResolver: Send + Sync + 'static {
     /// Returns the source of a `node:*` builtin, or `None` if no
     /// builtin with that name is registered.
     fn builtin_source(&self, name: &str) -> Option<&'static str>;
+
+    /// Reports whether `path` lies inside one of the resolver's
+    /// configured roots.
+    ///
+    /// Used by the op layer to re-validate file specifiers that the JS
+    /// guest hands back through `op_cjs_read_source`. The default
+    /// implementation accepts everything - only the production
+    /// [`FsResolver`] enforces a real boundary; test resolvers usually
+    /// run unsandboxed.
+    fn is_path_admitted(&self, _path: &Path) -> bool {
+        true
+    }
 }
 
 /// File-system-backed resolver scoped to a list of project roots.
@@ -117,6 +129,15 @@ impl FsResolver {
         raw.canonicalize().unwrap_or(raw)
     }
 
+    /// Public accessor for the private root-containment check.
+    ///
+    /// Exposed so callers (notably `op_cjs_read_source`) can re-validate
+    /// arbitrary specifiers handed back by JS.
+    #[must_use]
+    pub fn within_roots_pub(&self, path: &Path) -> bool {
+        self.within_roots(path)
+    }
+
     fn within_roots(&self, path: &Path) -> bool {
         let canonical = path.canonicalize().ok();
         let probe = canonical.as_deref().unwrap_or(path);
@@ -128,6 +149,7 @@ impl FsResolver {
     }
 
     fn classify(path: PathBuf) -> Resolved {
+        let path = path.canonicalize().unwrap_or(path);
         if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
@@ -363,6 +385,10 @@ impl CjsResolver for FsResolver {
 
     fn builtin_source(&self, name: &str) -> Option<&'static str> {
         self.registry.lookup(name).map(|m| m.source())
+    }
+
+    fn is_path_admitted(&self, path: &Path) -> bool {
+        self.within_roots_pub(path)
     }
 }
 

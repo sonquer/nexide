@@ -8,7 +8,7 @@
 //!
 //! Note on semantics: RSS is always *process-wide* on Linux/macOS.
 //! When several workers share one process the value cannot be
-//! attributed per worker — the recycle policy interpreting it
+//! attributed per worker - the recycle policy interpreting it
 //! treats the threshold as a process-wide budget shared across
 //! workers (each worker checks the same value and any of them may
 //! trigger the recycle). This is good enough for the headline
@@ -28,8 +28,8 @@ pub struct MemorySample {
 
 /// Read-only contract for sampling process memory.
 ///
-/// Implementations are pure Queries (Command/Query Separation) —
-/// they observe state but never mutate it — and must be safe to
+/// Implementations are pure Queries (Command/Query Separation) -
+/// they observe state but never mutate it - and must be safe to
 /// call from any thread because the recycler invokes them from
 /// the pool's coordination task.
 pub trait MemorySampler: Send + Sync + 'static {
@@ -83,7 +83,7 @@ impl MemorySampler for MockSampler {
 /// On Linux the constructor returns a sampler that parses
 /// `/proc/self/status::VmRSS`. On other platforms (macOS dev
 /// builds, Windows) the sampler always returns `None` so the
-/// recycle policy disables itself silently — there is no portable
+/// recycle policy disables itself silently - there is no portable
 /// libc shortcut and shelling out to `ps` would add latency to a
 /// hot-path call.
 pub struct ProcessSampler;

@@ -8,7 +8,7 @@
 //! cross-thread hop per HTTP connection (not per request). Once a
 //! connection lands on a worker every subsequent request on that
 //! keep-alive connection is processed end-to-end on the worker's
-//! thread — Axum, prerender, and the V8 isolate all share the same
+//! thread - Axum, prerender, and the V8 isolate all share the same
 //! `current_thread` runtime, so request dispatch is intra-thread
 //! (direct task wake-up, no syscall).
 //!
@@ -27,7 +27,7 @@
 //! ## Shutdown
 //!
 //! The loop terminates when the supplied `shutdown` future resolves.
-//! It does **not** drain in-flight connections — that is the workers'
+//! It does **not** drain in-flight connections - that is the workers'
 //! job, driven by their own watch-channel shutdown signal in
 //! [`super::worker_runtime`].
 
@@ -59,7 +59,7 @@ pub enum AcceptError {
 
 /// Runs the accept loop until `shutdown` resolves.
 ///
-/// `workers` must be non-empty — empty pools are a misconfiguration
+/// `workers` must be non-empty - empty pools are a misconfiguration
 /// the caller is expected to surface earlier.
 ///
 /// # Errors
@@ -119,7 +119,7 @@ where
 ///
 /// Falls back to the alternate p2c candidate when the primary's
 /// mailbox is full. If both are full the connection is dropped with
-/// a `warn!` — the alternative (blocking the accept loop on `send`)
+/// a `warn!` - the alternative (blocking the accept loop on `send`)
 /// would let one slow worker stall the entire process.
 fn dispatch_stream(
     workers: &[WorkerRuntime],
@@ -137,14 +137,14 @@ fn dispatch_stream(
                     primary,
                     secondary,
                     error = ?err,
-                    "accept loop: both p2c candidates full — dropping connection"
+                    "accept loop: both p2c candidates full - dropping connection"
                 );
             }
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             tracing::error!(
                 worker = primary,
-                "accept loop: worker mailbox closed — connection dropped"
+                "accept loop: worker mailbox closed - connection dropped"
             );
         }
     }

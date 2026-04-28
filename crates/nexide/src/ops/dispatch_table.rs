@@ -8,10 +8,10 @@
 //! The table uses an arena-style backing store with explicit
 //! generation counters so a stale id (e.g. an op invoked after a
 //! request has already been settled and recycled) is rejected as
-//! `Stale` instead of silently routing to the wrong handler — the
+//! `Stale` instead of silently routing to the wrong handler - the
 //! "ABA" failure mode rubber-duck flagged for raw `u32` ids.
 //!
-//! The store is intentionally `!Send` and `!Sync` — it lives inside a
+//! The store is intentionally `!Send` and `!Sync` - it lives inside a
 //! V8 isolate's `OpState`, which is single-threaded by construction.
 //! No internal locking is needed; access is serialised by the
 //! `Rc<RefCell<OpState>>` style table held in the engine.
@@ -125,7 +125,7 @@ impl RequestId {
     ///
     /// Used at the op boundary, where JS supplies the two halves as
     /// separate primitives. Production code should always obtain ids
-    /// through [`DispatchTable::insert`] — round-tripping is fine
+    /// through [`DispatchTable::insert`] - round-tripping is fine
     /// (the table validates both halves on lookup).
     #[must_use]
     pub const fn from_parts(index: u32, generation: u32) -> Self {
@@ -156,7 +156,7 @@ enum Slot {
         next_free: Option<u32>,
     },
     /// Slot currently hosting an in-flight request. `generation`
-    /// matches the [`RequestId`] handed to JS — any op call carrying
+    /// matches the [`RequestId`] handed to JS - any op call carrying
     /// a different generation is [`DispatchError::Stale`].
     Occupied { generation: u32, inflight: InFlight },
 }
@@ -170,7 +170,7 @@ pub enum DispatchError {
     OutOfRange(u32),
 
     /// Slot exists but its generation no longer matches the supplied
-    /// [`RequestId`]. The id was reused for a newer request — treat
+    /// [`RequestId`]. The id was reused for a newer request - treat
     /// the late op call as a no-op-with-error, never panic.
     #[error("dispatch table: id (index {0}, gen {1}) is stale")]
     Stale(u32, u32),
@@ -219,7 +219,7 @@ impl DispatchTable {
     /// # Panics
     ///
     /// Panics if the table has already grown past
-    /// `u32::MAX as usize` slots — that would mean the same isolate
+    /// `u32::MAX as usize` slots - that would mean the same isolate
     /// has handled `~4` billion concurrent requests without any
     /// settling, which is structurally impossible while the
     /// per-isolate semaphore caps in-flight work at
@@ -251,7 +251,7 @@ impl DispatchTable {
     ///
     /// # Errors
     ///
-    /// See [`DispatchError`] — covers out-of-range indices, stale
+    /// See [`DispatchError`] - covers out-of-range indices, stale
     /// generations and already-released slots.
     pub fn remove(&mut self, id: RequestId) -> Result<InFlight, DispatchError> {
         let prev_free_head = self.free_head;
@@ -320,7 +320,7 @@ impl DispatchTable {
     }
 
     /// Returns the total number of slots ever allocated. Pure (Query)
-    /// — exposed for telemetry and tests, not for hot-path routing.
+    /// - exposed for telemetry and tests, not for hot-path routing.
     #[must_use]
     pub const fn capacity(&self) -> usize {
         self.slots.len()
@@ -333,13 +333,13 @@ impl DispatchTable {
     /// every in-flight request must be failed (typically with
     /// [`RequestFailure::PumpDied`]) so callers awaiting the
     /// dispatcher's oneshot do not hang until their own client
-    /// timeout. After draining the table is logically empty —
+    /// timeout. After draining the table is logically empty -
     /// every slot is recycled and its generation bumped, defeating
     /// any ABA race where a late JS op tries to address a settled
     /// id.
     ///
     /// Returns the number of failed requests (for telemetry).
-    /// `O(capacity)` — intended for shutdown paths only.
+    /// `O(capacity)` - intended for shutdown paths only.
     ///
     /// # Panics
     ///

@@ -49,11 +49,12 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 libc = "0.2.186"
+sysinfo = { workspace = true }
 tikv-jemallocator = { version = "0.6", optional = true }
 hickory-resolver = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -61,6 +62,10 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
 reqwest = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "rayon"] }
+fast_image_resize = { version = "5", features = ["image"] }
+url = "2"
+base64 = "0.22"
 
 [features]
 default = []

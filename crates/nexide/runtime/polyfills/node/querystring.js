@@ -1,6 +1,6 @@
 "use strict";
 
-// node:querystring — escape/unescape + parse/stringify with array
+// node:querystring - escape/unescape + parse/stringify with array
 // repetition support.
 
 function escape(str) { return encodeURIComponent(str); }

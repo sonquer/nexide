@@ -10,7 +10,7 @@
 /// Identity of the isolate currently running JavaScript.
 #[derive(Debug, Clone, Copy)]
 pub struct WorkerId {
-    /// Stable ordinal of the worker — `0` for the primary, monotonic
+    /// Stable ordinal of the worker - `0` for the primary, monotonic
     /// across the pool.
     pub id: usize,
     /// `true` when this worker should emit `console.log/info/debug`

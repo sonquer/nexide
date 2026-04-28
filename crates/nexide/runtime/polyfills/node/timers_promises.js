@@ -1,4 +1,4 @@
-// node:timers/promises — promise-flavoured timer helpers.
+// node:timers/promises - promise-flavoured timer helpers.
 
 (function () {
   function setTimeoutP(ms, value, options) {

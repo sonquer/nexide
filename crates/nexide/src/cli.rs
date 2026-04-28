@@ -6,7 +6,7 @@
 //!
 //!  * [`Command::Start`] boots the native Rust runtime against the
 //!    `next build` standalone output. It is the primary value-add of
-//!    this crate — Axum + V8 with no Node.js process in the loop.
+//!    this crate - Axum + V8 with no Node.js process in the loop.
 //!  * [`Command::Dev`] and [`Command::Build`] are honest passthroughs
 //!    to Next.js' own CLI: development requires Turbopack/SWC and HMR,
 //!    which are out of scope for a Rust runtime, and `build` is a
@@ -14,7 +14,7 @@
 //!    coherent so users do not need to memorise two binaries.
 //!
 //! The argument types are pure value objects (data-only structs).
-//! Behaviour lives in [`crate::lib::run`] — keeps parsing and
+//! Behaviour lives in [`crate::lib::run`] - keeps parsing and
 //! execution separable for testing (CQS).
 use std::path::PathBuf;
 
@@ -48,7 +48,7 @@ pub enum Command {
     /// Run the app in development mode by delegating to `next dev`.
     ///
     /// The Rust runtime intentionally does not host a JavaScript
-    /// bundler — Turbopack/SWC and HMR are reused from the user's
+    /// bundler - Turbopack/SWC and HMR are reused from the user's
     /// installed Next.js.
     Dev(DevArgs),
 

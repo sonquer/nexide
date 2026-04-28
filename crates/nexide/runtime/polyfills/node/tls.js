@@ -10,7 +10,7 @@
  * back here, `https` builds on top of it, …).
  *
  * Server-side TLS (`createServer`) is intentionally unavailable in this
- * runtime — terminate TLS at the Rust shield in front of nexide. Calling
+ * runtime - terminate TLS at the Rust shield in front of nexide. Calling
  * `tls.createServer()` throws `Error { code: "ERR_NOT_AVAILABLE" }`.
  */
 

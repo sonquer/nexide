@@ -1,6 +1,6 @@
 //! Abstraction over the dynamic layer (SSR / Route Handlers).
 //!
-//! This module deliberately knows nothing about V8 or Next.js — that is
+//! This module deliberately knows nothing about V8 or Next.js - that is
 //! the dependency-inversion boundary. The production implementation is
 //! introduced earlier (bridge to `server.js`); here we provide a
 //! minimal [`NotImplementedHandler`] that doubles as a safe fallback
@@ -23,7 +23,7 @@ pub enum HandlerError {
 
 /// Consumer of dynamic HTTP requests not handled by the static layer.
 ///
-/// Every implementation must be safe to share between threads — Axum
+/// Every implementation must be safe to share between threads - Axum
 /// clones the handle for every incoming request.
 #[async_trait]
 pub trait DynamicHandler: Send + Sync + 'static {

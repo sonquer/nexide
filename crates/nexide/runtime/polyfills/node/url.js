@@ -1,6 +1,6 @@
 "use strict";
 
-// node:url — self-contained legacy `url` API plus a minimal
+// node:url - self-contained legacy `url` API plus a minimal
 // WHATWG-ish URL/URLSearchParams shim. The bare V8 isolate that
 // nexide boots does not install the WHATWG URL globals, so this
 // module ships the minimum surface that covers the request shapes

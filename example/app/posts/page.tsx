@@ -13,7 +13,7 @@ export default function PostsIndexPage() {
     >
       <header className="flex flex-col gap-3">
         <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-medium text-white/60">
-          ISR · revalidate 60 s
+          ISR with revalidate 60 s
         </span>
         <h1 className="text-4xl font-bold tracking-tight text-white">Posts</h1>
         <p className="text-white/70">
@@ -34,7 +34,7 @@ export default function PostsIndexPage() {
                   {post.title}
                 </h2>
                 <p className="text-sm text-white/60">
-                  By {post.author} · {post.readTimeMinutes} min read
+                  By {post.author}, {post.readTimeMinutes} min read
                 </p>
               </div>
               <span className="text-white/40 transition group-hover:translate-x-0.5 group-hover:text-white">

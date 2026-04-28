@@ -1,10 +1,10 @@
-// node:async_hooks — minimal AsyncLocalStorage shim.
+// node:async_hooks - minimal AsyncLocalStorage shim.
 //
 // Next.js relies on `AsyncLocalStorage` for request-scoped state.
 // Real Node.js implements it on top of the AsyncWrap machinery.
 // nexide's runtime is single-isolate-per-request: each request runs
 // to completion on the same microtask scheduler before the next one
-// is dispatched, so a process-global slot is sufficient — the JS
+// is dispatched, so a process-global slot is sufficient - the JS
 // callback runs synchronously inside `run`/`enterWith`, and stores
 // nest as a stack.
 

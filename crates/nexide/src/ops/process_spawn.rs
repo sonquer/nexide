@@ -43,7 +43,7 @@ impl StdioMode {
 pub struct SpawnRequest {
     /// Command to run (executable name or absolute path).
     pub command: String,
-    /// Argument list passed verbatim — the host does not reshell.
+    /// Argument list passed verbatim - the host does not reshell.
     pub args: Vec<String>,
     /// Optional working directory; falls back to the parent's CWD
     /// when `None`.
@@ -77,8 +77,47 @@ pub struct ChildHandle {
 ///
 /// # Errors
 /// Returns a [`NetError`] (re-using the Node-style error code mapping)
-/// when the executable cannot be located or the OS refuses to spawn.
+/// when the executable cannot be located or the OS refuses to spawn,
+/// or when the request contains keys/values that would be rejected by
+/// the host (NUL bytes, `=` in env keys).
 pub fn spawn(req: SpawnRequest) -> Result<ChildHandle, NetError> {
+    if req.command.is_empty() || req.command.contains('\0') {
+        return Err(NetError::new(
+            "ERR_INVALID_ARG_VALUE",
+            "command must be a non-empty string without NUL bytes",
+        ));
+    }
+    for arg in &req.args {
+        if arg.contains('\0') {
+            return Err(NetError::new(
+                "ERR_INVALID_ARG_VALUE",
+                "argument contains a NUL byte",
+            ));
+        }
+    }
+    for (k, v) in &req.env {
+        if k.is_empty() || k.contains('=') || k.contains('\0') {
+            return Err(NetError::new(
+                "ERR_INVALID_ARG_VALUE",
+                "env key must be non-empty and contain neither '=' nor NUL",
+            ));
+        }
+        if v.contains('\0') {
+            return Err(NetError::new(
+                "ERR_INVALID_ARG_VALUE",
+                "env value must not contain NUL bytes",
+            ));
+        }
+    }
+    if let Some(cwd) = &req.cwd
+        && cwd.contains('\0')
+    {
+        return Err(NetError::new(
+            "ERR_INVALID_ARG_VALUE",
+            "cwd contains a NUL byte",
+        ));
+    }
+
     let mut cmd = Command::new(OsStr::new(&req.command));
     cmd.args(req.args.iter().map(OsStr::new));
     if let Some(cwd) = req.cwd.as_ref() {
@@ -170,11 +209,20 @@ pub async fn wait(child: &mut Child) -> Result<ExitInfo, NetError> {
 /// the requested signal.
 ///
 /// # Errors
-/// Returns a `NetError` if the OS rejects the kill request.
+/// Returns a `NetError` if the OS rejects the kill request, or if the
+/// requested signal is outside the accepted `0..=64` range.
 pub fn kill(child: &mut Child, signal: i32) -> Result<(), NetError> {
+    if !(0..=64).contains(&signal) {
+        return Err(NetError::new(
+            "ERR_INVALID_ARG_VALUE",
+            format!("signal {signal} is outside the supported 0..=64 range"),
+        ));
+    }
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
+            // PID is u32 from tokio; cast is always non-negative which
+            // prevents accidentally targeting a process group via -pid.
             let pid = pid as i32;
             let res = unsafe { libc::kill(pid, signal) };
             if res != 0 {

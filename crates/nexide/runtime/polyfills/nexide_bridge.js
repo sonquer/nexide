@@ -9,7 +9,7 @@
  * leading arguments so concurrent in-flight requests can share the
  * same V8 isolate without stomping on one another's slots.
  *
- * The script is loaded once per isolate and is idempotent — re-running
+ * The script is loaded once per isolate and is idempotent - re-running
  * it (for example from tests that boot multiple isolates from the
  * same process) leaves the existing bridge installed untouched.
  */
@@ -70,14 +70,14 @@
      *
      * Awaits the next request id pair (or batch) from the per-isolate
      * `RequestQueue`, then fires `__dispatch(idx, gen)` *without*
-     * awaiting it — concurrent in-flight requests share one isolate
+     * awaiting it - concurrent in-flight requests share one isolate
      * because the V8 microtask queue interleaves their async
      * continuations naturally.
      *
      * `batchCap` selects the pump strategy:
-     *   * `undefined`, `null`, `0`, `1` — serial pump (one
+     *   * `undefined`, `null`, `0`, `1` - serial pump (one
      *     `op_nexide_pop_request` per request).
-     *   * `>= 2` — batched pump (`op_nexide_pop_request_batch(cap)`)
+     *   * `>= 2` - batched pump (`op_nexide_pop_request_batch(cap)`)
      *     dispatches every id in the returned slice within the same
      *     microtask cycle, amortising per-request op crossing under
      *     sustained load.
@@ -157,13 +157,13 @@
      * Translates a thrown / rejected value into the string payload
      * accepted by `op_nexide_finish_error` and forwards it.
      *
-     * Captures `name`, `message` and the first eight stack frames —
+     * Captures `name`, `message` and the first eight stack frames -
      * enough for diagnostics yet bounded so a pathological error
      * cannot inflate isolate memory by reporting a multi-megabyte
      * stack. If `op_nexide_finish_error` itself throws (the
      * dispatcher slot was already settled, for example) the inner
      * failure is logged through `op_nexide_log` at error level so
-     * the host always observes it — `console` is not consulted
+     * the host always observes it - `console` is not consulted
      * because user code may have replaced or removed it.
      *
      * If even the logging op refuses to fire, the host bridge is

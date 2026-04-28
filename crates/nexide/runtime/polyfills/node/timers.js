@@ -1,4 +1,4 @@
-// node:timers — re-export the host scheduling primitives so libraries can
+// node:timers - re-export the host scheduling primitives so libraries can
 // import them explicitly. Promise-flavoured helpers live in
 // node:timers/promises.
 

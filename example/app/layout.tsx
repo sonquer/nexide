@@ -23,6 +23,15 @@ export default function RootLayout({
 }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        <link
+          rel="preload"
+          href="/fonts/JetBrainsMono-Regular.ttf"
+          as="font"
+          type="font/ttf"
+          crossOrigin="anonymous"
+        />
+      </head>
       <body className="flex min-h-screen flex-col antialiased">
         <header className="sticky top-0 z-10 border-b border-white/5 bg-ink/70 backdrop-blur">
           <nav className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-4">
@@ -31,14 +40,13 @@ export default function RootLayout({
               className="flex items-center gap-2 text-sm font-semibold tracking-wide text-white"
             >
               <Image
-                src="/vercel.svg"
-                alt="Next.js"
-                width={12}
-                height={12}
+                src="/nexide.png"
+                alt="Nexide logo"
+                width={89}
+                height={28}
                 priority
                 preload
               />
-              Nexide
             </Link>
             <ul className="flex items-center gap-1 text-sm text-white/70">
               {NAV_LINKS.map((link) => (

@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -23,7 +23,7 @@ missing_docs = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
-# Correctness, performance, complexity, suspicious — all enforced by clippy default.
+# Correctness, performance, complexity, suspicious - all enforced by clippy default.
 # Pedantic and nursery are opinionated style lints; they are advisory rather than
 # enforced. Keeping them at `allow` avoids per-file blanket suppressions while still
 # letting individual modules opt into stricter checks via `#[warn(...)]` if useful.

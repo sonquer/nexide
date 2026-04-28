@@ -3,7 +3,7 @@
 //!
 //! Resource sampling is taken from the container's own cgroup (CPU
 //! delta, memory `usage`) via the streaming Docker stats API, so the
-//! numbers reflect what the workload sees inside the container —
+//! numbers reflect what the workload sees inside the container -
 //! exactly the cap we want to characterise.
 //!
 //! Image build is delegated to `docker build`: the orchestrator only
@@ -74,7 +74,7 @@ impl DockerPreset {
         cpus: 1.0,
         memory_mb: 1769,
     };
-    /// 2 cpu, 512 MiB — exposes CPU vs memory trade-off.
+    /// 2 cpu, 512 MiB - exposes CPU vs memory trade-off.
     pub const SMALL_2C: Self = Self {
         cpus: 2.0,
         memory_mb: 512,
@@ -227,7 +227,7 @@ fn image_for(images: &DockerImages, kind: TargetKind) -> &str {
 /// When `rebuild` is `true`, every image is rebuilt unconditionally
 /// (the Docker layer cache may still apply, but the build is always
 /// invoked). This is the escape hatch for "I changed Rust source but
-/// the cached image won the race" — the most common foot-gun when
+/// the cached image won the race" - the most common foot-gun when
 /// iterating on `nexide` performance fixes.
 ///
 /// # Errors

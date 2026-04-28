@@ -2,17 +2,17 @@
 //!
 //! This module owns three concerns:
 //!
-//! 1. The [`EnvSource`] abstraction — the only entry point used by the
+//! 1. The [`EnvSource`] abstraction - the only entry point used by the
 //!    `op_process_env_*` ops to look up environment variables. Production
 //!    binds it to [`OsEnv`] (reads from the parent OS); tests bind it to
 //!    [`MapEnv`] (in-memory).
-//! 2. [`ProcessConfig`] — a Single Responsibility object that decides
+//! 2. [`ProcessConfig`] - a Single Responsibility object that decides
 //!    *which* env keys a guest module is allowed to observe. Next.js
 //!    code expects `NEXT_*`, `NODE_*`, and `NEXT_PUBLIC_*` to flow
 //!    through; everything else stays opaque to the JS world unless an
 //!    explicit allow-listed key is configured.
 //! 3. The op definitions themselves plus the [`nexide_process_ops`]
-//!    extension — pure transport, all logic lives in the layers above.
+//!    extension - pure transport, all logic lives in the layers above.
 //!
 //! All ops are pure Queries except [`op_process_exit`], the lone
 //! Command, which writes a single [`ExitRequested`] marker into
@@ -32,8 +32,8 @@ use std::time::Instant;
 /// across isolates and must never touch the host OS environment.
 ///
 /// Stored entries:
-///   * `Some(value)` — the JS guest set this key.
-///   * `None`        — the JS guest deleted this key (shadows the
+///   * `Some(value)` - the JS guest set this key.
+///   * `None`        - the JS guest deleted this key (shadows the
 ///     [`ProcessConfig`] value, if any).
 #[derive(Debug, Default)]
 #[allow(clippy::option_option, clippy::redundant_pub_crate)]
@@ -94,7 +94,7 @@ const DEFAULT_KEYS: &[&str] = &["TZ", "LANG", "LC_ALL", "PATH", "HOME", "PWD"];
 ///
 /// Implementations must be cheap to clone (typically `Arc<...>`) and
 /// thread-safe. The trait is the seam between the runtime config layer
-/// and the op layer — production-only `std::env` access is intentionally
+/// and the op layer - production-only `std::env` access is intentionally
 /// confined to [`OsEnv`].
 pub trait EnvSource: Send + Sync + 'static {
     /// Returns the value bound to `key`, or `None` when unset.
@@ -166,6 +166,7 @@ pub struct ProcessConfig {
     boot: Instant,
     platform: &'static str,
     arch: &'static str,
+    allow_subprocess: bool,
 }
 
 impl std::fmt::Debug for ProcessConfig {
@@ -176,6 +177,7 @@ impl std::fmt::Debug for ProcessConfig {
             .field("cwd", &self.cwd)
             .field("platform", &self.platform)
             .field("arch", &self.arch)
+            .field("allow_subprocess", &self.allow_subprocess)
             .finish()
     }
 }
@@ -187,6 +189,7 @@ pub struct ProcessConfigBuilder {
     prefixes: Vec<String>,
     keys: BTreeSet<String>,
     cwd: Option<String>,
+    allow_subprocess: bool,
 }
 
 impl ProcessConfigBuilder {
@@ -200,6 +203,7 @@ impl ProcessConfigBuilder {
             prefixes: DEFAULT_PREFIXES.iter().map(|p| (*p).to_owned()).collect(),
             keys: DEFAULT_KEYS.iter().map(|k| (*k).to_owned()).collect(),
             cwd: None,
+            allow_subprocess: true,
         }
     }
 
@@ -225,6 +229,16 @@ impl ProcessConfigBuilder {
         self
     }
 
+    /// Toggles whether the JS guest may spawn child processes through
+    /// `node:child_process` (`op_proc_spawn`). Defaults to `true` for
+    /// Node compatibility; embedders running untrusted code or tightly
+    /// scoped sandboxes should disable it explicitly.
+    #[must_use]
+    pub const fn allow_subprocess(mut self, allowed: bool) -> Self {
+        self.allow_subprocess = allowed;
+        self
+    }
+
     /// Materialises the configuration.
     #[must_use]
     pub fn build(self) -> ProcessConfig {
@@ -242,6 +256,7 @@ impl ProcessConfigBuilder {
             boot: Instant::now(),
             platform: host_platform(),
             arch: host_arch(),
+            allow_subprocess: self.allow_subprocess,
         }
     }
 }
@@ -314,6 +329,12 @@ impl ProcessConfig {
     #[must_use]
     pub fn hrtime_ns(&self) -> u64 {
         u64::try_from(self.boot.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Reports whether subprocess spawning is currently permitted.
+    #[must_use]
+    pub const fn subprocess_allowed(&self) -> bool {
+        self.allow_subprocess
     }
 }
 

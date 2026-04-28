@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# Node.js bench image — runs the canonical Next.js standalone bundle.
+# Node.js bench image - runs the canonical Next.js standalone bundle.
 #
 # Stage 1: install deps + run `next build --output=standalone`.
 # Stage 2: slim runtime containing only the standalone bundle.

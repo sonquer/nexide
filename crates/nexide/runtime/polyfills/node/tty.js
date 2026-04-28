@@ -1,4 +1,4 @@
-// node:tty — non-TTY stub. nexide is a server runtime; stdin/stdout
+// node:tty - non-TTY stub. nexide is a server runtime; stdin/stdout
 // are never real TTYs from the application's perspective.
 
 (function () {

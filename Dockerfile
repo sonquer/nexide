@@ -4,11 +4,13 @@
 #
 # Build stage runs on Debian because the `v8` crate (rusty_v8) is built and
 # linked against glibc; building it under musl requires either bespoke V8
-# patches or an unsupported toolchain. The runtime image stays Alpine for
-# size, and uses `gcompat` to run the glibc-linked binary.
+# patches or an unsupported toolchain. The runtime image is also Debian-slim
+# (glibc) so the dynamically-linked binary loads without resorting to Alpine
+# `gcompat`, which historically misses libresolv symbols (e.g. `__res_init`)
+# pulled in transitively through glibc's NSS / `getaddrinfo` chain.
 
 ARG RUST_VERSION=1.95
-ARG ALPINE_VERSION=3.20
+ARG DEBIAN_VERSION=bookworm
 
 FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /build
@@ -29,15 +31,18 @@ RUN --mount=type=cache,target=/build/target \
     cargo build --release --locked --bin nexide \
     && cp target/release/nexide /usr/local/bin/nexide
 
-FROM alpine:${ALPINE_VERSION} AS runtime
+FROM debian:${DEBIAN_VERSION}-slim AS runtime
 
-RUN apk add --no-cache \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         ca-certificates \
-        gcompat \
-        libgcc \
-        libstdc++ \
-    && addgroup -S nexide \
-    && adduser -S -G nexide -u 10001 nexide
+        libgcc-s1 \
+        libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system nexide \
+    && useradd --system --gid nexide --uid 10001 --no-create-home nexide \
+    && groupadd --system --gid 1001 nodejs \
+    && useradd --system --gid nodejs --uid 1001 --no-create-home nextjs
 
 COPY --from=builder /usr/local/bin/nexide /usr/local/bin/nexide
 

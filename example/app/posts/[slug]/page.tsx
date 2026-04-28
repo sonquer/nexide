@@ -32,7 +32,7 @@ export default async function PostPage({ params }: PostPageProps) {
       </Link>
       <header className="flex flex-col gap-3">
         <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-medium text-white/60">
-          ISR · revalidate {revalidate} s
+          ISR with revalidate {revalidate} s
         </span>
         <h1
           data-testid="post-title"
@@ -41,7 +41,7 @@ export default async function PostPage({ params }: PostPageProps) {
           {post.title}
         </h1>
         <p className="text-sm text-white/60">
-          By {post.author} · {post.readTimeMinutes} min read ·{" "}
+          By {post.author}, {post.readTimeMinutes} min read,{" "}
           <span data-testid="post-slug" className="font-mono">
             {post.slug}
           </span>

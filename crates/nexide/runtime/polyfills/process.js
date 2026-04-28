@@ -1,6 +1,6 @@
 // Node.js `process` polyfill backed by the nexide process op family.
 //
-// Idempotent — re-running the script (e.g. between tests booting the
+// Idempotent - re-running the script (e.g. between tests booting the
 // same isolate) is a no-op so polyfill installation can run more than
 // once. All ops live in the `nexide_process_ops` extension; if the
 // extension is missing the first lookup throws synchronously.
@@ -100,6 +100,82 @@
     queueMicrotask(() => cb(...args));
   }
 
+  function memoryUsage() {
+    return typeof ops.op_process_memory_usage === "function"
+      ? ops.op_process_memory_usage()
+      : { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
+  }
+  memoryUsage.rss = () => memoryUsage().rss;
+
+  function cpuUsage(prev) {
+    const cur = typeof ops.op_process_cpu_usage === "function"
+      ? ops.op_process_cpu_usage()
+      : { user: 0, system: 0 };
+    if (prev && typeof prev === "object") {
+      return {
+        user: (cur.user | 0) - ((prev.user | 0) || 0),
+        system: (cur.system | 0) - ((prev.system | 0) || 0),
+      };
+    }
+    return cur;
+  }
+
+  function killFn(pid, signal) {
+    if (typeof ops.op_process_kill !== "function") {
+      const err = new Error("process.kill is not supported in this build");
+      err.code = "ENOSYS";
+      throw err;
+    }
+    const sig = typeof signal === "number"
+      ? signal
+      : (signalNumberFor(signal) ?? 15);
+    return ops.op_process_kill(pid | 0, sig | 0);
+  }
+
+  const SIGNAL_NUMBERS = {
+    SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
+    SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10,
+    SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15,
+    SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21,
+    SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24, SIGXFSZ: 25, SIGVTALRM: 26,
+    SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPWR: 30, SIGSYS: 31,
+  };
+  function signalNumberFor(name) {
+    if (name == null) return SIGNAL_NUMBERS.SIGTERM;
+    const upper = String(name).toUpperCase();
+    return SIGNAL_NUMBERS[upper];
+  }
+
+  function abort() {
+    ops.op_process_exit(134);
+  }
+
+  function emptyArray() { return []; }
+  function alwaysFalse() { return false; }
+  function noop() { /* no-op */ }
+
+  const reportStub = {
+    directory: "",
+    filename: "",
+    compact: false,
+    excludeNetwork: true,
+    signal: "SIGUSR2",
+    reportOnFatalError: false,
+    reportOnSignal: false,
+    reportOnUncaughtException: false,
+    writeReport() {
+      const err = new Error("process.report.writeReport is not supported in nexide");
+      err.code = "ENOSYS";
+      throw err;
+    },
+    getReport() { return {}; },
+  };
+
+  const allowedFlags = new Set();
+  Object.freeze(allowedFlags);
+
+  let titleState = "nexide";
+
   const cwdState = { value: meta.cwd };
 
   const process = {
@@ -108,19 +184,50 @@
     argv: meta.argv,
     argv0: meta.argv[0] || "nexide",
     execPath: meta.argv[0] || "nexide",
+    execArgv: [],
     platform: meta.platform,
     arch: meta.arch,
     pid: meta.pid,
     ppid: 0,
-    title: "nexide",
+    get title() { return titleState; },
+    set title(v) { titleState = String(v); },
     version: "v" + meta.version,
     versions: {
-      node: "20.0.0",
+      node: "20.18.0",
       nexide: meta.version,
       v8: (typeof Nexide !== "undefined" && Nexide.core && Nexide.core.v8Version)
         ? Nexide.core.v8Version()
         : "unknown",
     },
+    config: {
+      target_defaults: { default_configuration: "Release" },
+      variables: {},
+    },
+    release: {
+      name: "node",
+      lts: undefined,
+      sourceUrl: "",
+      headersUrl: "",
+    },
+    features: {
+      inspector: false,
+      debug: false,
+      uv: false,
+      ipv6: true,
+      tls_alpn: true,
+      tls_sni: true,
+      tls_ocsp: false,
+      tls: true,
+      cached_builtins: true,
+    },
+    allowedNodeEnvironmentFlags: allowedFlags,
+    sourceMapsEnabled: false,
+    setSourceMapsEnabled(v) { this.sourceMapsEnabled = Boolean(v); },
+    throwDeprecation: false,
+    traceDeprecation: false,
+    noDeprecation: false,
+    connected: false,
+    channel: undefined,
     cwd() {
       return cwdState.value;
     },
@@ -135,8 +242,13 @@
       cwdState.value = dir;
     },
     exit(code) {
-      ops.op_process_exit((code | 0) || 0);
+      const n = Number(code);
+      const safe = Number.isFinite(n) ? Math.trunc(n) : 0;
+      const clamped = safe >= 0 && safe <= 255 ? safe : 1;
+      ops.op_process_exit(clamped);
     },
+    abort,
+    kill: killFn,
     hrtime,
     nextTick,
     stdout,
@@ -153,30 +265,89 @@
     removeAllListeners: noopEmitter,
     prependListener: noopEmitter,
     prependOnceListener: noopEmitter,
-    listeners: () => [],
-    rawListeners: () => [],
+    listeners: emptyArray,
+    rawListeners: emptyArray,
     listenerCount: () => 0,
-    eventNames: () => [],
+    eventNames: emptyArray,
     setMaxListeners: () => process,
     getMaxListeners: () => 10,
-    emit: () => false,
+    emit: alwaysFalse,
     binding() {
       throw new Error("process.binding is not supported by nexide");
     },
-    umask: () => 0,
+    dlopen() {
+      const err = new Error("process.dlopen is not supported by nexide");
+      err.code = "ENOSYS";
+      throw err;
+    },
+    umask() { return 0; },
     geteuid: () => 0,
     getegid: () => 0,
     getuid: () => 0,
     getgid: () => 0,
-    memoryUsage: () => ({
-      rss: 0,
-      heapTotal: 0,
-      heapUsed: 0,
-      external: 0,
-      arrayBuffers: 0,
-    }),
+    getgroups: emptyArray,
+    setuid: noop,
+    setgid: noop,
+    setegid: noop,
+    seteuid: noop,
+    setgroups: noop,
+    initgroups: noop,
+    memoryUsage,
+    cpuUsage,
+    resourceUsage() {
+      const m = memoryUsage();
+      const c = cpuUsage();
+      return {
+        userCPUTime: c.user || 0,
+        systemCPUTime: c.system || 0,
+        maxRSS: Math.floor((m.rss || 0) / 1024),
+        sharedMemorySize: 0,
+        unsharedDataSize: 0,
+        unsharedStackSize: 0,
+        minorPageFault: 0,
+        majorPageFault: 0,
+        swappedOut: 0,
+        fsRead: 0,
+        fsWrite: 0,
+        ipcSent: 0,
+        ipcReceived: 0,
+        signalsCount: 0,
+        voluntaryContextSwitches: 0,
+        involuntaryContextSwitches: 0,
+      };
+    },
+    constrainedMemory() { return 0; },
+    availableMemory() { return 0; },
+    getActiveResourcesInfo: emptyArray,
+    hasUncaughtExceptionCaptureCallback: alwaysFalse,
+    setUncaughtExceptionCaptureCallback: noop,
+    send: undefined,
+    disconnect: noop,
+    report: reportStub,
     uptime: () => Number(ops.op_process_hrtime_ns() / 1_000_000_000n),
-    features: {},
+    loadEnvFile(maybePath) {
+      const fs = globalThis.require ? globalThis.require("node:fs") : null;
+      if (!fs) {
+        const err = new Error("process.loadEnvFile requires node:fs");
+        err.code = "ENOSYS";
+        throw err;
+      }
+      const target = maybePath || ".env";
+      const text = fs.readFileSync(target, "utf8");
+      for (const rawLine of String(text).split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq).trim();
+        let value = line.slice(eq + 1).trim();
+        if ((value.startsWith("\"") && value.endsWith("\""))
+            || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        if (!(key in env)) env[key] = value;
+      }
+    },
   };
 
   Object.defineProperty(process, "__nexideProcess", {

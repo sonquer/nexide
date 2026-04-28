@@ -23,7 +23,7 @@ use hickory_resolver::error::ResolveError;
 
 /// Hickory's API is fully `Send + Sync` and internally backed by an
 /// `Arc`, so a single resolver shared across all worker isolates is
-/// enough — and avoids the cost of re-reading `resolv.conf` per
+/// enough - and avoids the cost of re-reading `resolv.conf` per
 /// isolate. We initialise it lazily on the first call.
 fn shared_resolver() -> &'static TokioAsyncResolver {
     static RESOLVER: OnceLock<TokioAsyncResolver> = OnceLock::new();
@@ -81,7 +81,7 @@ impl DnsError {
 pub struct LookupResult {
     /// Resolved IP address.
     pub address: IpAddr,
-    /// `4` for an IPv4 result, `6` for IPv6 — matches Node's
+    /// `4` for an IPv4 result, `6` for IPv6 - matches Node's
     /// `family` field on `dns.lookup` callbacks.
     pub family: u8,
 }
@@ -89,7 +89,7 @@ pub struct LookupResult {
 /// Filter applied to a hostname-to-address lookup.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LookupFamily {
-    /// Accept any address — IPv4 returned ahead of IPv6 to match Node's default.
+    /// Accept any address - IPv4 returned ahead of IPv6 to match Node's default.
     Any,
     /// IPv4 only (`A` records).
     V4,
@@ -117,7 +117,7 @@ impl LookupFamily {
 /// number) for unbounded. The OS resolver is preferred over the
 /// hickory-backed [`resolve4`] / [`resolve6`] because Node's
 /// `dns.lookup` is documented to honour `nsswitch.conf`, hostfile
-/// and mDNS — none of which hickory consults.
+/// and mDNS - none of which hickory consults.
 pub async fn lookup(
     host: &str,
     family: LookupFamily,
@@ -202,7 +202,7 @@ pub async fn resolve_mx(host: &str) -> Result<Vec<MxRecord>, DnsError> {
 
 /// Returns the TXT records for `host`. Each record is the
 /// concatenation of its `<character-string>` chunks (matching
-/// Node's `dns.resolveTxt` shape — a `string[]` per record, but we
+/// Node's `dns.resolveTxt` shape - a `string[]` per record, but we
 /// flatten to one `string` per record because that is how the
 /// polyfill exposes them).
 pub async fn resolve_txt(host: &str) -> Result<Vec<Vec<String>>, DnsError> {
@@ -247,9 +247,9 @@ pub async fn resolve_ns(host: &str) -> Result<Vec<String>, DnsError> {
 /// One service-locator record.
 #[derive(Debug, Clone)]
 pub struct SrvRecord {
-    /// RFC 2782 priority — lower values are tried first.
+    /// RFC 2782 priority - lower values are tried first.
     pub priority: u16,
-    /// RFC 2782 weight — used to load-balance among same-priority targets.
+    /// RFC 2782 weight - used to load-balance among same-priority targets.
     pub weight: u16,
     /// TCP/UDP port of the service.
     pub port: u16,
@@ -275,7 +275,7 @@ pub async fn resolve_srv(host: &str) -> Result<Vec<SrvRecord>, DnsError> {
         .collect())
 }
 
-/// Reverse DNS lookup — returns the PTR names for `ip`.
+/// Reverse DNS lookup - returns the PTR names for `ip`.
 pub async fn reverse(ip: IpAddr) -> Result<Vec<String>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -291,7 +291,7 @@ mod tests {
 
     /// `localhost` must resolve through the OS path. We do not assert
     /// on the exact address (could be `127.0.0.1` or `::1` depending
-    /// on /etc/hosts) — only that *some* result is returned.
+    /// on /etc/hosts) - only that *some* result is returned.
     #[tokio::test]
     async fn lookup_localhost_returns_at_least_one_address() {
         let res = lookup("localhost", LookupFamily::Any, 16)

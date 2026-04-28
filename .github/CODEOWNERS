@@ -1,0 +1,12 @@
+* @sonquer
+
+/.github/                @sonquer
+/crates/nexide/          @sonquer
+/crates/nexide-bench/    @sonquer
+/crates/nexide-e2e/      @sonquer
+/example/                @sonquer
+/Cargo.toml              @sonquer
+/Cargo.lock              @sonquer
+/Dockerfile              @sonquer
+/SECURITY.md             @sonquer
+/LICENSE-*               @sonquer
