@@ -35,7 +35,13 @@ pub fn workspace_root() -> PathBuf {
 /// Path to the example Next.js project's standalone build output.
 #[must_use]
 pub fn example_standalone() -> PathBuf {
-    workspace_root().join("example/.next/standalone/server.js")
+    workspace_root().join("e2e/next-fixture/.next/standalone/server.js")
+}
+
+/// Path to the Prisma+SQLite fixture's standalone build output.
+#[must_use]
+pub fn prisma_sqlite_standalone() -> PathBuf {
+    workspace_root().join("e2e/prisma-sqlite/.next/standalone/server.js")
 }
 
 /// Path to the release `nexide` binary.
@@ -50,6 +56,13 @@ pub fn nexide_binary() -> PathBuf {
 #[must_use]
 pub fn prerequisites_present() -> bool {
     example_standalone().is_file() && nexide_binary().is_file()
+}
+
+/// Returns `true` when the Prisma+SQLite fixture has been built and
+/// the release nexide binary is present.
+#[must_use]
+pub fn prisma_prerequisites_present() -> bool {
+    prisma_sqlite_standalone().is_file() && nexide_binary().is_file()
 }
 
 /// Pick a free TCP port on the loopback interface. The port is
@@ -91,11 +104,24 @@ impl NexideProcess {
                 "missing prerequisites: build example with `npm run build` and run `cargo build --release` first"
             );
         }
+        Self::spawn_at(workspace_root(), timeout).await
+    }
+
+    /// Boot a release `nexide` from `cwd` (which must contain a
+    /// `.next/standalone/server.js` resolvable via the production
+    /// entrypoint resolver) and wait until `/api/ping` responds 200.
+    ///
+    /// # Errors
+    /// Same conditions as [`Self::spawn`].
+    pub async fn spawn_at(cwd: PathBuf, timeout: Duration) -> Result<Self> {
+        if !nexide_binary().is_file() {
+            bail!("missing release nexide binary; run `cargo build --release`");
+        }
         let port = pick_free_port()?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
         let mut cmd = Command::new(nexide_binary());
         cmd.env("NEXIDE_BIND", addr.to_string())
-            .current_dir(workspace_root())
+            .current_dir(cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);

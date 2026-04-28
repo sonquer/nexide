@@ -379,7 +379,7 @@ fn first_existing_or_default(candidates: &[PathBuf]) -> PathBuf {
 ///
 /// This is the seam used by both the binary's `start` subcommand and
 /// integration tests - they construct an [`AppLayout`] explicitly
-/// instead of relying on the legacy `example/` discovery in
+/// instead of relying on the legacy `e2e/next-fixture/` discovery in
 /// [`serve_until`].
 ///
 /// # Errors
@@ -1083,7 +1083,7 @@ fn detected_blocking_cap() -> usize {
 
 const DEFAULT_BIND: &str = "127.0.0.1:3000";
 const BIND_ENV: &str = "NEXIDE_BIND";
-const EXAMPLE_ROOT: &str = "example";
+const EXAMPLE_ROOT: &str = "e2e/next-fixture";
 
 /// Returns the bind address from `NEXIDE_BIND`, falling back to
 /// [`DEFAULT_BIND`] when the env var is absent or unparseable.

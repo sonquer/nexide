@@ -175,7 +175,7 @@ pub async fn run_bench(cfg: &BenchConfig) -> Result<Vec<BenchResult>> {
 
 fn ensure_artifacts(root: &Path) -> Result<()> {
     let bin = root.join("target/release/nexide");
-    let bundle = root.join("example/.next/standalone/server.js");
+    let bundle = root.join("e2e/next-fixture/.next/standalone/server.js");
     anyhow::ensure!(
         bin.is_file(),
         "missing nexide release binary: {} - run `cargo build --release`",
@@ -183,7 +183,7 @@ fn ensure_artifacts(root: &Path) -> Result<()> {
     );
     anyhow::ensure!(
         bundle.is_file(),
-        "missing standalone bundle: {} - run `npm run build` in example/",
+        "missing standalone bundle: {} - run `npm run build` in e2e/next-fixture/",
         bundle.display()
     );
     Ok(())

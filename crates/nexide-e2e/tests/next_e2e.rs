@@ -5,7 +5,7 @@
 //! with the workspace and runs under `cargo test`.
 //!
 //! Gated behind `#[ignore]` because it requires:
-//!   * `npm run build` to have produced `example/.next/standalone/server.js`
+//!   * `npm run build` to have produced `e2e/next-fixture/.next/standalone/server.js`
 //!   * `cargo build --release` to have produced `target/release/nexide`
 //!
 //! Run explicitly:
@@ -52,7 +52,7 @@ type ProbeCase = (
 );
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires `next build` in example and `cargo build --release`"]
+#[ignore = "requires `next build` in e2e/next-fixture and `cargo build --release`"]
 async fn next_e2e_smoke_runs_against_standalone_build() {
     let server = NexideProcess::spawn(READY_TIMEOUT)
         .await

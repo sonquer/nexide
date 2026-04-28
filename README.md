@@ -130,12 +130,12 @@ Requirements: Rust 1.85+ (for edition 2024), a built Next.js standalone bundle.
 # build the runtime
 cargo build --release
 
-# build the bundled example app
-pnpm --dir example install
-pnpm --dir example build
+# build the next-fixture e2e app
+pnpm --dir e2e/next-fixture install
+pnpm --dir e2e/next-fixture build
 
 # serve it
-./target/release/nexide start example --port 3000
+./target/release/nexide start e2e/next-fixture --port 3000
 
 # probe it
 curl -s http://127.0.0.1:3000/api/ping
@@ -242,7 +242,9 @@ nexide/
 │   │   └── tests/           ← integration tests (266 total)
 │   ├── nexide-bench/        ← bench harness: local + docker-suite
 │   └── nexide-e2e/          ← end-to-end tests against real Next.js
-├── example/                 ← Next.js 16 reference app used in tests + bench
+├── e2e/
+│   ├── next-fixture/        ← Next.js 16 reference app used in tests + bench
+│   └── prisma-sqlite/       ← Prisma library engine (N-API) + SQLite fixture
 ├── docs/                    ← design docs and historic task breakdowns
 ├── DESCRIPTION.md           ← original feasibility study
 ├── README.md                ← this file
@@ -335,12 +337,12 @@ and serves the Next.js standalone bundle mounted at `/app`.
 
 ```bash
 # build your Next.js app first (produces .next/standalone)
-pnpm --dir example install
-pnpm --dir example build
+pnpm --dir e2e/next-fixture install
+pnpm --dir e2e/next-fixture build
 
 # run nexide against it
 docker run --rm -p 3000:3000 \
-    -v "$(pwd)/example:/app:ro" \
+    -v "$(pwd)/e2e/next-fixture:/app:ro" \
     ghcr.io/sonquer/nexide:latest
 ```
 
@@ -348,7 +350,7 @@ To build the image locally:
 
 ```bash
 docker build -t nexide:dev .
-docker run --rm -p 3000:3000 -v "$(pwd)/example:/app:ro" nexide:dev
+docker run --rm -p 3000:3000 -v "$(pwd)/e2e/next-fixture:/app:ro" nexide:dev
 ```
 
 ## Migrating from Node.js or Deno

@@ -3,8 +3,9 @@ target/
 .github/
 .copilot/
 docs/
-example/node_modules/
-example/.next/
-example/.turbo/
+e2e/*/node_modules/
+e2e/*/.next/
+e2e/*/.turbo/
+e2e/prisma-sqlite/prisma/dev.db
 **/*.log
 .DS_Store
