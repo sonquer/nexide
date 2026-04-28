@@ -2,17 +2,17 @@
 //!
 //! This module owns three concerns:
 //!
-//! 1. The [`EnvSource`] abstraction — the only entry point used by the
+//! 1. The [`EnvSource`] abstraction - the only entry point used by the
 //!    `op_process_env_*` ops to look up environment variables. Production
 //!    binds it to [`OsEnv`] (reads from the parent OS); tests bind it to
 //!    [`MapEnv`] (in-memory).
-//! 2. [`ProcessConfig`] — a Single Responsibility object that decides
+//! 2. [`ProcessConfig`] - a Single Responsibility object that decides
 //!    *which* env keys a guest module is allowed to observe. Next.js
 //!    code expects `NEXT_*`, `NODE_*`, and `NEXT_PUBLIC_*` to flow
 //!    through; everything else stays opaque to the JS world unless an
 //!    explicit allow-listed key is configured.
 //! 3. The op definitions themselves plus the [`nexide_process_ops`]
-//!    extension — pure transport, all logic lives in the layers above.
+//!    extension - pure transport, all logic lives in the layers above.
 //!
 //! All ops are pure Queries except [`op_process_exit`], the lone
 //! Command, which writes a single [`ExitRequested`] marker into
@@ -32,8 +32,8 @@ use std::time::Instant;
 /// across isolates and must never touch the host OS environment.
 ///
 /// Stored entries:
-///   * `Some(value)` — the JS guest set this key.
-///   * `None`        — the JS guest deleted this key (shadows the
+///   * `Some(value)` - the JS guest set this key.
+///   * `None`        - the JS guest deleted this key (shadows the
 ///     [`ProcessConfig`] value, if any).
 #[derive(Debug, Default)]
 #[allow(clippy::option_option, clippy::redundant_pub_crate)]
@@ -94,7 +94,7 @@ const DEFAULT_KEYS: &[&str] = &["TZ", "LANG", "LC_ALL", "PATH", "HOME", "PWD"];
 ///
 /// Implementations must be cheap to clone (typically `Arc<...>`) and
 /// thread-safe. The trait is the seam between the runtime config layer
-/// and the op layer — production-only `std::env` access is intentionally
+/// and the op layer - production-only `std::env` access is intentionally
 /// confined to [`OsEnv`].
 pub trait EnvSource: Send + Sync + 'static {
     /// Returns the value bound to `key`, or `None` when unset.

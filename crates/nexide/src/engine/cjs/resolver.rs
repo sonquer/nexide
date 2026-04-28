@@ -68,7 +68,7 @@ impl Resolved {
     }
 }
 
-/// Resolves `require(...)` specifiers (Query — pure).
+/// Resolves `require(...)` specifiers (Query - pure).
 pub trait CjsResolver: Send + Sync + 'static {
     /// Resolves `request` from the perspective of `parent`.
     ///
@@ -88,7 +88,7 @@ pub trait CjsResolver: Send + Sync + 'static {
     ///
     /// Used by the op layer to re-validate file specifiers that the JS
     /// guest hands back through `op_cjs_read_source`. The default
-    /// implementation accepts everything — only the production
+    /// implementation accepts everything - only the production
     /// [`FsResolver`] enforces a real boundary; test resolvers usually
     /// run unsandboxed.
     fn is_path_admitted(&self, _path: &Path) -> bool {

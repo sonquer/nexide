@@ -3,7 +3,7 @@
 //!
 //! ## Invariants
 //!
-//! * Always exactly **one** [`LocalIsolateWorker`] — the whole point
+//! * Always exactly **one** [`LocalIsolateWorker`] - the whole point
 //!   of single-thread mode is to keep the entire request lifecycle on
 //!   one OS thread, so a multi-slot picker would be a category error.
 //! * Recycle runs in a **dedicated** [`tokio::task::spawn_local`]
@@ -14,7 +14,7 @@
 //!   `axum::serve` schedules through plain `tokio::spawn` (which is
 //!   *not* `LocalSet`-aware and would panic).
 //! * Public surface honours [`EngineDispatcher`] so the upstream
-//!   handler/router code is mode-agnostic — the only seam between
+//!   handler/router code is mode-agnostic - the only seam between
 //!   single-thread and multi-thread mode is the runtime-construction
 //!   site in `crate::run`.
 //!
@@ -55,7 +55,7 @@ impl LocalIsolatePool {
     /// contract as [`super::IsolatePool::with_isolate_workers`]).
     ///
     /// Also spawns a long-lived recycler task on the same `LocalSet`
-    /// that performs worker rebuilds when signalled — this is the
+    /// that performs worker rebuilds when signalled - this is the
     /// only place where [`LocalIsolateWorker::spawn_local`] runs
     /// after boot, guaranteeing it always executes inside the
     /// `LocalSet` regardless of which task triggered the recycle.
@@ -106,7 +106,7 @@ impl LocalIsolatePool {
     }
 
     /// Returns the number of times the worker has been recycled
-    /// since boot (Query — pure).
+    /// since boot (Query - pure).
     #[must_use]
     pub fn recycle_count(&self) -> usize {
         self.recycle_count.load(Ordering::Relaxed)
@@ -166,7 +166,7 @@ async fn run_recycler(
             Err(err) => {
                 tracing::error!(
                     error = %err,
-                    "local worker recycle failed — keeping the existing isolate"
+                    "local worker recycle failed - keeping the existing isolate"
                 );
             }
         }
@@ -201,16 +201,16 @@ fn resolve_policy_from_env() -> Arc<dyn RecyclePolicy> {
     let heap_bytes = reap_heap_bytes_from_env(heap_mb_raw.as_deref());
     let rss_bytes = reap_rss_bytes_from_env(rss_mb_raw.as_deref());
     if heap_raw.is_some() && heap_ratio.is_none() {
-        tracing::warn!(value = ?heap_raw, "NEXIDE_REAP_HEAP_RATIO unparseable — using default");
+        tracing::warn!(value = ?heap_raw, "NEXIDE_REAP_HEAP_RATIO unparseable - using default");
     }
     if req_raw.is_some() && request_count.is_none() {
-        tracing::warn!(value = ?req_raw, "NEXIDE_REAP_AFTER_REQUESTS unparseable — using default");
+        tracing::warn!(value = ?req_raw, "NEXIDE_REAP_AFTER_REQUESTS unparseable - using default");
     }
     if heap_mb_raw.is_some() && heap_bytes.is_none() {
-        tracing::warn!(value = ?heap_mb_raw, "NEXIDE_REAP_HEAP_MB unparseable — ignoring");
+        tracing::warn!(value = ?heap_mb_raw, "NEXIDE_REAP_HEAP_MB unparseable - ignoring");
     }
     if rss_mb_raw.is_some() && rss_bytes.is_none() {
-        tracing::warn!(value = ?rss_mb_raw, "NEXIDE_REAP_RSS_MB unparseable — ignoring");
+        tracing::warn!(value = ?rss_mb_raw, "NEXIDE_REAP_RSS_MB unparseable - ignoring");
     }
     let sampler = rss_bytes
         .filter(|n| *n > 0)

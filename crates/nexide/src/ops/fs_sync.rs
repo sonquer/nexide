@@ -8,7 +8,7 @@
 //! - tests: [`MemoryFs`] (an in-memory map) + the test-only
 //!   `AlwaysAllow` sandbox.
 //!
-//! Every op is a single Command or Query — no piecemeal state. Errors
+//! Every op is a single Command or Query - no piecemeal state. Errors
 //! are reported as `(code, message)` tuples that JS reshapes into
 //! Node-shaped `Error` objects (`err.code`, `err.message`).
 
@@ -69,7 +69,7 @@ pub struct FsStat {
     pub is_symlink: bool,
     /// Modification time in milliseconds since the Unix epoch.
     pub mtime_ms: f64,
-    /// Mode bits — best-effort; `0` when not available.
+    /// Mode bits - best-effort; `0` when not available.
     pub mode: u32,
 }
 
@@ -366,7 +366,7 @@ impl FsHandle {
         self.backend.stat(&p, follow)
     }
 
-    /// Sandbox-checked existence probe — returns `false` when the path
+    /// Sandbox-checked existence probe - returns `false` when the path
     /// is inadmissible or the backend reports absent.
     #[must_use]
     pub fn exists(&self, path: &str) -> bool {
@@ -409,7 +409,7 @@ impl FsHandle {
         self.backend.remove(&p, recursive)
     }
 
-    /// Sandbox-checked copy — both endpoints must be admissible.
+    /// Sandbox-checked copy - both endpoints must be admissible.
     ///
     /// # Errors
     /// `EACCES` when either endpoint escapes the sandbox; otherwise

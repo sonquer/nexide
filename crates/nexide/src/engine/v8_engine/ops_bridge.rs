@@ -16,7 +16,7 @@ use crate::ops::{DispatchTable, RequestId, RequestSource, ResponseHead, Response
 /// setAsyncContext}` helper surface on `context`.
 ///
 /// Must run after [`super::bridge::BridgeStateHandle`] has been parked
-/// in the isolate slot — every op callback derefs that slot.
+/// in the isolate slot - every op callback derefs that slot.
 pub(super) fn install<'s>(scope: &mut v8::PinScope<'s, '_>, context: v8::Local<'s, v8::Context>) {
     let global = context.global(scope);
     let nexide_obj = v8::Object::new(scope);
@@ -364,7 +364,7 @@ fn op_core_queue_microtask<'s>(
     rv.set_undefined();
 }
 
-/// Returns the V8 Continuation-Preserved Embedder Data — the value
+/// Returns the V8 Continuation-Preserved Embedder Data - the value
 /// stored on the active promise continuation, automatically propagated
 /// across `await`, `.then()`, `queueMicrotask()`, and timer
 /// resumptions. Used by [`AsyncLocalStorage`] to carry per-request
@@ -1059,7 +1059,7 @@ fn op_process_exit<'s>(
     rv.set_undefined();
 }
 
-/// `process.kill(pid, signum)` — gated on
+/// `process.kill(pid, signum)` - gated on
 /// [`ProcessConfig::subprocess_allowed`] because the syscall reaches
 /// arbitrary host PIDs. Returns `true` on success, throws
 /// Node-shaped errors on failure.
@@ -1121,7 +1121,7 @@ fn op_process_kill<'s>(
     }
 }
 
-/// `process.cpuUsage()` — returns `{ user, system }` in microseconds.
+/// `process.cpuUsage()` - returns `{ user, system }` in microseconds.
 /// Unix uses `getrusage(RUSAGE_SELF)`; other platforms return zeroes.
 fn op_process_cpu_usage<'s>(
     scope: &mut v8::PinScope<'s, '_>,
@@ -1159,7 +1159,7 @@ fn cpu_usage_micros() -> (u64, u64) {
     (0, 0)
 }
 
-/// `process.memoryUsage()` — best-effort RSS via the `sysinfo` crate.
+/// `process.memoryUsage()` - best-effort RSS via the `sysinfo` crate.
 /// `heapTotal`, `heapUsed`, `external`, and `arrayBuffers` are reported
 /// as zero (V8 does not expose these stats through the public op
 /// surface yet).
@@ -4063,9 +4063,9 @@ fn op_crypto_chacha20_open<'s>(
 /// Signs a message with a PEM-encoded private key.
 ///
 /// Supported algorithms (Node-style identifiers):
-///   * `rsa-sha256`, `rsa-sha384`, `rsa-sha512` — RSASSA-PKCS1-v1_5
-///   * `ecdsa-p256-sha256` — DER-encoded ECDSA on the P-256 curve
-///   * `ed25519` — pure EdDSA, no prehash
+///   * `rsa-sha256`, `rsa-sha384`, `rsa-sha512` - RSASSA-PKCS1-v1_5
+///   * `ecdsa-p256-sha256` - DER-encoded ECDSA on the P-256 curve
+///   * `ed25519` - pure EdDSA, no prehash
 fn op_crypto_sign<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,

@@ -204,5 +204,5 @@ where
         }
         table.add_row(row);
     }
-    format!("\n>>> scaling — {metric}\n{table}\n")
+    format!("\n>>> scaling - {metric}\n{table}\n")
 }

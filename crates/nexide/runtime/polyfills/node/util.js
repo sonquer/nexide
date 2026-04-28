@@ -1,6 +1,6 @@
 "use strict";
 
-// node:util — minimal but compatible API used by Next.js + commonly
+// node:util - minimal but compatible API used by Next.js + commonly
 // imported by middleware libraries.
 
 function format(fmt, ...args) {

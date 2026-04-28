@@ -3,7 +3,7 @@
 //! Bridges the dispatcher (Rust → push) with the JS request pump
 //! (JS → async pop via [`op_nexide_pop_request`]). Living entirely
 //! inside the V8 isolate's `OpState`, the queue is single-threaded
-//! by construction — `Rc<RefCell<...>>` access is fine and no
+//! by construction - `Rc<RefCell<...>>` access is fine and no
 //! cross-thread synchronisation is required.
 //!
 //! The queue keeps two pieces of state:
@@ -26,7 +26,7 @@ use super::dispatch_table::RequestId;
 ///
 /// Cloning the handle shares the underlying buffer; the cost is a
 /// pair of [`Rc`] refcount bumps. The queue is intentionally
-/// `!Send + !Sync` — it lives on the isolate's local thread and is
+/// `!Send + !Sync` - it lives on the isolate's local thread and is
 /// never observed from elsewhere.
 #[derive(Debug, Clone, Default)]
 pub struct RequestQueue {
@@ -43,7 +43,7 @@ impl RequestQueue {
 
     /// Pushes `id` and wakes the pump (Command).
     ///
-    /// Notifies a single waiter — the pump is the only consumer by
+    /// Notifies a single waiter - the pump is the only consumer by
     /// design (rubber-duck blocker: enforce single-waiter semantics
     /// in [`Self::pop`]).
     pub fn push(&self, id: RequestId) {
@@ -100,7 +100,7 @@ impl RequestQueue {
         }
     }
 
-    /// Returns the count of currently-queued ids. Pure (Query) —
+    /// Returns the count of currently-queued ids. Pure (Query) -
     /// telemetry / tests only.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -109,7 +109,7 @@ impl RequestQueue {
 
     /// Drains up to `max` ids without ever suspending (Command).
     ///
-    /// Returns an empty `Vec` when the queue is empty — the caller
+    /// Returns an empty `Vec` when the queue is empty - the caller
     /// is expected to fall back to [`Self::pop_batch`] (which awaits)
     /// in that case. `max == 0` is a programming error and is
     /// treated as `1` for symmetry with [`Self::pop_batch`].

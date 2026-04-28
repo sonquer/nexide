@@ -9,11 +9,11 @@
  * Levels follow the standard `console` taxonomy and map to numeric
  * values consumed by `op_nexide_log`:
  *
- *   0 — trace
- *   1 — debug
- *   2 — log / info
- *   3 — warn
- *   4 — error
+ *   0 - trace
+ *   1 - debug
+ *   2 - log / info
+ *   3 - warn
+ *   4 - error
  */
 ((globalThis) => {
   const { ops } = Nexide.core;

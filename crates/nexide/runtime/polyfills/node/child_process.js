@@ -1,6 +1,6 @@
 "use strict";
 
-// node:child_process — host-backed implementation that wraps
+// node:child_process - host-backed implementation that wraps
 // `tokio::process::Command` through `op_proc_*`. Supports the
 // asynchronous shapes Next.js relies on: `spawn`, `exec`,
 // `execFile`. The synchronous variants (`spawnSync`,

@@ -13,7 +13,7 @@
 //! helpers so callers do not have to reach into the underlying
 //! storage.
 //!
-//! The table is single-threaded by design — every isolate runs
+//! The table is single-threaded by design - every isolate runs
 //! inside a `tokio::task::LocalSet`, so `RefCell` is the correct
 //! interior-mutability primitive. `Rc` lets the table be cheaply
 //! cloned into op closures without giving up shared ownership.

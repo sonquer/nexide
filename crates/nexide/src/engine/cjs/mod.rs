@@ -1,8 +1,8 @@
 //! CommonJS substrate for the nexide isolate.
 //!
 //! Components:
-//! - [`BuiltinRegistry`] — thread-safe collection of `node:*` modules.
-//! - [`CjsResolver`] / [`FsResolver`] — specifier resolution.
+//! - [`BuiltinRegistry`] - thread-safe collection of `node:*` modules.
+//! - [`CjsResolver`] / [`FsResolver`] - specifier resolution.
 
 #![allow(clippy::doc_markdown)]
 

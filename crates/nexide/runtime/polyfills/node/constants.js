@@ -1,4 +1,4 @@
-// node:constants — legacy aggregate alias for fs/os/crypto constants.
+// node:constants - legacy aggregate alias for fs/os/crypto constants.
 // Deprecated in modern Node, still pulled in by some bundles.
 
 (function () {

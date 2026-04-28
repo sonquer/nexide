@@ -1,6 +1,6 @@
 "use strict";
 
-// node:crypto — surface backed by `op_crypto_*` host calls.
+// node:crypto - surface backed by `op_crypto_*` host calls.
 //
 // Hash/HMAC/cipher operations are exposed via accumulating JS shells
 // (the host ops are one-shot) so that `update()` chunks stay in

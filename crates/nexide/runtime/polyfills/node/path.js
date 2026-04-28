@@ -1,6 +1,6 @@
 "use strict";
 
-// node:path — POSIX + Win32 implementations sharing helpers.
+// node:path - POSIX + Win32 implementations sharing helpers.
 // Only the surface required by Next.js standalone is covered; behaviour
 // matches Node.js for valid inputs.
 

@@ -4,16 +4,16 @@
 //! must return immediately. To expose Node-style async APIs (DNS,
 //! TCP, child process spawning, …) we follow a two-stage pattern:
 //!
-//! 1. **Stage 1 — schedule.** The op callback creates a fresh
+//! 1. **Stage 1 - schedule.** The op callback creates a fresh
 //!    [`v8::PromiseResolver`], stashes its [`v8::Global`] handle, and
 //!    spawns a `tokio` task that performs the I/O off-isolate. The
 //!    callback returns the resolver's promise to JavaScript while the
 //!    work is still in flight.
-//! 2. **Stage 2 — settle.** When the I/O finishes the spawned task
+//! 2. **Stage 2 - settle.** When the I/O finishes the spawned task
 //!    pushes a [`Completion`] onto the per-isolate channel held in
 //!    [`super::bridge::BridgeState`]. The completion bundles the
-//!    resolver handle with a [`Settler`] closure that — once the
-//!    isolate thread re-enters the engine pump — receives the active
+//!    resolver handle with a [`Settler`] closure that - once the
+//!    isolate thread re-enters the engine pump - receives the active
 //!    `PinScope` and either resolves or rejects the promise with a
 //!    fully-typed `v8::Value`.
 //!
@@ -135,7 +135,7 @@ mod tests {
 
     /// `CompletionChannel::new` must hand back a sender and receiver
     /// that observe one another. We do not exercise actual V8
-    /// resolution here — that requires a fully-booted isolate and is
+    /// resolution here - that requires a fully-booted isolate and is
     /// covered by the per-op integration tests.
     #[test]
     fn channel_starts_empty() {

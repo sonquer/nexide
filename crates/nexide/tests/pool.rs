@@ -1,5 +1,5 @@
 //! Integration tests for [`IsolatePool`] using a deterministic
-//! recording worker — no V8 involved, so the suite is fast and
+//! recording worker - no V8 involved, so the suite is fast and
 //! deterministic.
 
 use std::sync::Arc;
@@ -88,7 +88,7 @@ impl WorkerFactory for RecordingFactory {
     }
 }
 
-/// Policy that never recycles — used to test pure routing behaviour
+/// Policy that never recycles - used to test pure routing behaviour
 /// without recycle interference.
 struct NeverRecycle;
 impl RecyclePolicy for NeverRecycle {

@@ -1,8 +1,8 @@
 //! Host-side HTTP/HTTPS client backing `node:https` (and the
 //! outbound subset of `node:http`).
 //!
-//! `request` accepts the materialised view of a Node options bag —
-//! method, URL, headers, body — and returns a `ResponseHandle`
+//! `request` accepts the materialised view of a Node options bag -
+//! method, URL, headers, body - and returns a `ResponseHandle`
 //! describing the status line, headers, and the streaming body.
 //! The body is delivered chunk-by-chunk through a Tokio `mpsc`
 //! channel so JavaScript can consume large responses without

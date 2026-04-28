@@ -1,11 +1,11 @@
-//! `IsolatePool` — multi-worker pool with lock-free dispatch and
+//! `IsolatePool` - multi-worker pool with lock-free dispatch and
 //! background recycling.
 //!
 //! ## Architecture
 //!
 //! Each slot stores its worker behind a `std::sync::Mutex<Arc<dyn
 //! Worker>>` that is locked only long enough to clone the `Arc` (a
-//! single atomic increment) — effectively wait-free for dispatchers.
+//! single atomic increment) - effectively wait-free for dispatchers.
 //! The mutex is never held across `await`, so there is no head-of-line
 //! blocking: many tasks can race through the lock, each leaving with
 //! its own snapshot of the current worker. Inflight load is tracked
@@ -19,7 +19,7 @@
 //! variant: it samples two distinct indices via two independent atomic
 //! counters with coprime strides and picks the one with the lower
 //! inflight count. Under fully sequential load (test scenarios) the
-//! ties resolve to the first counter, giving a strict round-robin —
+//! ties resolve to the first counter, giving a strict round-robin -
 //! tests can therefore assert deterministic ordering. Under concurrent
 //! load the picker biases towards the less loaded slot, eliminating
 //! the head-of-line blocking that a plain round-robin suffers when
@@ -33,7 +33,7 @@
 //! Each slot has a singleflight `recycling: AtomicBool` guard so the
 //! background task never starts more than one rebuild per slot at a
 //! time, and the freshly built worker is published with a single
-//! mutex swap — in-flight dispatches against the previous worker
+//! mutex swap - in-flight dispatches against the previous worker
 //! keep their own [`Arc`] alive and complete on it without
 //! interruption.
 //!
@@ -130,13 +130,13 @@ pub struct PoolStats {
 /// Per-slot state carried by [`PoolInner`].
 struct Slot {
     /// Current worker handle. Locked only long enough to clone the
-    /// `Arc` — a single atomic increment — so the lock is effectively
+    /// `Arc` - a single atomic increment - so the lock is effectively
     /// wait-free for dispatchers. The lock is never held across an
     /// `await`, eliminating head-of-line blocking even when many
     /// tasks dispatch concurrently to the same slot.
     worker: Mutex<Arc<dyn Worker>>,
     /// Number of requests currently being processed by this slot.
-    /// Maintained by the [`InflightGuard`] RAII type — incremented on
+    /// Maintained by the [`InflightGuard`] RAII type - incremented on
     /// dispatch entry, decremented on dispatch completion or
     /// cancellation.
     inflight: AtomicUsize,
@@ -265,7 +265,7 @@ impl Drop for InflightGuard<'_> {
 /// Hybrid hot-isolate pool with policy-driven recycling.
 ///
 /// The `IsolatePool` is the public façade. All shared state lives in
-/// the inner [`PoolInner`] — held behind `Arc` — and the background
+/// the inner [`PoolInner`] - held behind `Arc` - and the background
 /// recycler task references the inner via [`Weak`] so the pool can be
 /// dropped cleanly without lingering tasks.
 pub struct IsolatePool {
@@ -277,7 +277,7 @@ impl IsolatePool {
     /// Builds a pool of `size` workers using `factory` and `policy`,
     /// and starts the background recycler task.
     ///
-    /// Workers are constructed concurrently — each `build()` call
+    /// Workers are constructed concurrently - each `build()` call
     /// spawns a dedicated isolate thread which boots in parallel with
     /// its peers. Wall-clock startup is therefore bounded by the
     /// slowest single worker, not the sum of all of them.
@@ -347,21 +347,21 @@ impl IsolatePool {
     /// Recognised env vars (see also [`reap_heap_ratio_from_env`] and
     /// [`reap_request_count_from_env`] for the parsing contracts):
     ///
-    /// * `NEXIDE_REAP_HEAP_RATIO` (default `0.8`) — recycle a worker
+    /// * `NEXIDE_REAP_HEAP_RATIO` (default `0.8`) - recycle a worker
     ///   when its V8 used-heap exceeds this fraction of the heap
     ///   limit. Set to `0` to disable the heap-watchdog branch.
-    /// * `NEXIDE_REAP_AFTER_REQUESTS` (default `50000`) — recycle a
+    /// * `NEXIDE_REAP_AFTER_REQUESTS` (default `50000`) - recycle a
     ///   worker after it has handled this many requests. Set to `0`
     ///   to disable the request-count branch.
-    /// * `NEXIDE_REAP_HEAP_MB` (optional) — recycle a worker when
+    /// * `NEXIDE_REAP_HEAP_MB` (optional) - recycle a worker when
     ///   its V8 used-heap exceeds this absolute byte budget. Useful
     ///   when `NEXIDE_HEAP_LIMIT_MB` is shrunk and the ratio policy
     ///   is too coarse-grained.
-    /// * `NEXIDE_REAP_RSS_MB` (optional, Linux only) — recycle when
+    /// * `NEXIDE_REAP_RSS_MB` (optional, Linux only) - recycle when
     ///   process-wide RSS exceeds this cap. On non-Linux hosts the
     ///   sampler always returns `None` so the policy disables itself.
     ///
-    /// Setting all to `0` produces a no-op recycler — useful for
+    /// Setting all to `0` produces a no-op recycler - useful for
     /// benchmarks where the recycle path itself is being measured.
     /// Invalid env values (typos, negatives, NaN) are surfaced via a
     /// `warn!` log and treated as "not set" so the defaults apply.
@@ -385,25 +385,25 @@ impl IsolatePool {
         if heap_raw.is_some() && heap_ratio.is_none() {
             tracing::warn!(
                 value = ?heap_raw,
-                "NEXIDE_REAP_HEAP_RATIO is set but unparseable — falling back to default"
+                "NEXIDE_REAP_HEAP_RATIO is set but unparseable - falling back to default"
             );
         }
         if req_raw.is_some() && request_count.is_none() {
             tracing::warn!(
                 value = ?req_raw,
-                "NEXIDE_REAP_AFTER_REQUESTS is set but unparseable — falling back to default"
+                "NEXIDE_REAP_AFTER_REQUESTS is set but unparseable - falling back to default"
             );
         }
         if heap_mb_raw.is_some() && heap_bytes.is_none() {
             tracing::warn!(
                 value = ?heap_mb_raw,
-                "NEXIDE_REAP_HEAP_MB is set but unparseable — ignoring"
+                "NEXIDE_REAP_HEAP_MB is set but unparseable - ignoring"
             );
         }
         if rss_mb_raw.is_some() && rss_bytes.is_none() {
             tracing::warn!(
                 value = ?rss_mb_raw,
-                "NEXIDE_REAP_RSS_MB is set but unparseable — ignoring"
+                "NEXIDE_REAP_RSS_MB is set but unparseable - ignoring"
             );
         }
         let sampler = rss_bytes
@@ -419,7 +419,7 @@ impl IsolatePool {
         Self::new(size, factory, policy).await
     }
 
-    /// Returns aggregated telemetry (Query — pure, no side effects).
+    /// Returns aggregated telemetry (Query - pure, no side effects).
     #[must_use]
     pub fn stats(&self) -> PoolStats {
         let worker_health = self
@@ -481,7 +481,7 @@ impl EngineDispatcher for IsolatePool {
 /// Runs while the [`Arc<PoolInner>`] stays alive. Each tick walks the
 /// slot list and calls [`PoolInner::recycle_slot_if_needed`], which
 /// is itself singleflight-guarded. The loop exits cleanly the moment
-/// the [`Weak`] handle can no longer be upgraded — i.e. when the
+/// the [`Weak`] handle can no longer be upgraded - i.e. when the
 /// owning [`IsolatePool`] is dropped.
 async fn recycler_loop(weak: Weak<PoolInner>) {
     let mut interval = tokio::time::interval(RECYCLE_TICK);

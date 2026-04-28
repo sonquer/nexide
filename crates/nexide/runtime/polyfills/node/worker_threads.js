@@ -6,7 +6,7 @@
  * The nexide runtime executes a single V8 isolate per HTTP worker
  * (`SO_REUSEPORT` fan-out at the kernel level), so spawning a
  * JS-level `Worker` would require booting a second isolate on its
- * own OS thread — not supported in the standalone Next.js deployment
+ * own OS thread - not supported in the standalone Next.js deployment
  * shape this runtime targets.
  *
  * The module-level constants are kept fully functional:

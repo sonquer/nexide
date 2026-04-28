@@ -14,18 +14,18 @@
 //! Splitting the worker into **two cooperating `spawn_local` tasks**
 //! sharing one [`Rc<RefCell<V8Engine>>`] eliminates the bias:
 //!
-//! 1. **Pump task** — drives V8 by polling the event loop in a
+//! 1. **Pump task** - drives V8 by polling the event loop in a
 //!    [`std::future::poll_fn`]. The mutable borrow is reacquired per
 //!    poll and dropped on the synchronous return path so the recv
 //!    task can borrow between V8 ticks. When V8 reports the loop
 //!    drained the pump parks on a [`tokio::sync::Notify`] until the
 //!    next dispatch.
-//! 2. **Recv task** — pulls jobs off the public mailbox, calls
+//! 2. **Recv task** - pulls jobs off the public mailbox, calls
 //!    [`V8Engine::enqueue`] (a `&self` API), spawns a per-request
 //!    forwarder that awaits the JS reply, then notifies the pump.
 //!
 //! The Tokio `current_thread` scheduler interleaves the two tasks
-//! fairly because each has its own poll point — Axum acceptors,
+//! fairly because each has its own poll point - Axum acceptors,
 //! forwarders, the pump, and the recv loop all rotate.
 //!
 //! ## Module scope
@@ -115,7 +115,7 @@ pub(super) async fn boot_engine(
 /// Drives [`super::V8Engine::pump_once`] one tick at a
 /// time. Yields the mutable borrow between polls so the recv task can
 /// enqueue new slots, and parks on `pump_signal` once V8 reports the
-/// event loop drained — avoids spinning on an idle isolate.
+/// event loop drained - avoids spinning on an idle isolate.
 ///
 /// Returns when V8 reports an event-loop error (the supervisor is
 /// expected to recycle/rebuild the worker in that case) or the task
@@ -139,11 +139,11 @@ pub(super) async fn run_pump(engine: Rc<RefCell<V8Engine>>, pump_signal: Rc<Noti
 /// oneshot directly to the in-isolate
 /// [`crate::ops::DispatchTable`]. The JS handler completes the
 /// dispatcher's await via `op_nexide_send_response` /
-/// `op_nexide_finish_error` — there is no intermediate forwarder
+/// `op_nexide_finish_error` - there is no intermediate forwarder
 /// task and no per-request oneshot allocation on this path.
 ///
 /// `handled` is incremented eagerly (one bump per submitted job).
-/// `RequestCount`-based recycle policies tolerate this — completed
+/// `RequestCount`-based recycle policies tolerate this - completed
 /// vs. submitted differ at most by the per-isolate concurrency cap,
 /// which is bounded.
 ///

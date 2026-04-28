@@ -1,6 +1,6 @@
 // Node.js `process` polyfill backed by the nexide process op family.
 //
-// Idempotent — re-running the script (e.g. between tests booting the
+// Idempotent - re-running the script (e.g. between tests booting the
 // same isolate) is a no-op so polyfill installation can run more than
 // once. All ops live in the `nexide_process_ops` extension; if the
 // extension is missing the first lookup throws synchronously.

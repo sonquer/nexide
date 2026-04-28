@@ -3,7 +3,7 @@
 //!
 //! Each test boots a fresh engine, runs a CommonJS entrypoint that
 //! exercises one piece of the timer surface, and treats a thrown JS
-//! error as a Rust test failure. Delays are kept short (5–25 ms) so
+//! error as a Rust test failure. Delays are kept short (5-25 ms) so
 //! the suite stays cheap enough for CI.
 
 #![allow(clippy::future_not_send, clippy::significant_drop_tightening)]

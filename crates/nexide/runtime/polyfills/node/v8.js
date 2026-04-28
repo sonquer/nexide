@@ -1,4 +1,4 @@
-// node:v8 — minimal stub. Next.js calls v8.getHeapStatistics() to log
+// node:v8 - minimal stub. Next.js calls v8.getHeapStatistics() to log
 // memory usage; we serve numbers from our own heap snapshot, but we
 // don't expose serializer / cache machinery.
 

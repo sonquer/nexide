@@ -23,6 +23,15 @@ export default function RootLayout({
 }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        <link
+          rel="preload"
+          href="/fonts/JetBrainsMono-Regular.ttf"
+          as="font"
+          type="font/ttf"
+          crossOrigin="anonymous"
+        />
+      </head>
       <body className="flex min-h-screen flex-col antialiased">
         <header className="sticky top-0 z-10 border-b border-white/5 bg-ink/70 backdrop-blur">
           <nav className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-4">

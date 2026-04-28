@@ -157,7 +157,7 @@ const MODULES: &[(&str, &str)] = &[
 /// # Errors
 ///
 /// [`CjsError::DuplicateBuiltin`] if a module with the same name is
-/// already present — surfaces wiring bugs (e.g. registering the
+/// already present - surfaces wiring bugs (e.g. registering the
 /// catalogue twice).
 pub fn register_node_builtins(registry: &mut BuiltinRegistry) -> Result<(), CjsError> {
     for (name, source) in MODULES {

@@ -32,7 +32,7 @@ function familyOption(opts) {
 }
 
 /**
- * Node-compatible callback adapter — accepts either `(host, cb)` or
+ * Node-compatible callback adapter - accepts either `(host, cb)` or
  * `(host, options, cb)`. `options.all` switches between the
  * single-result and array-result shape Node uses.
  */
@@ -100,7 +100,7 @@ function resolveSrv(host) {
   return ops.op_dns_resolve_srv(String(host));
 }
 
-/** PTR lookup — returns the host names registered for `ip`. */
+/** PTR lookup - returns the host names registered for `ip`. */
 function reverse(ip) {
   return ops.op_dns_reverse(String(ip));
 }

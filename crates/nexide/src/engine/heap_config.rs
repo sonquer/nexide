@@ -1,7 +1,7 @@
 //! Per-isolate V8 heap budget.
 //!
 //! Without an explicit configuration `v8::Isolate` sizes its
-//! `heap_size_limit` against host RAM — typically 1 – 4 GB on a
+//! `heap_size_limit` against host RAM - typically 1 - 4 GB on a
 //! workstation, *several hundred MB* in a 1-CPU container after
 //! V8's heuristic adjustment. Because the [`HeapThreshold`] recycle
 //! policy fires at `used / heap_size_limit`, an unbounded limit
@@ -117,7 +117,7 @@ impl Default for HeapLimitConfig {
 /// missing / blank / non-numeric input so callers fall back to the
 /// project default.
 ///
-/// `0` is treated as "missing" rather than "disable" — V8 cannot
+/// `0` is treated as "missing" rather than "disable" - V8 cannot
 /// run with a zero heap and silently disabling the cap reintroduces
 /// the host-sized limit this module exists to prevent.
 #[must_use]

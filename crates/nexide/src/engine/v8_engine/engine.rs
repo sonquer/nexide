@@ -49,7 +49,7 @@ pub struct BootContext {
 }
 
 impl BootContext {
-    /// Empty context — every slot keeps its default.
+    /// Empty context - every slot keeps its default.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -107,7 +107,7 @@ impl BootContext {
 
 /// Concrete V8 engine.
 ///
-/// `!Send` — V8 isolates are pinned to the thread that created them.
+/// `!Send` - V8 isolates are pinned to the thread that created them.
 /// The pool uses `LocalSet` / dedicated OS threads to honour that.
 pub struct V8Engine {
     isolate: v8::OwnedIsolate,
@@ -280,7 +280,7 @@ impl V8Engine {
     /// Starts the JavaScript-side request pump.
     ///
     /// `batch_cap == 0 || 1` selects the serial pump; values `>= 2`
-    /// select the batched pump. The cap is forwarded verbatim — the
+    /// select the batched pump. The cap is forwarded verbatim - the
     /// JS side clamps it again on the op boundary.
     pub fn start_pump(&mut self, batch_cap: usize) -> Result<(), EngineError> {
         let cap = u32::try_from(batch_cap).unwrap_or(u32::MAX);

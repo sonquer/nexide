@@ -121,7 +121,7 @@ pub async fn accept(
 }
 
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on
-/// EOF — JavaScript can detect the half-close by checking `len === 0`.
+/// EOF - JavaScript can detect the half-close by checking `len === 0`.
 pub async fn read_chunk(stream: &mut TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
     let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];

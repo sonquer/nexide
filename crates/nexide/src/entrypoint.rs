@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Outcome of [`EntrypointResolver::resolve`] — both the absolute path
+/// Outcome of [`EntrypointResolver::resolve`] - both the absolute path
 /// to the JS entrypoint and a tag identifying which branch was taken
 /// (used for tracing and the `next_version` boot log).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -27,7 +27,7 @@ fn write_module(filename: &str, source: &str) -> (TempDir, PathBuf) {
 }
 
 /// Boots the engine on the supplied module and asserts that booting
-/// completes successfully — any thrown error from the module body
+/// completes successfully - any thrown error from the module body
 /// (typically an assertion failure) is treated as a test failure with
 /// a descriptive message.
 async fn run_assertion_module(source: &str) {

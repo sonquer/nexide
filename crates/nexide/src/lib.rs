@@ -1,4 +1,4 @@
-//! Crate `nexide` — native Next.js runtime in Rust.
+//! Crate `nexide` - native Next.js runtime in Rust.
 //!
 //! The binary entrypoint defers to [`run`]. The [`serve_until`]
 //! function exposes a testable seam that lets callers inject their
@@ -93,7 +93,7 @@ pub enum RuntimeError {
 }
 
 /// Installs a global `tracing` subscriber driven by the `RUST_LOG`
-/// environment variable. The function is idempotent — additional calls
+/// environment variable. The function is idempotent - additional calls
 /// inside the same process are no-ops.
 ///
 /// # Errors
@@ -131,8 +131,8 @@ pub fn install_tracing() -> Result<(), RuntimeError> {
 /// power-of-two-choices over their mailbox depth.
 ///
 /// `worker_count` is clamped to `≥ 1`. Dispatch on each connection
-/// stays intra-thread end-to-end — Axum, prerender, and the V8
-/// isolate share the same `LocalSet` — eliminating the cross-thread
+/// stays intra-thread end-to-end - Axum, prerender, and the V8
+/// isolate share the same `LocalSet` - eliminating the cross-thread
 /// futex hop that historically dominated p99 latency on `--cpus=1`
 /// and `--cpus=2` containers.
 ///
@@ -156,7 +156,7 @@ where
 /// the runtime should listen on.
 ///
 /// All paths are absolute and verified to exist at construction time
-/// — downstream code can therefore consume them without further I/O
+/// - downstream code can therefore consume them without further I/O
 /// validation. Construct via [`AppLayout::resolve`].
 #[derive(Debug, Clone)]
 pub struct AppLayout {
@@ -184,7 +184,7 @@ impl AppLayout {
     ///    the contents of `.next/standalone/`). Selected when
     ///    `<root>/server.js` exists. The resolver then expects:
     ///    - `<root>/server.js`
-    ///    - `<root>/public/` (you must copy it from the project root —
+    ///    - `<root>/public/` (you must copy it from the project root -
     ///      `next build` does NOT copy `public/` and `.next/static/`
     ///      into the standalone bundle)
     ///    - `<root>/.next/static/` (likewise, copied manually)
@@ -230,7 +230,7 @@ impl AppLayout {
 /// [`AppLayout`] until `shutdown` resolves.
 ///
 /// This is the seam used by both the binary's `start` subcommand and
-/// integration tests — they construct an [`AppLayout`] explicitly
+/// integration tests - they construct an [`AppLayout`] explicitly
 /// instead of relying on the legacy `example/` discovery in
 /// [`serve_until`].
 ///
@@ -265,7 +265,7 @@ where
 
 /// Runtime threading topology selected at boot.
 ///
-/// `MultiThread` reproduces the historical `nexide` model — the Axum
+/// `MultiThread` reproduces the historical `nexide` model - the Axum
 /// reactor lives on a multi-thread Tokio runtime and every V8 isolate
 /// owns its own dedicated OS thread. It scales horizontally on
 /// machines with two or more cores.
@@ -309,7 +309,7 @@ pub const RUNTIME_MODE_ENV: &str = "NEXIDE_RUNTIME_MODE";
 ///
 /// Resolution order:
 /// 1. [`RUNTIME_MODE_ENV`] explicit override.
-/// 2. [`std::thread::available_parallelism`] — `1` ⇒ `SingleThread`,
+/// 2. [`std::thread::available_parallelism`] - `1` ⇒ `SingleThread`,
 ///    anything else ⇒ `MultiThread`.
 ///
 /// On exotic targets where parallelism cannot be detected, defaults
@@ -353,14 +353,14 @@ pub fn resolve_runtime_mode(env_value: Option<&str>, available_cpus: Option<usiz
 /// 1. `NEXIDE_POOL_SIZE` environment variable, if set to a positive
 ///    integer (e.g. `NEXIDE_POOL_SIZE=16`). Lets operators tune the
 ///    pool to deployment-specific traffic patterns without rebuilding
-///    the binary. **Always wins** — bypasses every heuristic below.
+///    the binary. **Always wins** - bypasses every heuristic below.
 /// 2. `NEXIDE_POOL_MEMORY_BUDGET_MB` (paired with
 ///    `NEXIDE_HEAP_PER_ISOLATE_MB`, default
 ///    [`DEFAULT_HEAP_PER_ISOLATE_MB`]): caps the pool to
 ///    `(budget_mb − recycle_reserve_mb) / per_isolate_mb`. The
 ///    recycle reserve is exactly one isolate's worth, because the
 ///    recycler boots a fresh isolate **before** swapping out the old
-///    one — peak RSS during a swap is `(N+1) × per_isolate`, so the
+///    one - peak RSS during a swap is `(N+1) × per_isolate`, so the
 ///    sizing must subtract one isolate or the operator-supplied
 ///    budget is silently broken at the worst possible moment.
 ///    The result is then capped by the same CPU-based heuristic
@@ -381,13 +381,13 @@ pub fn resolve_runtime_mode(env_value: Option<&str>, available_cpus: Option<usiz
 ///    `POOL=10` (raw P-core count) regresses to RPS=17.7k / p99=12.8ms
 ///    because each isolate drags V8 platform threads, the tokio worker
 ///    pool, the blocking pool and tower-http through a shared CPU
-///    budget — saturating all P-cores forces work onto E-cores and
+///    budget - saturating all P-cores forces work onto E-cores and
 ///    triples GC jitter. Reserving two P-cores for the rest of the
 ///    process keeps every isolate pinned to a P-core under load.
 ///    See [`pool_size_from_perf_cores`].
 /// 5. [`std::thread::available_parallelism`], which honours
 ///    container CPU quotas (cgroup v1 `cpu.cfs_quota_us` and cgroup
-///    v2 `cpu.max`) on Linux since Rust 1.59 — so a Pod limited to
+///    v2 `cpu.max`) on Linux since Rust 1.59 - so a Pod limited to
 ///    `2` CPUs gets a 2-worker pool instead of 16-on-the-host.
 /// 6. Hard fallback of `2` if every signal fails (exotic targets).
 fn default_pool_size() -> usize {
@@ -419,7 +419,7 @@ fn default_pool_size() -> usize {
     cpu_cap
 }
 
-/// Computes the CPU-based pool cap (steps 3–4–5 in the resolution
+/// Computes the CPU-based pool cap (steps 3-4-5 in the resolution
 /// order documented on [`default_pool_size`]).
 fn cpu_based_pool_cap() -> usize {
     perf_core_count().map_or_else(detected_pool_size, pool_size_from_perf_cores)
@@ -441,7 +441,7 @@ fn pool_size_from_memory_budget_env() -> Option<usize> {
     if budget_raw.is_some() && budget_mb.is_none() {
         tracing::warn!(
             value = ?budget_raw,
-            "NEXIDE_POOL_MEMORY_BUDGET_MB is set but unparseable — ignoring"
+            "NEXIDE_POOL_MEMORY_BUDGET_MB is set but unparseable - ignoring"
         );
     }
     let budget_mb = budget_mb?;
@@ -471,7 +471,7 @@ fn pool_size_from_memory_budget(budget_mb: u64, per_isolate_mb: u64) -> usize {
             per_isolate_mb = per_iso,
             reserve_mb = reserve,
             "NEXIDE_POOL_MEMORY_BUDGET_MB cannot satisfy a single isolate plus recycle headroom; \
-             starting with 1 worker — actual RSS will exceed the requested budget"
+             starting with 1 worker - actual RSS will exceed the requested budget"
         );
         return 1;
     }
@@ -482,7 +482,7 @@ fn pool_size_from_memory_budget(budget_mb: u64, per_isolate_mb: u64) -> usize {
 /// into a pool-size suggestion using the same arithmetic as
 /// [`pool_size_from_memory_budget`]. Returns `None` on non-Linux
 /// hosts, when the limit cannot be read, or when the limit is the
-/// kernel "unlimited" sentinel — in those cases the caller falls
+/// kernel "unlimited" sentinel - in those cases the caller falls
 /// back to the CPU-based heuristic.
 fn pool_size_from_cgroup_memory() -> Option<usize> {
     let budget_mb = cgroup_memory_limit_mb()?;
@@ -577,7 +577,7 @@ pub const MAX_INFLIGHT_PER_ISOLATE_ENV: &str = "NEXIDE_MAX_INFLIGHT_PER_ISOLATE"
 /// holds a non-zero unsigned integer, otherwise
 /// [`DEFAULT_MAX_INFLIGHT_PER_ISOLATE`]. A `warn!` is emitted when
 /// the variable is set but unparseable so misconfigured deployments
-/// are not silent. Pure function — environment access is the
+/// are not silent. Pure function - environment access is the
 /// caller's responsibility, which keeps unit tests deterministic.
 #[must_use]
 pub fn resolve_max_inflight_per_isolate(env_value: Option<&str>) -> u32 {
@@ -593,7 +593,7 @@ pub fn resolve_max_inflight_per_isolate(env_value: Option<&str>) -> u32 {
                 tracing::warn!(
                     value = %raw,
                     %error,
-                    "{MAX_INFLIGHT_PER_ISOLATE_ENV} is unparseable — falling back to default"
+                    "{MAX_INFLIGHT_PER_ISOLATE_ENV} is unparseable - falling back to default"
                 );
                 DEFAULT_MAX_INFLIGHT_PER_ISOLATE
             }
@@ -625,7 +625,7 @@ fn mb_from_env(raw: Option<&str>) -> Option<u64> {
 /// that leaves CPU headroom for the rest of the runtime (tokio workers,
 /// blocking pool, tower-http, V8 platform threads).
 ///
-/// The rule is `max(p - 2, 4)` for `p >= 6`, otherwise `p` verbatim —
+/// The rule is `max(p - 2, 4)` for `p >= 6`, otherwise `p` verbatim -
 /// guaranteeing at least one isolate, never overshooting the perf-core
 /// budget and never shrinking pools below `4` on machines that have
 /// the cores to support them.
@@ -688,7 +688,7 @@ fn perf_core_count() -> Option<usize> {
     usize::try_from(value).ok()
 }
 
-/// Non-Apple stub — see the macOS implementation for rationale.
+/// Non-Apple stub - see the macOS implementation for rationale.
 #[cfg(not(target_vendor = "apple"))]
 fn perf_core_count() -> Option<usize> {
     None
@@ -703,24 +703,24 @@ fn perf_core_count() -> Option<usize> {
 ///
 /// Sizing rationale for the main reactor:
 ///
-/// * `new_current_thread()` — the main process does
+/// * `new_current_thread()` - the main process does
 ///   no per-request work. It only handles `tokio::signal::ctrl_c`,
 ///   spawns N worker threads, and (on non-Linux) runs the lightweight
 ///   p2c `accept_loop` which is bounded by `accept(2)` syscall rate
 ///   and trivial atomic stride bookkeeping. Reducing the reactor
 ///   from 2 worker threads to 1 removes one OS thread that would
 ///   otherwise compete with the per-worker isolates for CPU on small
-///   containers (`--cpus=2` deployments are the worst case — see
+///   containers (`--cpus=2` deployments are the worst case - see
 ///   `docs/PERF_NOTES.md` for the empirical 2cpu/1024 p99 regression that
 ///   motivated this change).
-/// * `max_blocking_threads(rt_blocking_cap())` — caps the blocking
+/// * `max_blocking_threads(rt_blocking_cap())` - caps the blocking
 ///   pool at `2 × cpus` (overridable via `NEXIDE_BLOCKING_THREADS`).
 ///   Tokio's default of `512` lets bursty `spawn_blocking` traffic
 ///   explode the OS thread count under load, starving the scheduler
 ///   and inflating tail latency. Each per-worker runtime has its own
 ///   blocking pool, so this cap only governs the main reactor's
 ///   blocking work (logging, signal-handling helpers).
-/// * `thread_name("nexide-rt")` — distinguishes the reactor thread
+/// * `thread_name("nexide-rt")` - distinguishes the reactor thread
 ///   from the per-worker `nexide-worker-N` threads and the V8
 ///   `DefaultWorker` pool when profiling with `sample`/`ps -M`.
 ///
@@ -883,7 +883,7 @@ const EXAMPLE_ROOT: &str = "example";
 /// Returns the bind address from `NEXIDE_BIND`, falling back to
 /// [`DEFAULT_BIND`] when the env var is absent or unparseable.
 ///
-/// Used only by the legacy [`serve_until`] entry — the CLI path
+/// Used only by the legacy [`serve_until`] entry - the CLI path
 /// builds its bind address from `--hostname` / `--port`.
 fn resolve_default_bind() -> Result<SocketAddr, RuntimeError> {
     let raw = std::env::var(BIND_ENV).unwrap_or_else(|_| DEFAULT_BIND.to_owned());
@@ -911,7 +911,7 @@ async fn wait_for_ctrl_c() {
 /// before the first isolate boots.
 ///
 /// When set to a non-empty string the value is treated as a **full
-/// override** — it replaces [`DEFAULT_V8_FLAGS`] entirely so an
+/// override** - it replaces [`DEFAULT_V8_FLAGS`] entirely so an
 /// operator who knows what they are doing can dial in any flag combo
 /// (e.g. `--predictable`, `--no-opt`, larger heap caps) without
 /// inheriting the runtime's defaults. Set to an empty string to keep
@@ -946,7 +946,7 @@ const MIN_OLD_SPACE_CAP_MB: u64 = 96;
 /// runs become long enough to dominate p99 tail latency. The
 /// The `docker-suite` measurements showed this directly:
 /// p99 on `api-*` jumped from 64 ms (1cpu/512, cap 448) to 71 ms
-/// (1cpu/1024, cap 960) and 49 ms (2cpu/1024, cap 448) — V8's
+/// (1cpu/1024, cap 960) and 49 ms (2cpu/1024, cap 448) - V8's
 /// working set was hugging the cap and triggering long full-GC
 /// pauses.
 ///
@@ -980,7 +980,7 @@ const HARD_OLD_SPACE_CAP_MB: u64 = 256;
 ///
 /// `--max-semi-space-size=N` (with `N` from [`DEFAULT_SEMI_SPACE_CAP_MB`])
 /// is always set so the young generation never grows faster than V8's
-/// default — keeps minor GC pause bounded even when the old-generation
+/// default - keeps minor GC pause bounded even when the old-generation
 /// cap is large.
 ///
 /// Pure function so the tuning policy is unit-testable without
@@ -1002,7 +1002,7 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
 
 /// Applies the V8 process-wide flags before any isolate is created.
 ///
-/// Must be called before the first [`pool::IsolatePool`] boot —
+/// Must be called before the first [`pool::IsolatePool`] boot -
 /// once `v8::V8::initialize` runs (lazily on the first
 /// `JsRuntime::try_new`), flags become read-only. The function is
 /// idempotent (guarded by a `Once`).

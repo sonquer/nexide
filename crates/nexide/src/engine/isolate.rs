@@ -1,7 +1,7 @@
 //! DIP boundary between the runtime and the JavaScript engine.
 //!
-//! The trait is intentionally narrow — boot a worker, advance its event
-//! loop one step, query heap diagnostics — so that production code and
+//! The trait is intentionally narrow - boot a worker, advance its event
+//! loop one step, query heap diagnostics - so that production code and
 //! tests can swap the heavy `V8Engine` for an in-memory mock without
 //! pulling V8 into the test build.
 
@@ -31,7 +31,7 @@ impl HeapStats {
     /// Returns the fraction of the configured heap limit currently in
     /// use, clamped to `0.0..=1.0`.
     ///
-    /// Returns `0.0` when the heap limit is zero — this only happens
+    /// Returns `0.0` when the heap limit is zero - this only happens
     /// for synthetic stats produced by tests; real V8 isolates always
     /// report a positive limit.
     #[must_use]
@@ -61,11 +61,11 @@ pub trait IsolateHandle {
     ///
     /// # Errors
     ///
-    /// * [`EngineError::Bootstrap`] — V8 platform / runtime construction
+    /// * [`EngineError::Bootstrap`] - V8 platform / runtime construction
     ///   failed.
-    /// * [`EngineError::ModuleResolution`] — entrypoint path cannot be
+    /// * [`EngineError::ModuleResolution`] - entrypoint path cannot be
     ///   converted to a module specifier or does not exist.
-    /// * [`EngineError::JsRuntime`] — the entrypoint parsed but threw
+    /// * [`EngineError::JsRuntime`] - the entrypoint parsed but threw
     ///   during evaluation.
     async fn boot(entrypoint: &Path) -> Result<Self, EngineError>
     where

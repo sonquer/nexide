@@ -1,4 +1,4 @@
-// `Buffer` polyfill — Node-compatible subclass of Uint8Array.
+// `Buffer` polyfill - Node-compatible subclass of Uint8Array.
 //
 // Idempotent. Implemented in pure JS; uses native TextEncoder/Decoder
 // when available, with a small fallback for base64/hex. Only the

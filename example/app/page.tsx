@@ -64,6 +64,14 @@ const DEMOS: ReadonlyArray<DemoCard> = [
     badge: "POST",
     tone: "form",
   },
+  {
+    href: "/image-bench",
+    title: "Image optimizer",
+    blurb:
+      "Native /_next/image pipeline. Decode + Lanczos3 resize + WebP encode in Rust, zero V8.",
+    badge: "Image",
+    tone: "static",
+  },
 ];
 
 export default function HomePage() {

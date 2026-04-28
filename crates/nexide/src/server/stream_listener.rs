@@ -5,7 +5,7 @@
 //!
 //! `axum::serve` is married to a `Listener` trait that does its own
 //! `accept`. To eliminate the cross-thread hop between Axum and the
-//! `!Send` V8 isolate we host **one Axum stack per worker thread** —
+//! `!Send` V8 isolate we host **one Axum stack per worker thread** -
 //! each on its own `current_thread` Tokio runtime + `LocalSet`. A
 //! single shared TCP listener cannot be bound multiple times on the
 //! same port without `SO_REUSEPORT`, which (a) is platform-dependent
@@ -35,7 +35,7 @@ pub(super) struct StreamListener {
 impl StreamListener {
     /// Wraps `rx` so the worker's `axum::serve` loop reads accepted
     /// streams from it. `local_addr` is exposed verbatim to callers
-    /// of [`axum::serve::Listener::local_addr`] — it is informational
+    /// of [`axum::serve::Listener::local_addr`] - it is informational
     /// (typically the shared bind address) and not used for routing.
     #[must_use]
     pub(super) const fn new(
@@ -66,7 +66,7 @@ impl axum::serve::Listener for StreamListener {
     }
 }
 
-/// Awaits forever — used when the upstream sender side has dropped
+/// Awaits forever - used when the upstream sender side has dropped
 /// (graceful shutdown). Avoids busy-spinning a closed channel.
 async fn futures_pending() {
     std::future::pending::<()>().await;

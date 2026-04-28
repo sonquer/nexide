@@ -1,6 +1,6 @@
 "use strict";
 
-// node:events — minimal but complete EventEmitter implementation.
+// node:events - minimal but complete EventEmitter implementation.
 // Compatible with the Node.js public API used by Next.js standalone
 // and most middleware libraries.
 
@@ -16,7 +16,7 @@ function checkListener(listener) {
 }
 
 // Implemented as a function constructor (not an ES2015 `class`) so that
-// downstream code can call `EventEmitter.call(this)` from a subclass —
+// downstream code can call `EventEmitter.call(this)` from a subclass -
 // Node.js's real EventEmitter has the same shape, and bundles such as
 // Next.js's vendored `image-size` rely on that ES5 inheritance pattern.
 function EventEmitter() {

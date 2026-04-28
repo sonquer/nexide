@@ -7,7 +7,7 @@
 //! [`super::IsolateWorker`] solves the "isolates are `!Send`" problem
 //! by giving every worker its own OS thread plus a dedicated
 //! `current_thread` runtime. That works beautifully on multi-CPU
-//! deployments — each isolate gets its own core — but on a `--cpus=1`
+//! deployments - each isolate gets its own core - but on a `--cpus=1`
 //! Docker container it adds a 60 µs/request cross-thread futex tax
 //! (see `docs/PERF_NOTES.md` Iteration 2).
 //!
@@ -17,9 +17,9 @@
 //! exists (so the public [`Worker`] handle stays `Send + Sync`), but
 //! in single-thread mode both endpoints are polled on the same OS
 //! thread and the underlying mpsc reduces to an intra-runtime task
-//! wake — no syscall, no context switch.
+//! wake - no syscall, no context switch.
 //!
-//! ## Two-task pump (Iteracja 4 — fair scheduling)
+//! ## Two-task pump (Iteracja 4 - fair scheduling)
 //!
 //! A naive `tokio::select!` on `recv()` vs `run_event_loop()` inside
 //! a single task **starves Axum** when V8 has plenty of microtasks to
@@ -31,7 +31,7 @@
 //! The fix: split the worker into **two `spawn_local` tasks** sharing
 //! a single [`Rc<RefCell<V8Engine>>`].
 //!
-//! 1. **Pump task** — drives V8 by calling
+//! 1. **Pump task** - drives V8 by calling
 //!    [`super::V8Engine::pump_once`] inside a
 //!    [`std::future::poll_fn`]. The mutable borrow is created **per
 //!    poll** and dropped on the synchronous return path, so the recv
@@ -40,7 +40,7 @@
 //!    [`tokio::sync::Notify`] until the next [`Self::dispatch`] call
 //!    enqueues fresh work, instead of busy-polling an already-idle
 //!    isolate.
-//! 2. **Recv task** — pulls jobs off the public mailbox, calls
+//! 2. **Recv task** - pulls jobs off the public mailbox, calls
 //!    [`V8Engine::enqueue`] (a `&self` API), spawns a per-request
 //!    forwarder for the JS reply, and notifies the pump.
 //!
@@ -107,7 +107,7 @@ impl LocalIsolateWorker {
     /// # Panics
     ///
     /// Panics (via [`tokio::task::spawn_local`]) when called outside
-    /// an active [`tokio::task::LocalSet`]. This is by contract — the
+    /// an active [`tokio::task::LocalSet`]. This is by contract - the
     /// type only makes sense inside a `current_thread` runtime that
     /// also drives Axum.
     pub async fn spawn_local(
@@ -149,7 +149,7 @@ impl LocalIsolateWorker {
     ///
     /// Single-thread mode invariant: only one V8 isolate may be
     /// "entered" on a given thread at a time. The recycler must not
-    /// build a second isolate alongside the live one — it instead
+    /// build a second isolate alongside the live one - it instead
     /// signals the existing supervisor, which tears down the old
     /// isolate before booting the new one.
     ///
@@ -198,7 +198,7 @@ impl Worker for LocalIsolateWorker {
 ///
 /// When a rebuild request arrives over `rebuild_rx`, the pump task is
 /// aborted, in-flight slots are failed, the engine is dropped (V8
-/// isolate teardown happens here — synchronous, no other isolate can
+/// isolate teardown happens here - synchronous, no other isolate can
 /// be active during this window), and the loop boots a fresh engine.
 /// The supervisor lives until `job_rx` closes.
 async fn run_local_worker(
@@ -255,7 +255,7 @@ async fn run_local_worker(
                     Err(err) => {
                         tracing::error!(
                             error = %err,
-                            "nexide-worker (local): rebuild failed — terminating worker"
+                            "nexide-worker (local): rebuild failed - terminating worker"
                         );
                         let _ = ack.send(Err(err));
                         return;
@@ -266,7 +266,7 @@ async fn run_local_worker(
     }
 }
 
-/// Outcome of a single "drive the engine" pass — either the public
+/// Outcome of a single "drive the engine" pass - either the public
 /// mailbox closed (terminal) or a rebuild was requested.
 enum DriveOutcome {
     ChannelClosed(Rc<RefCell<V8Engine>>),
@@ -354,7 +354,7 @@ async fn run_recv_loop(
 /// Drives [`super::V8Engine::pump_once`] one tick at a
 /// time. Yields the borrow between polls so the recv task can enqueue
 /// new slots, and parks on `pump_signal` once V8 reports the event
-/// loop drained — avoids spinning on an idle isolate.
+/// loop drained - avoids spinning on an idle isolate.
 ///
 /// Implementation lives in [`super::engine_pump::run_pump`].
 ///

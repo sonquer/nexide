@@ -1,4 +1,4 @@
-// node:vm — minimal stub. The full vm machinery (separate isolate
+// node:vm - minimal stub. The full vm machinery (separate isolate
 // realms) is not in scope for nexide. We expose runInThisContext as
 // a thin eval wrapper so libraries that probe `vm` for "is this Node?"
 // don't crash on import.

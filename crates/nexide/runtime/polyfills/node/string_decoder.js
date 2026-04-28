@@ -1,4 +1,4 @@
-// node:string_decoder — backed by TextDecoder.
+// node:string_decoder - backed by TextDecoder.
 
 (function () {
   class StringDecoder {

@@ -1,7 +1,7 @@
 "use strict";
 
-// node:fs — sync + promise APIs backed by `nexide_fs_ops`.
-// Streams are simple wrappers over readFileSync/writeFileSync — adequate
+// node:fs - sync + promise APIs backed by `nexide_fs_ops`.
+// Streams are simple wrappers over readFileSync/writeFileSync - adequate
 // for the request shapes Next.js standalone exercises (assets,
 // `.next/server/...` static reads).
 

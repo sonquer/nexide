@@ -38,7 +38,7 @@ pub struct ImageConfig {
     /// Allowed `q` values. Empty array still permits `75` per upstream.
     #[serde(default)]
     pub qualities: Option<Vec<u8>>,
-    /// Format preference order — `image/avif`, `image/webp`, …
+    /// Format preference order - `image/avif`, `image/webp`, …
     #[serde(default = "default_formats")]
     pub formats: Vec<String>,
     /// Cache TTL floor, in seconds.
@@ -171,7 +171,7 @@ impl Default for ImageConfig {
 
 impl ImageConfig {
     /// Loads `images` from `<app>/.next/required-server-files.json`.
-    /// Returns [`Self::default`] when the file is absent or malformed —
+    /// Returns [`Self::default`] when the file is absent or malformed -
     /// the optimizer should never block server startup.
     #[must_use]
     pub fn from_app_dir(app_dir: &Path) -> Self {
@@ -206,7 +206,7 @@ impl ImageConfig {
     }
 
     /// Whether the route is reachable. Mirrors the early-exit gate in
-    /// `next-server.js:198` — only `loader === 'default'` and not
+    /// `next-server.js:198` - only `loader === 'default'` and not
     /// `unoptimized` makes the route resolvable.
     #[must_use]
     pub fn route_enabled(&self) -> bool {

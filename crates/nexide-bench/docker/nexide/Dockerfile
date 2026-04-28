@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# nexide bench image — fully self-contained.
+# nexide bench image - fully self-contained.
 #
 # Stage 1: compile `nexide` for the container architecture.
 # Stage 2: install npm deps and run `next build --output=standalone`

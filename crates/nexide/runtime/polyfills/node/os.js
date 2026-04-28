@@ -1,6 +1,6 @@
 "use strict";
 
-// node:os — backed by `nexide_os_ops`. The op layer holds the
+// node:os - backed by `nexide_os_ops`. The op layer holds the
 // `OsInfoSource` so production and test isolates differ only at the
 // Rust seam.
 

@@ -2,7 +2,7 @@
 //!
 //! Each policy maps a [`WorkerHealth`] snapshot to a boolean
 //! "recycle now?" decision. Composition is open for extension via
-//! [`Composite`] (Open/Closed Principle) — new criteria can be added
+//! [`Composite`] (Open/Closed Principle) - new criteria can be added
 //! without touching existing implementations.
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use super::worker::WorkerHealth;
 /// dispatch.
 ///
 /// Implementations must be cheap (called on the hot path) and pure
-/// (Query — same input must yield the same output).
+/// (Query - same input must yield the same output).
 pub trait RecyclePolicy: Send + Sync + 'static {
     /// Returns `true` when the pool should retire the worker that
     /// produced `snapshot`.
@@ -127,7 +127,7 @@ impl RecyclePolicy for HeapBytes {
 /// arrays, buffers held by Rust ops) that the V8 heap sensor
 /// cannot see. Because RSS is process-scoped, all workers in a
 /// shared-process deployment will read the same value and either
-/// of them may trigger the recycle — that is intentional: the
+/// of them may trigger the recycle - that is intentional: the
 /// goal is to keep the *container* under its memory limit, and any
 /// worker getting recycled releases V8 allocations associated with
 /// its isolate.
@@ -180,12 +180,12 @@ impl RecyclePolicy for Composite {
 
 /// Parses `NEXIDE_REAP_HEAP_RATIO` content.
 ///
-/// * `None` — variable missing, blank, non-numeric, or negative.
+/// * `None` - variable missing, blank, non-numeric, or negative.
 ///   Caller falls back to a built-in default (or "disabled" semantics
 ///   if no default is configured).
-/// * `Some(0.0)` — operator explicitly disables the heap-watchdog
+/// * `Some(0.0)` - operator explicitly disables the heap-watchdog
 ///   policy (no [`HeapThreshold`] is added to the [`Composite`]).
-/// * `Some(r)` for `0.0 < r ≤ 1.0` — fire when used heap exceeds `r`.
+/// * `Some(r)` for `0.0 < r ≤ 1.0` - fire when used heap exceeds `r`.
 /// * Values strictly greater than `1.0` are clamped by [`HeapThreshold`]
 ///   itself to `1.0`, never panicking.
 #[must_use]
@@ -198,9 +198,9 @@ pub fn reap_heap_ratio_from_env(raw: Option<&str>) -> Option<f64> {
 
 /// Parses `NEXIDE_REAP_AFTER_REQUESTS` content.
 ///
-/// * `None` — variable missing, blank, or non-numeric.
-/// * `Some(0)` — operator explicitly disables the request-count policy.
-/// * `Some(n)` for `n ≥ 1` — fire after `n` handled requests.
+/// * `None` - variable missing, blank, or non-numeric.
+/// * `Some(0)` - operator explicitly disables the request-count policy.
+/// * `Some(n)` for `n ≥ 1` - fire after `n` handled requests.
 #[must_use]
 pub fn reap_request_count_from_env(raw: Option<&str>) -> Option<u64> {
     raw.map(str::trim)
@@ -244,7 +244,7 @@ pub fn reap_rss_bytes_from_env(raw: Option<&str>) -> Option<u64> {
 /// turn the recycler into a busy loop.
 ///
 /// Returning a zero-policy [`Composite`] (both disabled) is well
-/// defined — [`Composite::should_recycle`] returns `false` for an
+/// defined - [`Composite::should_recycle`] returns `false` for an
 /// empty policy list, so the recycler simply never fires.
 #[must_use]
 pub fn build_default_recycle_policy(
@@ -260,7 +260,7 @@ pub fn build_default_recycle_policy(
 /// `NEXIDE_REAP_RSS_MB`) are independently optional; passing
 /// `Some(0)` disables that component just like the existing
 /// ratio/count toggles. `sampler` is required when `rss_bytes` is
-/// supplied — when omitted the RSS policy is silently skipped so
+/// supplied - when omitted the RSS policy is silently skipped so
 /// callers don't have to special-case the macOS dev path where
 /// [`ProcessSampler`](super::mem_sampler::ProcessSampler) returns
 /// no data anyway.

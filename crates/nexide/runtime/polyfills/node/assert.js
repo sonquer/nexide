@@ -1,4 +1,4 @@
-// node:assert — minimal subset Next.js needs. Throws AssertionError
+// node:assert - minimal subset Next.js needs. Throws AssertionError
 // with `.code = 'ERR_ASSERTION'` on failure.
 
 (function () {

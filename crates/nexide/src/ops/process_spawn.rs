@@ -43,7 +43,7 @@ impl StdioMode {
 pub struct SpawnRequest {
     /// Command to run (executable name or absolute path).
     pub command: String,
-    /// Argument list passed verbatim — the host does not reshell.
+    /// Argument list passed verbatim - the host does not reshell.
     pub args: Vec<String>,
     /// Optional working directory; falls back to the parent's CWD
     /// when `None`.

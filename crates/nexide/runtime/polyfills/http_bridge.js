@@ -7,7 +7,7 @@
 //     decides which JS function should service the next request slot.
 //     Stacks honour LIFO so a freshly-listened server preempts older
 //     ones; closing the top server hands traffic back to the previous
-//     entry. This is intentionally tiny and Rust-agnostic — Rust just
+//     entry. This is intentionally tiny and Rust-agnostic - Rust just
 //     calls `__dispatch()` once per planted slot.
 //
 //   - The synthetic `req`/`res` objects exposed to the registered

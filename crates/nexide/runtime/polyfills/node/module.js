@@ -1,4 +1,4 @@
-// node:module — minimal compat surface to let Next.js' require-hook
+// node:module - minimal compat surface to let Next.js' require-hook
 // machinery load. The hook itself monkey-patches `Module.prototype.require`
 // and `Module._resolveFilename`; nexide does not honour the patches but
 // exposing the shape lets the hook installer execute without throwing.

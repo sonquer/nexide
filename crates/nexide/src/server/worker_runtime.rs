@@ -17,11 +17,11 @@
 //! Two accept strategies are supported, picked at construction time:
 //!
 //! 1. [`AcceptStrategy::Shared`] (used on macOS / Windows
-//!    and as the bind-failure fallback) — connections arrive on a
+//!    and as the bind-failure fallback) - connections arrive on a
 //!    shared listener owned by the main reactor and are routed via a
 //!    per-worker [`tokio::sync::mpsc`] channel of `TcpStream`s. One
 //!    cross-thread hop per *connection* (not per request).
-//! 2. [`AcceptStrategy::ReusePort`] (Linux fast path) —
+//! 2. [`AcceptStrategy::ReusePort`] (Linux fast path) -
 //!    each worker binds its own [`tokio::net::TcpListener`] with
 //!    `SO_REUSEPORT`. The kernel distributes incoming connections
 //!    by 4-tuple hash. Zero cross-thread hops for HTTP traffic; the
@@ -87,7 +87,7 @@ pub enum AcceptStrategy {
     /// supplied address (Linux fast path).
     ReusePort {
         /// Address to bind. Multiple workers binding the same address
-        /// is the whole point — kernel distributes connections via
+        /// is the whole point - kernel distributes connections via
         /// 4-tuple hash.
         addr: SocketAddr,
     },
@@ -130,7 +130,7 @@ pub enum WorkerSpawnError {
 /// streams and report a constant queue depth of zero.
 ///
 /// Cloning the [`mpsc::Sender`] inside [`Self::stream_tx`] is cheap
-/// (single atomic). The handle keeps the worker thread alive — when
+/// (single atomic). The handle keeps the worker thread alive - when
 /// dropped, the watch channel drops too and the worker exits its
 /// graceful-shutdown future on the next poll.
 pub struct WorkerRuntime {
@@ -240,7 +240,7 @@ impl WorkerRuntime {
         }
     }
 
-    /// Worker index — stable identifier used in tracing and tests.
+    /// Worker index - stable identifier used in tracing and tests.
     #[must_use]
     pub const fn idx(&self) -> usize {
         self.idx
@@ -251,13 +251,13 @@ impl WorkerRuntime {
     /// between the acceptor and this worker's serve loop. Lower is
     /// better.
     ///
-    /// Returns `0` for [`AcceptStrategy::ReusePort`] workers — they
+    /// Returns `0` for [`AcceptStrategy::ReusePort`] workers - they
     /// do not have a buffered mailbox; the kernel queue is the
     /// bound. The accept loop never picks among reuseport workers
     /// (it is not even running in that mode), so this is purely
     /// informational.
     ///
-    /// Cheap (single atomic) — safe to call in the accept hot loop.
+    /// Cheap (single atomic) - safe to call in the accept hot loop.
     #[must_use]
     pub fn queue_depth(&self) -> usize {
         self.stream_tx.as_ref().map_or(0, |tx| {
@@ -266,7 +266,7 @@ impl WorkerRuntime {
     }
 
     /// Hands `stream` to the worker without blocking. Returns `Err`
-    /// when the mailbox is full or the worker has shut down — callers
+    /// when the mailbox is full or the worker has shut down - callers
     /// use this for the alternate-pick fallback.
     ///
     /// # Errors
@@ -287,7 +287,7 @@ impl WorkerRuntime {
     }
 
     /// Signals graceful shutdown and joins the worker thread in a
-    /// single call. Idempotent — safe to call before [`Drop`].
+    /// single call. Idempotent - safe to call before [`Drop`].
     ///
     /// When shutting down a fleet of workers prefer the two-phase
     /// pattern via [`Self::signal_shutdown`] + [`Self::join`] so every
@@ -305,7 +305,7 @@ impl WorkerRuntime {
         let _ = self.shutdown_tx.send(true);
     }
 
-    /// Blocks the current thread until the worker exits. Idempotent —
+    /// Blocks the current thread until the worker exits. Idempotent -
     /// after the first call subsequent invocations are no-ops.
     pub fn join(mut self) {
         self.join_in_place();
@@ -371,7 +371,7 @@ fn bind_reuseport_listener(addr: SocketAddr) -> io::Result<TcpListener> {
     socket.listen(REUSEPORT_BACKLOG)
 }
 
-/// Worker thread entry point — owns the `current_thread` runtime
+/// Worker thread entry point - owns the `current_thread` runtime
 /// and the `LocalSet`, boots the isolate pool, then runs `axum::serve`
 /// against the supplied [`AcceptSource`] until the watch channel
 /// signals shutdown.

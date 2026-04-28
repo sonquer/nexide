@@ -1,4 +1,4 @@
-// WHATWG Fetch / Streams stubs — minimal surface required to let
+// WHATWG Fetch / Streams stubs - minimal surface required to let
 // Next.js' bundled spec adapters load. This is NOT a real fetch
 // implementation; it satisfies `class extends Request` and
 // `instanceof Headers` checks so module-graph evaluation can proceed.

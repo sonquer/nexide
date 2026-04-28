@@ -343,7 +343,7 @@ What changed:
 
 - Runtime image: `node:22-alpine` → `ghcr.io/sonquer/nexide:latest`.
 - `CMD ["node", "server.js"]` is **replaced** by the inherited Nexide
-  entrypoint `nexide start /app`. There is no `node` process — Nexide
+  entrypoint `nexide start /app`. There is no `node` process - Nexide
   loads the standalone bundle directly into V8.
 - `--chown=nexide:nexide` because the Nexide image runs as the non-root
   `nexide` user (uid 10001).
@@ -391,7 +391,7 @@ What changed:
 - `CMD ["deno", "run", "-A", "--unstable-node-modules-dir", "server.js"]`
   is **replaced** by the inherited Nexide entrypoint `nexide start /app`.
   No `-A` permission flags, no `--unstable-*` flags, no `node_modules`
-  resolver toggles — Nexide loads the Next.js standalone bundle directly
+  resolver toggles - Nexide loads the Next.js standalone bundle directly
   into V8 via its native HTTP server.
 - `--chown=nexide:nexide` because Nexide runs as the non-root `nexide`
   user (uid 10001).

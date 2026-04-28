@@ -2,7 +2,7 @@
 //!
 //! JavaScript builds a response by calling `__nexide.sendHead`,
 //! `__nexide.sendChunk` and `__nexide.sendEnd`. Each call drives the
-//! [`ResponseSink`] trait — the abstraction that the op layer talks to,
+//! [`ResponseSink`] trait - the abstraction that the op layer talks to,
 //! decoupling it from the concrete buffer (production: a `Vec<Bytes>`
 //! plus a `oneshot` responder; tests: an in-memory recorder).
 
@@ -75,7 +75,7 @@ pub trait ResponseSink: Sized {
     ///
     /// # Errors
     ///
-    /// See [`ResponseError`] — the relevant variants are
+    /// See [`ResponseError`] - the relevant variants are
     /// [`ResponseError::HeadAlreadySent`],
     /// [`ResponseError::AlreadyFinished`] and
     /// [`ResponseError::InvalidStatus`].

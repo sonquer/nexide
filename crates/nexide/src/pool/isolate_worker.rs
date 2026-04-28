@@ -4,7 +4,7 @@
 //! V8 isolates are `!Send`, so each `IsolateWorker` owns a dedicated
 //! OS thread with its own `current_thread` Tokio runtime and
 //! `LocalSet`. The struct itself is a `Send + Sync` proxy that
-//! forwards requests over an `mpsc` channel — `dispatch` therefore
+//! forwards requests over an `mpsc` channel - `dispatch` therefore
 //! takes `&self` and is safe to call concurrently from many tasks.
 //!
 //! ## Two-task pump
@@ -17,15 +17,15 @@
 //! ms after).
 //!
 //! The classic two-future event-loop driver pattern makes the
-//! same point — both futures must be polled on every wake, never
+//! same point - both futures must be polled on every wake, never
 //! biased towards one. We get the same fairness for free by
 //! splitting the worker into two `tokio::task::spawn_local` tasks
 //! sharing one [`Rc<RefCell<V8Engine>>`]:
 //!
-//! 1. **Pump task** — drives V8 through
+//! 1. **Pump task** - drives V8 through
 //!    [`super::V8Engine::pump_once`] and parks on a
 //!    [`tokio::sync::Notify`] when idle.
-//! 2. **Recv task** — pulls jobs off the public mailbox, calls
+//! 2. **Recv task** - pulls jobs off the public mailbox, calls
 //!    [`V8Engine::enqueue`] (`&self`), spawns a per-request
 //!    forwarder, then notifies the pump.
 //!
@@ -208,7 +208,7 @@ async fn run_worker_loop(
 /// Pulls jobs from the public mailbox, registers them with the
 /// engine, and notifies the pump task to advance V8 if it was idle.
 ///
-/// Returns when the mailbox closes — the supervisor uses the reason
+/// Returns when the mailbox closes - the supervisor uses the reason
 /// string to fail in-flight handlers.
 async fn run_recv_loop(
     engine: &Rc<std::cell::RefCell<crate::engine::V8Engine>>,

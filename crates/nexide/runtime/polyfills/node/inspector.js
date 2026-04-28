@@ -1,4 +1,4 @@
-// node:inspector — minimal stub. Next.js consults this for debugger
+// node:inspector - minimal stub. Next.js consults this for debugger
 // hooks, which are no-ops in our runtime.
 
 (function () {

@@ -5,7 +5,7 @@
 // `Nexide.core.getAsyncContext` and `Nexide.core.setAsyncContext` are
 // installed from Rust and read/write CPED, which V8 automatically
 // propagates across `await`, `.then()`, `queueMicrotask()`, and timer
-// resumptions — matching Node.js v22+ AsyncLocalStorage semantics.
+// resumptions - matching Node.js v22+ AsyncLocalStorage semantics.
 
 ((globalThis) => {
   "use strict";

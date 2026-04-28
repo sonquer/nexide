@@ -178,12 +178,12 @@ fn ensure_artifacts(root: &Path) -> Result<()> {
     let bundle = root.join("example/.next/standalone/server.js");
     anyhow::ensure!(
         bin.is_file(),
-        "missing nexide release binary: {} — run `cargo build --release`",
+        "missing nexide release binary: {} - run `cargo build --release`",
         bin.display()
     );
     anyhow::ensure!(
         bundle.is_file(),
-        "missing standalone bundle: {} — run `npm run build` in example/",
+        "missing standalone bundle: {} - run `npm run build` in example/",
         bundle.display()
     );
     Ok(())

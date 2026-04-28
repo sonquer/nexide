@@ -80,7 +80,7 @@ pub trait Worker: Send + Sync + 'static {
     /// Hands `job` to the worker and waits for the assembled response.
     ///
     /// Implementations must be safe to call concurrently from multiple
-    /// tasks — the pool relies on lock-free dispatch to pipeline
+    /// tasks - the pool relies on lock-free dispatch to pipeline
     /// requests into a worker's mailbox while V8 drains it serially.
     ///
     /// # Errors
@@ -88,7 +88,7 @@ pub trait Worker: Send + Sync + 'static {
     /// See [`WorkerError`].
     async fn dispatch(&self, job: Job) -> Result<ResponsePayload, WorkerError>;
 
-    /// Latest health snapshot (Query — pure, no side effects).
+    /// Latest health snapshot (Query - pure, no side effects).
     fn health(&self) -> WorkerHealth;
 }
 
@@ -96,7 +96,7 @@ pub trait Worker: Send + Sync + 'static {
 /// (Send proxy) and its dedicated thread (which owns the engine).
 ///
 /// `reply` is the **same** [`oneshot::Sender`] handed off to the V8
-/// [`crate::ops::DispatchTable`] — the JS handler completes the
+/// [`crate::ops::DispatchTable`] - the JS handler completes the
 /// dispatcher's await directly via `op_nexide_send_response` /
 /// `op_nexide_finish_error`. Eliminating the per-request forwarder
 /// task removes one [`tokio::task::spawn_local`] and one

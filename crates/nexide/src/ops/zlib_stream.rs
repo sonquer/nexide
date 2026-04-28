@@ -20,17 +20,17 @@ use super::net::NetError;
 /// surface (`createDeflate`, `createGzip`, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZlibKind {
-    /// `Deflate` — zlib-wrapped deflate (RFC 1950).
+    /// `Deflate` - zlib-wrapped deflate (RFC 1950).
     Deflate,
-    /// `Inflate` — zlib-wrapped deflate decoder.
+    /// `Inflate` - zlib-wrapped deflate decoder.
     Inflate,
-    /// `DeflateRaw` — raw deflate (RFC 1951), no header.
+    /// `DeflateRaw` - raw deflate (RFC 1951), no header.
     DeflateRaw,
-    /// `InflateRaw` — raw deflate decoder.
+    /// `InflateRaw` - raw deflate decoder.
     InflateRaw,
-    /// `Gzip` — gzip wrapper (RFC 1952).
+    /// `Gzip` - gzip wrapper (RFC 1952).
     Gzip,
-    /// `Gunzip` — gzip decoder.
+    /// `Gunzip` - gzip decoder.
     Gunzip,
 }
 

@@ -13,7 +13,7 @@ export default function UsersIndexPage() {
     >
       <header className="flex flex-col gap-3">
         <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs font-medium text-white/60">
-          SSG · generateStaticParams
+          SSG with generateStaticParams
         </span>
         <h1 className="text-4xl font-bold tracking-tight text-white">Users</h1>
         <p className="text-white/70">

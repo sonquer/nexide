@@ -15,7 +15,7 @@ use thiserror::Error;
 ///
 /// Method and URI are kept as already-validated `String`s (the
 /// constructor enforces UTF-8 and length bounds). This keeps the JS
-/// boundary on a Fast API eligible path —
+/// boundary on a Fast API eligible path -
 /// no allocation per call once the slot is staged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestMeta {
@@ -34,10 +34,10 @@ impl RequestMeta {
     /// # Errors
     ///
     /// * [`RequestMetaError::EmptyMethod`] / [`RequestMetaError::EmptyUri`]
-    ///   — either component is the empty string.
-    /// * [`RequestMetaError::TooLong`] — either component exceeds
+    ///   - either component is the empty string.
+    /// * [`RequestMetaError::TooLong`] - either component exceeds
     ///   [`REQUEST_META_MAX_LEN`] bytes.
-    /// * [`RequestMetaError::InvalidMethod`] — the method contains a
+    /// * [`RequestMetaError::InvalidMethod`] - the method contains a
     ///   character outside the HTTP token set defined by RFC 7230.
     pub fn try_new(
         method: impl Into<String>,
@@ -116,7 +116,7 @@ pub enum RequestMetaError {
 ///
 /// Names are stored lowercased so that JS receives a canonical form
 /// regardless of how the upstream client capitalised them. Values are
-/// kept as-is — the HTTP spec mandates ASCII for headers but does not
+/// kept as-is - the HTTP spec mandates ASCII for headers but does not
 /// require any specific case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderPair {
@@ -129,7 +129,7 @@ pub struct HeaderPair {
 /// Per-request state held inside the engine's `OpState` while the
 /// JavaScript handler runs.
 ///
-/// The struct is intentionally not `Clone` — there is at most one slot
+/// The struct is intentionally not `Clone` - there is at most one slot
 /// per isolate at a time, mirroring the single-request semantics of an
 /// HTTP exchange.
 #[derive(Debug)]
@@ -169,7 +169,7 @@ pub trait RequestSource {
     /// Streams the next body fragment into `dst`.
     ///
     /// Returns the number of bytes written (`0` once the body is
-    /// drained). The cursor is advanced — calling `read_body` is a
+    /// drained). The cursor is advanced - calling `read_body` is a
     /// Command in CQS terms.
     fn read_body(&mut self, dst: &mut [u8]) -> usize;
 }

@@ -2,10 +2,10 @@
 //!
 //! Two implementations ship today:
 //!
-//! * [`Serial`] — the original behaviour. The JS pump awaits one
+//! * [`Serial`] - the original behaviour. The JS pump awaits one
 //!   id at a time via `op_nexide_pop_request`. Cheapest under low
 //!   concurrency; one op crossing per request.
-//! * [`Coalesced`] — pump-coalescing optimisation. The JS pump awaits a slice
+//! * [`Coalesced`] - pump-coalescing optimisation. The JS pump awaits a slice
 //!   via `op_nexide_pop_request_batch(max)` and dispatches every id
 //!   in the slice within the same microtask cycle. Amortises the
 //!   per-request op crossing under sustained load.
@@ -22,7 +22,7 @@
 //! reports its **name** (for tracing) and its **JS pump source**
 //! (the snippet installed at boot inside `nexide_bridge.js`).
 //! Behaviour lives in JavaScript because the V8 microtask queue
-//! is the actual scheduler — Rust just decides which pump variant
+//! is the actual scheduler - Rust just decides which pump variant
 //! to install.
 
 use std::fmt;
@@ -39,7 +39,7 @@ pub const MAX_BATCH: u32 = 256;
 
 /// SOLID seam between the runtime and the JS pump implementation.
 ///
-/// Implementors are tiny value types — no state, no allocation.
+/// Implementors are tiny value types - no state, no allocation.
 /// The `'static` bound is intentional: strategies may be cloned
 /// into tracing fields and JS source strings.
 pub trait PumpStrategy: fmt::Debug + Send + Sync + 'static {
@@ -115,7 +115,7 @@ pub type BoxedPumpStrategy = Box<dyn PumpStrategy>;
 /// clamped to `1..=MAX_BATCH`.
 ///
 /// phase B note: the unset case is no longer the runtime
-/// default for multi-thread mode — see [`default_pump_strategy_for`]
+/// default for multi-thread mode - see [`default_pump_strategy_for`]
 /// which decides the *implicit* default per worker mode. Operators
 /// who export `NEXIDE_PUMP_BATCH=0` still get the legacy serial
 /// pump on every worker.
