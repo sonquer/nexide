@@ -74,7 +74,8 @@ pub struct BenchResult {
     pub sample: SampleStats,
 }
 
-/// Default route set: small JSON, ping, prerendered HTML, RSC.
+/// Default route set: small JSON, ping, prerendered HTML, RSC, native
+/// `/_next/image` optimizer.
 #[must_use]
 pub fn default_routes() -> Vec<RouteSpec> {
     vec![
@@ -97,6 +98,11 @@ pub fn default_routes() -> Vec<RouteSpec> {
             id: "rsc-about".into(),
             path: "/about".into(),
             headers: vec![("RSC".into(), "1".into())],
+        },
+        RouteSpec {
+            id: "next-image".into(),
+            path: "/_next/image?url=%2Fnexide.png&w=256&q=75".into(),
+            headers: vec![("Accept".into(), "image/webp,*/*".into())],
         },
     ]
 }

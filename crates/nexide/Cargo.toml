@@ -62,6 +62,10 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
 reqwest = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "rayon"] }
+fast_image_resize = { version = "5", features = ["image"] }
+url = "2"
+base64 = "0.22"
 
 [features]
 default = []

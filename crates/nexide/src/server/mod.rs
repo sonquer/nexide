@@ -68,11 +68,16 @@ pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Rou
     let dynamic = static_assets::dynamic_service(handler);
     let prerender = prerender::prerender_with_fallback(cfg.app_dir().to_path_buf(), dynamic);
     let public = static_assets::public_with_fallback_service(cfg.public_dir(), prerender);
+    let next_image = crate::image::next_image_service(
+        cfg.app_dir().to_path_buf(),
+        cfg.public_dir().to_path_buf(),
+    );
     Router::new()
         .nest_service(
             "/_next/static",
             static_assets::next_static_only(cfg.next_static_dir()),
         )
+        .nest_service("/_next/image", next_image)
         .fallback_service(public)
         .layer(TraceLayer::new_for_http())
 }

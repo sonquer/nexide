@@ -1,5 +1,3 @@
-# Nexide
-
 <p align="center">
   <img src="./img/nexide.png" alt="Nexide logo" width="420" />
 </p>

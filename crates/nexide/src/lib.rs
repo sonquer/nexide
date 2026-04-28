@@ -18,6 +18,7 @@ pub mod cli;
 pub mod dispatch;
 pub mod engine;
 pub mod entrypoint;
+pub mod image;
 pub mod ops;
 pub mod pool;
 pub mod server;
