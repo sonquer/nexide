@@ -26,8 +26,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 /// Resolves or rejects `resolver` from inside the isolate thread.
 ///
@@ -50,6 +51,33 @@ impl Completion {
     }
 }
 
+/// Sends [`Completion`]s to the engine pump and wakes it.
+///
+/// Async-op tasks (spawn_local) push completions onto the channel and
+/// must wake the pump — which may be parked on its idle [`Notify`] —
+/// so the freshly-resolved promise is observed promptly. Without this
+/// nudge, request handlers that `await` on `setTimeout`, `fetch`,
+/// `fs.readFile`, etc. hang as soon as the request queue drains.
+#[derive(Clone)]
+pub(super) struct CompletionSender {
+    tx: mpsc::UnboundedSender<Completion>,
+    wakeup: Arc<Notify>,
+}
+
+impl CompletionSender {
+    /// Sends a completion; if the receiver is alive, also wakes the
+    /// pump. Returns `Err(_)` matching the underlying channel error
+    /// so callers can ignore the result the same way they do today.
+    pub(super) fn send(
+        &self,
+        completion: Completion,
+    ) -> Result<(), mpsc::error::SendError<Completion>> {
+        self.tx.send(completion)?;
+        self.wakeup.notify_one();
+        Ok(())
+    }
+}
+
 /// Per-isolate channel used by async ops to schedule completions.
 ///
 /// `Sender` is cloned into every spawned op task; the matching
@@ -57,21 +85,29 @@ impl Completion {
 pub(super) struct CompletionChannel {
     tx: mpsc::UnboundedSender<Completion>,
     rx: Rc<RefCell<mpsc::UnboundedReceiver<Completion>>>,
+    wakeup: Arc<Notify>,
 }
 
 impl CompletionChannel {
-    /// Builds a fresh, empty channel.
-    pub(super) fn new() -> Self {
+    /// Builds a fresh, empty channel sharing `wakeup` with the engine
+    /// pump's idle waker.
+    pub(super) fn new(wakeup: Arc<Notify>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             tx,
             rx: Rc::new(RefCell::new(rx)),
+            wakeup,
         }
     }
 
-    /// Returns a clonable sender for spawned op tasks.
-    pub(super) fn sender(&self) -> mpsc::UnboundedSender<Completion> {
-        self.tx.clone()
+    /// Returns a clonable sender for spawned op tasks. Sending also
+    /// wakes the engine pump so completions delivered while the JS
+    /// thread is idle still get drained on the next tick.
+    pub(super) fn sender(&self) -> CompletionSender {
+        CompletionSender {
+            tx: self.tx.clone(),
+            wakeup: Arc::clone(&self.wakeup),
+        }
     }
 
     /// Returns a shared handle to the receiver.
@@ -85,7 +121,7 @@ impl CompletionChannel {
 
 impl Default for CompletionChannel {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(Notify::new()))
     }
 }
 
@@ -139,7 +175,7 @@ mod tests {
     /// covered by the per-op integration tests.
     #[test]
     fn channel_starts_empty() {
-        let ch = CompletionChannel::new();
+        let ch = CompletionChannel::default();
         let _tx = ch.sender();
         let rx = ch.receiver();
         assert!(matches!(

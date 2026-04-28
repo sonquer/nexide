@@ -66,4 +66,18 @@ async fn prisma_sqlite_serves_seeded_users() {
         .find(|u| u["email"] == "bob@example.com")
         .expect("bob present");
     assert_eq!(bob["posts"], 1);
+
+    let html_resp = client.get(&base).send().await.expect("GET / for SSR HTML");
+    assert_eq!(html_resp.status().as_u16(), 200, "/ status");
+    let html = html_resp.text().await.expect("html body");
+    assert!(
+        html.contains("Prisma users"),
+        "SSR HTML missing page marker: {html}"
+    );
+    assert!(html.contains("Alice"), "SSR HTML missing Alice: {html}");
+    assert!(html.contains("Bob"), "SSR HTML missing Bob: {html}");
+    assert!(
+        html.contains("count="),
+        "SSR HTML missing user-count: {html}"
+    );
 }

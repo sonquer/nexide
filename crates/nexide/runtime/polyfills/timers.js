@@ -94,7 +94,9 @@
       throw new TypeError("setImmediate requires a function");
     }
     const id = nextTimerId();
-    opVoidDeferred().then(() => runOnce(id, cb, args));
+    opVoidDeferred().then(() => {
+      runOnce(id, cb, args);
+    });
     return id;
   };
 

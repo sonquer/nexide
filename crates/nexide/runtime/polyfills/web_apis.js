@@ -629,15 +629,59 @@
         return transform.readable;
       }
       tee() {
-        const chunks = this._chunks.slice();
-        const closed = this._closed;
+        if (this._locked) throw new TypeError("ReadableStream is locked");
+        const reader = this.getReader();
+        const branches = [];
+        let pumping = false;
+        let sourceDone = false;
+
+        async function pump() {
+          if (pumping || sourceDone) return;
+          pumping = true;
+          try {
+            while (true) {
+              if (branches.every((b) => b._closed || b._cancelled)) break;
+              let r;
+              try {
+                r = await reader.read();
+              } catch (err) {
+                sourceDone = true;
+                for (const b of branches) {
+                  try { b._controller.error(err); } catch { }
+                }
+                return;
+              }
+              if (r.done) {
+                sourceDone = true;
+                for (const b of branches) {
+                  try { b._controller.close(); } catch { }
+                }
+                return;
+              }
+              for (const b of branches) {
+                if (!b._closed && !b._cancelled) {
+                  try { b._controller.enqueue(r.value); } catch { }
+                }
+              }
+              return;
+            }
+          } finally {
+            pumping = false;
+          }
+        }
+
         const make = () => new ReadableStream({
-          start(c) {
-            for (const ch of chunks) c.enqueue(ch);
-            if (closed) c.close();
+          pull() { return pump(); },
+          cancel() {
+            if (branches.every((b) => b._closed || b._cancelled)) {
+              try { reader.cancel(); } catch { }
+            }
           },
         });
-        return [make(), make()];
+        const a = make();
+        const b = make();
+        branches.push(a, b);
+        return [a, b];
       }
       [Symbol.asyncIterator]() {
         const reader = this.getReader();

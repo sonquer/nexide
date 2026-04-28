@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::async_ops::{Completion, CompletionChannel};
+use super::async_ops::{Completion, CompletionChannel, CompletionSender};
 use super::handle_table::HandleTable;
 use crate::engine::cjs::CjsResolver;
 use crate::ops::{DispatchTable, EnvOverlay, FsHandle, ProcessConfig, RequestQueue, WorkerId};
@@ -80,7 +80,7 @@ pub(super) struct BridgeState {
     pub exit_requested: Option<i32>,
     pub pending_pop: VecDeque<v8::Global<v8::PromiseResolver>>,
     pub pending_pop_batch: VecDeque<(v8::Global<v8::PromiseResolver>, u32)>,
-    pub async_completions_tx: mpsc::UnboundedSender<Completion>,
+    pub async_completions_tx: CompletionSender,
     pub async_completions_rx: Rc<RefCell<mpsc::UnboundedReceiver<Completion>>>,
     pub napi_work_tx: mpsc::UnboundedSender<NapiWorkItem>,
     pub napi_work_rx: Rc<RefCell<mpsc::UnboundedReceiver<NapiWorkItem>>>,
@@ -95,7 +95,8 @@ pub(super) struct BridgeState {
 
 impl Default for BridgeState {
     fn default() -> Self {
-        let channel = CompletionChannel::new();
+        let napi_wakeup = Arc::new(tokio::sync::Notify::new());
+        let channel = CompletionChannel::new(Arc::clone(&napi_wakeup));
         let (napi_tx, napi_rx) = mpsc::unbounded_channel();
         Self {
             queue: Rc::new(RequestQueue::new()),
@@ -113,7 +114,7 @@ impl Default for BridgeState {
             async_completions_rx: channel.receiver(),
             napi_work_tx: napi_tx,
             napi_work_rx: Rc::new(RefCell::new(napi_rx)),
-            napi_wakeup: Arc::new(tokio::sync::Notify::new()),
+            napi_wakeup,
             net_streams: HandleTable::default(),
             net_listeners: HandleTable::default(),
             tls_streams: HandleTable::default(),

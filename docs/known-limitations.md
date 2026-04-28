@@ -69,23 +69,6 @@ For pure-JS swap-ins still recommended where they exist:
 - **`better-sqlite3`** / `sqlite3` → use `@prisma/client` (works,
   see above), an HTTP-fronted SQLite (Turso, D1), or a pure-JS driver.
 
-### Async Server Components that block on N-API
-
-Async Server Components whose render `await`s an N-API addon (e.g.
-`await prisma.user.findMany()` directly inside `app/page.tsx`) currently
-hang the streaming HTML response. The query itself runs to completion
-(and the same call from a route handler returning `NextResponse.json`
-works), but the React 19 streaming renderer doesn't resume after the
-threadsafe-function-driven `await` resolves. Workarounds:
-
-- Move the data fetch into a route handler (`app/api/.../route.ts`) and
-  call it from a Client Component, **or**
-- Wrap the async call in `cache()` + a separate `<Suspense>` boundary
-  so the render isn't suspended on the N-API resume directly.
-
-This is a runtime bug in nexide's React-streaming + tsfn interaction,
-not a Prisma limitation; it's tracked separately.
-
 ## HTTP/2 server / client
 
 `require('node:http2')` loads, exposes `constants`, but `createServer`

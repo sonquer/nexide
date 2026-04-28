@@ -149,7 +149,8 @@ impl V8Engine {
         let create_params = heap_limit.to_create_params();
         let mut isolate = v8::Isolate::new(create_params);
 
-        let channel = super::async_ops::CompletionChannel::new();
+        let napi_wakeup = std::sync::Arc::new(tokio::sync::Notify::new());
+        let channel = super::async_ops::CompletionChannel::new(std::sync::Arc::clone(&napi_wakeup));
         let (napi_tx, napi_rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = BridgeState {
             queue: Rc::new(RequestQueue::new()),
@@ -169,7 +170,7 @@ impl V8Engine {
             async_completions_rx: channel.receiver(),
             napi_work_tx: napi_tx,
             napi_work_rx: Rc::new(RefCell::new(napi_rx)),
-            napi_wakeup: std::sync::Arc::new(tokio::sync::Notify::new()),
+            napi_wakeup,
             net_streams: super::handle_table::HandleTable::default(),
             net_listeners: super::handle_table::HandleTable::default(),
             tls_streams: super::handle_table::HandleTable::default(),
