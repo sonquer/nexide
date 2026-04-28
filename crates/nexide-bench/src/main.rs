@@ -17,10 +17,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nexide_bench::{
-    BenchConfig, DockerBench, DockerImages, DockerPreset, RouteSpec,
-    SweepPoint, TargetKind, connect_docker, ensure_images, render_report,
-    render_scaling_mem, render_scaling_p99, render_scaling_rps, run_bench,
-    run_docker,
+    BenchConfig, DockerBench, DockerImages, DockerPreset, RouteSpec, SweepPoint, TargetKind,
+    connect_docker, ensure_images, render_report, render_scaling_mem, render_scaling_p99,
+    render_scaling_rps, run_bench, run_docker,
 };
 
 #[derive(Debug, Parser)]
@@ -306,8 +305,7 @@ fn build_images(
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
     let cli = Cli::parse();
@@ -326,10 +324,7 @@ async fn main() -> Result<()> {
 fn print_presets() {
     println!("{:<16} {:>6} {:>10}", "label", "cpus", "memory MB");
     for (label, preset) in DockerPreset::CATALOG {
-        println!(
-            "{:<16} {:>6} {:>10}",
-            label, preset.cpus, preset.memory_mb,
-        );
+        println!("{:<16} {:>6} {:>10}", label, preset.cpus, preset.memory_mb,);
     }
 }
 

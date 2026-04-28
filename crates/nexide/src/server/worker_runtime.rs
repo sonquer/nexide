@@ -165,7 +165,10 @@ impl WorkerRuntime {
             workers,
             cfg,
             entrypoint,
-            AcceptSource::Shared { stream_rx, advertise: bind_addr },
+            AcceptSource::Shared {
+                stream_rx,
+                advertise: bind_addr,
+            },
             Some(stream_tx),
         )
         .await
@@ -342,9 +345,7 @@ enum AcceptSource {
         advertise: SocketAddr,
     },
     #[cfg(target_os = "linux")]
-    ReusePort {
-        listener: TcpListener,
-    },
+    ReusePort { listener: TcpListener },
 }
 
 /// Binds a `SO_REUSEPORT` listener on the supplied address.
@@ -429,8 +430,7 @@ async fn run_worker_local(
 
     tracing::debug!(worker = idx, "nexide worker ready");
 
-    let handler: Arc<dyn super::DynamicHandler> =
-        Arc::new(NextBridgeHandler::new(Arc::new(pool)));
+    let handler: Arc<dyn super::DynamicHandler> = Arc::new(NextBridgeHandler::new(Arc::new(pool)));
     let router = build_router(&cfg, handler);
 
     let shutdown = async move {
@@ -445,7 +445,10 @@ async fn run_worker_local(
     };
 
     let outcome = match source {
-        AcceptSource::Shared { stream_rx, advertise } => {
+        AcceptSource::Shared {
+            stream_rx,
+            advertise,
+        } => {
             let listener = StreamListener::new(stream_rx, advertise);
             axum::serve(listener, router)
                 .with_graceful_shutdown(shutdown)

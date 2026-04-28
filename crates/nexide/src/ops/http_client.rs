@@ -84,15 +84,27 @@ pub async fn request(req: HttpRequest) -> Result<ResponseHandle, NetError> {
     use reqwest::Method;
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
-    let method = Method::from_bytes(req.method.as_bytes())
-        .map_err(|_| NetError::new("ERR_INVALID_HTTP_METHOD", format!("bad method {}", req.method)))?;
+    let method = Method::from_bytes(req.method.as_bytes()).map_err(|_| {
+        NetError::new(
+            "ERR_INVALID_HTTP_METHOD",
+            format!("bad method {}", req.method),
+        )
+    })?;
 
     let mut headers = HeaderMap::with_capacity(req.headers.len());
     for h in &req.headers {
-        let name = HeaderName::from_bytes(h.name.as_bytes())
-            .map_err(|_| NetError::new("ERR_INVALID_HEADER_NAME", format!("bad header name {}", h.name)))?;
-        let value = HeaderValue::from_str(&h.value)
-            .map_err(|_| NetError::new("ERR_INVALID_HEADER_VALUE", format!("bad header value for {}", h.name)))?;
+        let name = HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {
+            NetError::new(
+                "ERR_INVALID_HEADER_NAME",
+                format!("bad header name {}", h.name),
+            )
+        })?;
+        let value = HeaderValue::from_str(&h.value).map_err(|_| {
+            NetError::new(
+                "ERR_INVALID_HEADER_VALUE",
+                format!("bad header value for {}", h.name),
+            )
+        })?;
         headers.append(name, value);
     }
 
@@ -146,7 +158,10 @@ async fn stream_body(
             }
             Ok(None) => return,
             Err(err) => {
-                let _ = tx.send(Err(NetError::new(reqwest_error_code(&err), err.to_string())));
+                let _ = tx.send(Err(NetError::new(
+                    reqwest_error_code(&err),
+                    err.to_string(),
+                )));
                 return;
             }
         }
@@ -154,11 +169,21 @@ async fn stream_body(
 }
 
 fn reqwest_error_code(err: &reqwest::Error) -> &'static str {
-    if err.is_timeout() { return "ETIMEDOUT"; }
-    if err.is_connect() { return "ECONNREFUSED"; }
-    if err.is_request() { return "ERR_INVALID_URL"; }
-    if err.is_decode() { return "ERR_DECODE"; }
-    if err.is_redirect() { return "ERR_TOO_MANY_REDIRECTS"; }
+    if err.is_timeout() {
+        return "ETIMEDOUT";
+    }
+    if err.is_connect() {
+        return "ECONNREFUSED";
+    }
+    if err.is_request() {
+        return "ERR_INVALID_URL";
+    }
+    if err.is_decode() {
+        return "ERR_DECODE";
+    }
+    if err.is_redirect() {
+        return "ERR_TOO_MANY_REDIRECTS";
+    }
     "EIO"
 }
 

@@ -18,14 +18,12 @@ pub mod sample;
 pub mod target;
 
 pub use docker::{
-    DEFAULT_DENO_IMAGE, DEFAULT_NEXIDE_IMAGE, DEFAULT_NODE_IMAGE, DockerBench,
-    DockerImages, DockerPreset, DockerRun, connect_docker,
-    detect_workspace_root, ensure_images, run_docker,
+    DEFAULT_DENO_IMAGE, DEFAULT_NEXIDE_IMAGE, DEFAULT_NODE_IMAGE, DockerBench, DockerImages,
+    DockerPreset, DockerRun, connect_docker, detect_workspace_root, ensure_images, run_docker,
 };
 pub use load::{LoadOutcome, LoadSpec, run_load};
 pub use report::{
-    SweepPoint, render_report, render_scaling_mem, render_scaling_p99,
-    render_scaling_rps,
+    SweepPoint, render_report, render_scaling_mem, render_scaling_p99, render_scaling_rps,
 };
 pub use runner::{BenchConfig, BenchResult, RouteSpec, run_bench};
 pub use sample::{ProcessSampler, SampleStats};

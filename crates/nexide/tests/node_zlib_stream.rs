@@ -14,9 +14,7 @@ async fn run_module(dir: &Path, entry: &Path) -> Result<(), String> {
     let resolver = Arc::new(FsResolver::new(vec![dir.to_path_buf()], registry));
     let env = Arc::new(MapEnv::from_pairs(std::iter::empty::<(String, String)>()));
     let process = ProcessConfig::builder(env).build();
-    let ctx = BootContext::new()
-        .with_cjs(resolver)
-        .with_process(process);
+    let ctx = BootContext::new().with_cjs(resolver).with_process(process);
     V8Engine::boot_with(entry, ctx)
         .await
         .map(|_| ())

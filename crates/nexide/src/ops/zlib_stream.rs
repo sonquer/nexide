@@ -130,7 +130,12 @@ pub fn parse_kind(name: &str) -> Result<ZlibKind, NetError> {
         "inflate-raw" => ZlibKind::InflateRaw,
         "gzip" => ZlibKind::Gzip,
         "gunzip" => ZlibKind::Gunzip,
-        other => return Err(NetError::new("EINVAL", format!("unknown zlib kind: {other}"))),
+        other => {
+            return Err(NetError::new(
+                "EINVAL",
+                format!("unknown zlib kind: {other}"),
+            ));
+        }
     })
 }
 

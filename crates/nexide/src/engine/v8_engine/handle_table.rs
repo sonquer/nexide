@@ -47,7 +47,9 @@ impl<T> Default for HandleTable<T> {
 
 impl<T> Clone for HandleTable<T> {
     fn clone(&self) -> Self {
-        Self { inner: Rc::clone(&self.inner) }
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
     }
 }
 

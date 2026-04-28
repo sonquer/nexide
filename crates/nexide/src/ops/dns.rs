@@ -29,10 +29,7 @@ fn shared_resolver() -> &'static TokioAsyncResolver {
     static RESOLVER: OnceLock<TokioAsyncResolver> = OnceLock::new();
     RESOLVER.get_or_init(|| match TokioAsyncResolver::tokio_from_system_conf() {
         Ok(resolver) => resolver,
-        Err(_) => TokioAsyncResolver::tokio(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-        ),
+        Err(_) => TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
     })
 }
 
@@ -140,7 +137,10 @@ pub async fn lookup(
             LookupFamily::V6 => fam == 6,
         };
         if keep {
-            out.push(LookupResult { address: ip, family: fam });
+            out.push(LookupResult {
+                address: ip,
+                family: fam,
+            });
             if out.len() >= max {
                 break;
             }
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(e.code, "ETIMEOUT");
         let e = DnsError::from_io(io::Error::new(io::ErrorKind::ConnectionRefused, "x"));
         assert_eq!(e.code, "ECONNREFUSED");
-        let e = DnsError::from_io(io::Error::new(io::ErrorKind::Other, "x"));
+        let e = DnsError::from_io(io::Error::other("x"));
         assert_eq!(e.code, "ENOTFOUND");
     }
 }

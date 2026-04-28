@@ -30,10 +30,7 @@ pub(super) fn install<'s>(scope: &mut v8::PinScope<'s, '_>, context: v8::Local<'
     set_property(scope, global, "Nexide", nexide_obj.into());
 }
 
-fn install_core_helpers<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-    core: v8::Local<'s, v8::Object>,
-) {
+fn install_core_helpers<'s>(scope: &mut v8::PinScope<'s, '_>, core: v8::Local<'s, v8::Object>) {
     install_fn(scope, core, "print", op_core_print);
     install_fn(scope, core, "queueMicrotask", op_core_queue_microtask);
     install_fn(scope, core, "getAsyncContext", op_core_get_async_context);
@@ -48,10 +45,20 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_nexide_send_head", op_nexide_send_head);
     install_fn(scope, ops, "op_nexide_send_chunk", op_nexide_send_chunk);
     install_fn(scope, ops, "op_nexide_send_end", op_nexide_send_end);
-    install_fn(scope, ops, "op_nexide_send_response", op_nexide_send_response);
+    install_fn(
+        scope,
+        ops,
+        "op_nexide_send_response",
+        op_nexide_send_response,
+    );
     install_fn(scope, ops, "op_nexide_finish_error", op_nexide_finish_error);
     install_fn(scope, ops, "op_nexide_pop_request", op_nexide_pop_request);
-    install_fn(scope, ops, "op_nexide_pop_request_batch", op_nexide_pop_request_batch);
+    install_fn(
+        scope,
+        ops,
+        "op_nexide_pop_request_batch",
+        op_nexide_pop_request_batch,
+    );
     install_fn(
         scope,
         ops,
@@ -113,8 +120,18 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_crypto_scrypt", op_crypto_scrypt);
     install_fn(scope, ops, "op_crypto_aes_encrypt", op_crypto_aes_encrypt);
     install_fn(scope, ops, "op_crypto_aes_decrypt", op_crypto_aes_decrypt);
-    install_fn(scope, ops, "op_crypto_chacha20_seal", op_crypto_chacha20_seal);
-    install_fn(scope, ops, "op_crypto_chacha20_open", op_crypto_chacha20_open);
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_chacha20_seal",
+        op_crypto_chacha20_seal,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_chacha20_open",
+        op_crypto_chacha20_open,
+    );
     install_fn(scope, ops, "op_crypto_sign", op_crypto_sign);
     install_fn(scope, ops, "op_crypto_verify", op_crypto_verify);
 
@@ -548,7 +565,10 @@ fn op_nexide_send_head<'s>(
     let result = {
         let mut state = handle.0.borrow_mut();
         match state.dispatch_table.get_mut(id) {
-            Ok(slot) => slot.response_mut().send_head(head).map_err(|e| e.to_string()),
+            Ok(slot) => slot
+                .response_mut()
+                .send_head(head)
+                .map_err(|e| e.to_string()),
             Err(err) => Err(err.to_string()),
         }
     };
@@ -576,7 +596,10 @@ fn op_nexide_send_chunk<'s>(
     let result = {
         let mut state = handle.0.borrow_mut();
         match state.dispatch_table.get_mut(id) {
-            Ok(slot) => slot.response_mut().send_chunk(bytes).map_err(|e| e.to_string()),
+            Ok(slot) => slot
+                .response_mut()
+                .send_chunk(bytes)
+                .map_err(|e| e.to_string()),
             Err(err) => Err(err.to_string()),
         }
     };
@@ -611,7 +634,10 @@ fn op_nexide_send_response<'s>(
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
     let Some(id) = request_id_from_args(scope, &args) else {
-        throw_type_error(scope, "op_nexide_send_response: expected (idx, gen, head, body)");
+        throw_type_error(
+            scope,
+            "op_nexide_send_response: expected (idx, gen, head, body)",
+        );
         return;
     };
     let Some(head) = parse_head(scope, args.get(2)) else {
@@ -700,7 +726,11 @@ fn op_nexide_pop_request_batch<'s>(
     let ids = handle.0.borrow().queue.try_pop_batch(max as usize);
     if ids.is_empty() {
         let global = v8::Global::new(scope, resolver);
-        handle.0.borrow_mut().pending_pop_batch.push_back((global, max));
+        handle
+            .0
+            .borrow_mut()
+            .pending_pop_batch
+            .push_back((global, max));
     } else {
         let array = v8::Array::new(scope, ids.len() as i32);
         for (i, id) in ids.into_iter().enumerate() {
@@ -804,8 +834,14 @@ fn op_process_meta<'s>(
                 .and_then(|p| p.into_os_string().into_string().ok())
                 .unwrap_or_default()
         });
-    let platform = state.process.as_ref().map_or_else(host_platform_str, |p| p.platform());
-    let arch = state.process.as_ref().map_or_else(host_arch_str, |p| p.arch());
+    let platform = state
+        .process
+        .as_ref()
+        .map_or_else(host_platform_str, |p| p.platform());
+    let arch = state
+        .process
+        .as_ref()
+        .map_or_else(host_arch_str, |p| p.arch());
     drop(state);
 
     let obj = v8::Object::new(scope);
@@ -895,7 +931,10 @@ fn op_process_env_has<'s>(
     let present = match state.env_overlay.lookup(&key) {
         Some(Some(_)) => true,
         Some(None) => false,
-        None => state.process.as_ref().is_some_and(|p| p.get(&key).is_some()),
+        None => state
+            .process
+            .as_ref()
+            .is_some_and(|p| p.get(&key).is_some()),
     };
     rv.set_bool(present);
 }
@@ -981,10 +1020,7 @@ fn op_process_exit<'s>(
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
-    let code = args
-        .get(0)
-        .int32_value(scope)
-        .unwrap_or(0);
+    let code = args.get(0).int32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     handle.0.borrow_mut().exit_requested = Some(code);
     rv.set_undefined();
@@ -1088,7 +1124,11 @@ fn bytes_to_uint8array<'s>(
     v8::Uint8Array::new(scope, ab, 0, bytes.len()).expect("uint8array")
 }
 
-fn string_arg<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>, idx: i32) -> String {
+fn string_arg<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::FunctionCallbackArguments<'s>,
+    idx: i32,
+) -> String {
     args.get(idx).to_rust_string_lossy(scope)
 }
 
@@ -1096,7 +1136,11 @@ fn bool_arg<'s>(args: &v8::FunctionCallbackArguments<'s>, idx: i32) -> bool {
     args.get(idx).is_true()
 }
 
-fn bytes_arg<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>, idx: i32) -> Option<Vec<u8>> {
+fn bytes_arg<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: &v8::FunctionCallbackArguments<'s>,
+    idx: i32,
+) -> Option<Vec<u8>> {
     let v = args.get(idx);
     read_bytes_arg(scope, v).map(|b| b.to_vec())
 }
@@ -1189,7 +1233,11 @@ fn op_os_endianness<'s>(
     _args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
-    let e = if cfg!(target_endian = "little") { "LE" } else { "BE" };
+    let e = if cfg!(target_endian = "little") {
+        "LE"
+    } else {
+        "BE"
+    };
     let s = v8::String::new(scope, e).unwrap();
     rv.set(s.into());
 }
@@ -1287,8 +1335,10 @@ fn op_fs_exists<'s>(
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
     let path = string_arg(scope, &args, 0);
-    let exists = fs_handle_for(scope)
-        .map_or_else(|| std::path::Path::new(&path).exists(), |fs| fs.exists(&path));
+    let exists = fs_handle_for(scope).map_or_else(
+        || std::path::Path::new(&path).exists(),
+        |fs| fs.exists(&path),
+    );
     rv.set(v8::Boolean::new(scope, exists).into());
 }
 
@@ -1299,49 +1349,49 @@ fn op_fs_stat<'s>(
 ) {
     let path = string_arg(scope, &args, 0);
     let follow = bool_arg(&args, 1);
-    let (size, is_file, is_dir, is_symlink, mtime_ms, mode) =
-        if let Some(fs) = fs_handle_for(scope) {
-            match fs.stat(&path, follow) {
-                Ok(s) => (
-                    s.size as f64,
-                    s.is_file,
-                    s.is_dir,
-                    s.is_symlink,
-                    s.mtime_ms,
-                    f64::from(s.mode),
-                ),
-                Err(err) => {
-                    throw_fs_error(scope, &err);
-                    return;
-                }
+    let (size, is_file, is_dir, is_symlink, mtime_ms, mode) = if let Some(fs) = fs_handle_for(scope)
+    {
+        match fs.stat(&path, follow) {
+            Ok(s) => (
+                s.size as f64,
+                s.is_file,
+                s.is_dir,
+                s.is_symlink,
+                s.mtime_ms,
+                f64::from(s.mode),
+            ),
+            Err(err) => {
+                throw_fs_error(scope, &err);
+                return;
             }
+        }
+    } else {
+        let meta = if follow {
+            std::fs::metadata(&path)
         } else {
-            let meta = if follow {
-                std::fs::metadata(&path)
-            } else {
-                std::fs::symlink_metadata(&path)
-            };
-            let meta = match meta {
-                Ok(m) => m,
-                Err(err) => {
-                    throw_error(scope, &format!("ENOENT: {err}"));
-                    return;
-                }
-            };
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
-            (
-                meta.len() as f64,
-                meta.is_file(),
-                meta.is_dir(),
-                meta.file_type().is_symlink(),
-                mtime,
-                420.0,
-            )
+            std::fs::symlink_metadata(&path)
         };
+        let meta = match meta {
+            Ok(m) => m,
+            Err(err) => {
+                throw_error(scope, &format!("ENOENT: {err}"));
+                return;
+            }
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        (
+            meta.len() as f64,
+            meta.is_file(),
+            meta.is_dir(),
+            meta.file_type().is_symlink(),
+            mtime,
+            420.0,
+        )
+    };
     let obj = v8::Object::new(scope);
     let size_v = v8::Number::new(scope, size);
     let mtime_v = v8::Number::new(scope, mtime_ms);
@@ -1456,8 +1506,7 @@ fn op_fs_rm<'s>(
     let path = string_arg(scope, &args, 0);
     let recursive = bool_arg(&args, 1);
     let result = if let Some(fs) = fs_handle_for(scope) {
-        fs.remove(&path, recursive)
-            .map_err(|e| (e.code, e.message))
+        fs.remove(&path, recursive).map_err(|e| (e.code, e.message))
     } else {
         let p = std::path::Path::new(&path);
         if !p.exists() {
@@ -1584,26 +1633,22 @@ fn op_crypto_hmac<'s>(
     };
     let digest: Vec<u8> = match algo.as_str() {
         "sha1" => {
-            let mut m = hmac::Hmac::<sha1::Sha1>::new_from_slice(&key)
-                .expect("hmac key");
+            let mut m = hmac::Hmac::<sha1::Sha1>::new_from_slice(&key).expect("hmac key");
             m.update(&input);
             m.finalize().into_bytes().to_vec()
         }
         "sha256" => {
-            let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key)
-                .expect("hmac key");
+            let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&key).expect("hmac key");
             m.update(&input);
             m.finalize().into_bytes().to_vec()
         }
         "sha384" => {
-            let mut m = hmac::Hmac::<sha2::Sha384>::new_from_slice(&key)
-                .expect("hmac key");
+            let mut m = hmac::Hmac::<sha2::Sha384>::new_from_slice(&key).expect("hmac key");
             m.update(&input);
             m.finalize().into_bytes().to_vec()
         }
         "sha512" => {
-            let mut m = hmac::Hmac::<sha2::Sha512>::new_from_slice(&key)
-                .expect("hmac key");
+            let mut m = hmac::Hmac::<sha2::Sha512>::new_from_slice(&key).expect("hmac key");
             m.update(&input);
             m.finalize().into_bytes().to_vec()
         }
@@ -1641,10 +1686,22 @@ fn op_crypto_random_uuid<'s>(
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let s = format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
     );
     let v = v8::String::new(scope, &s).unwrap();
     rv.set(v.into());
@@ -1779,7 +1836,8 @@ fn op_zlib_encode<'s>(
             e.write_all(&input).and_then(|()| e.finish())
         }
         "deflate-raw" => {
-            let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut e =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
             e.write_all(&input).and_then(|()| e.finish())
         }
         "brotli" => {
@@ -1846,7 +1904,6 @@ fn op_zlib_decode<'s>(
     }
 }
 
-
 // ──────────────────────────────────────────────────────────────────────
 // node:dns ops
 // ──────────────────────────────────────────────────────────────────────
@@ -1880,8 +1937,7 @@ fn schedule_dns<'s, Fut, T, Mk>(
 where
     Fut: Future<Output = Result<T, DnsError>> + 'static,
     T: 'static,
-    Mk: for<'a, 'b> FnOnce(&mut v8::PinScope<'a, 'b>, T) -> v8::Local<'a, v8::Value>
-        + 'static,
+    Mk: for<'a, 'b> FnOnce(&mut v8::PinScope<'a, 'b>, T) -> v8::Local<'a, v8::Value> + 'static,
 {
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
@@ -2192,8 +2248,7 @@ fn reject_net<'s>(
     resolver: v8::Local<'s, v8::PromiseResolver>,
     err: &NetError,
 ) {
-    let msg = v8::String::new(scope, &err.message)
-        .unwrap_or_else(|| v8::String::empty(scope));
+    let msg = v8::String::new(scope, &err.message).unwrap_or_else(|| v8::String::empty(scope));
     let exc = v8::Exception::error(scope, msg);
     if let Ok(obj) = TryInto::<v8::Local<v8::Object>>::try_into(exc) {
         set_string_field(scope, obj, "code", err.code);
@@ -2817,19 +2872,33 @@ fn read_header_array<'s>(
     obj: v8::Local<'s, v8::Object>,
     name: &str,
 ) -> Vec<HttpHeader> {
-    let Some(key) = v8::String::new(scope, name) else { return Vec::new(); };
-    let Some(value) = obj.get(scope, key.into()) else { return Vec::new(); };
-    let Ok(arr) = v8::Local::<v8::Array>::try_from(value) else { return Vec::new(); };
+    let Some(key) = v8::String::new(scope, name) else {
+        return Vec::new();
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return Vec::new();
+    };
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(value) else {
+        return Vec::new();
+    };
     let len = arr.length();
     let mut out = Vec::with_capacity(len as usize);
     for i in 0..len {
-        let Some(entry) = arr.get_index(scope, i) else { continue };
-        let Ok(pair) = v8::Local::<v8::Array>::try_from(entry) else { continue };
+        let Some(entry) = arr.get_index(scope, i) else {
+            continue;
+        };
+        let Ok(pair) = v8::Local::<v8::Array>::try_from(entry) else {
+            continue;
+        };
         if pair.length() < 2 {
             continue;
         }
-        let Some(name_v) = pair.get_index(scope, 0) else { continue };
-        let Some(value_v) = pair.get_index(scope, 1) else { continue };
+        let Some(name_v) = pair.get_index(scope, 0) else {
+            continue;
+        };
+        let Some(value_v) = pair.get_index(scope, 1) else {
+            continue;
+        };
         out.push(HttpHeader {
             name: name_v.to_rust_string_lossy(scope),
             value: value_v.to_rust_string_lossy(scope),
@@ -2843,8 +2912,12 @@ fn read_optional_body<'s>(
     obj: v8::Local<'s, v8::Object>,
     name: &str,
 ) -> Vec<u8> {
-    let Some(key) = v8::String::new(scope, name) else { return Vec::new(); };
-    let Some(value) = obj.get(scope, key.into()) else { return Vec::new(); };
+    let Some(key) = v8::String::new(scope, name) else {
+        return Vec::new();
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return Vec::new();
+    };
     if value.is_null_or_undefined() {
         return Vec::new();
     }
@@ -2858,10 +2931,8 @@ fn build_header_array<'s>(
     let arr = v8::Array::new(scope, headers.len() as i32);
     for (i, h) in headers.iter().enumerate() {
         let pair = v8::Array::new(scope, 2);
-        let name = v8::String::new(scope, &h.name)
-            .unwrap_or_else(|| v8::String::empty(scope));
-        let value = v8::String::new(scope, &h.value)
-            .unwrap_or_else(|| v8::String::empty(scope));
+        let name = v8::String::new(scope, &h.name).unwrap_or_else(|| v8::String::empty(scope));
+        let value = v8::String::new(scope, &h.value).unwrap_or_else(|| v8::String::empty(scope));
         pair.set_index(scope, 0, name.into());
         pair.set_index(scope, 1, value.into());
         arr.set_index(scope, i as u32, pair.into());
@@ -2877,17 +2948,19 @@ fn bytes_to_uint8_array<'s>(
         scope,
         &v8::ArrayBuffer::new_backing_store_from_vec(chunk.to_vec()).make_shared(),
     );
-    v8::Uint8Array::new(scope, backing, 0, chunk.len())
-        .expect("Uint8Array view")
+    v8::Uint8Array::new(scope, backing, 0, chunk.len()).expect("Uint8Array view")
 }
 
 // ──────────────────────────────────────────────────────────────────────
 // node:child_process ops
 // ──────────────────────────────────────────────────────────────────────
 
-use std::collections::HashMap;
-use crate::ops::{ExitInfo, SpawnRequest, StdioMode, proc_kill, proc_read_pipe, proc_spawn, proc_wait, proc_write_pipe};
 use super::bridge::ChildSlot;
+use crate::ops::{
+    ExitInfo, SpawnRequest, StdioMode, proc_kill, proc_read_pipe, proc_spawn, proc_wait,
+    proc_write_pipe,
+};
+use std::collections::HashMap;
 
 /// Spawns a child process from the JS descriptor
 /// `{ command, args, cwd?, env?, clearEnv?, stdio: ["pipe"|"inherit"|"ignore", ...] }`.
@@ -2916,9 +2989,9 @@ fn op_proc_spawn<'s>(
                 stdout: tokio::sync::Mutex::new(child_handle.stdout),
                 stderr: tokio::sync::Mutex::new(child_handle.stderr),
             });
-            let has_stdin = slot.stdin.try_lock().map_or(false, |g| g.is_some());
-            let has_stdout = slot.stdout.try_lock().map_or(false, |g| g.is_some());
-            let has_stderr = slot.stderr.try_lock().map_or(false, |g| g.is_some());
+            let has_stdin = slot.stdin.try_lock().is_ok_and(|g| g.is_some());
+            let has_stdout = slot.stdout.try_lock().is_ok_and(|g| g.is_some());
+            let has_stderr = slot.stderr.try_lock().is_ok_and(|g| g.is_some());
             let id = table.insert(slot);
             let obj = v8::Object::new(scope);
             let id_key = v8::String::new(scope, "id").unwrap();
@@ -3183,9 +3256,15 @@ fn read_string_array<'s>(
     obj: v8::Local<'s, v8::Object>,
     name: &str,
 ) -> Vec<String> {
-    let Some(key) = v8::String::new(scope, name) else { return Vec::new(); };
-    let Some(value) = obj.get(scope, key.into()) else { return Vec::new(); };
-    let Ok(arr) = v8::Local::<v8::Array>::try_from(value) else { return Vec::new(); };
+    let Some(key) = v8::String::new(scope, name) else {
+        return Vec::new();
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return Vec::new();
+    };
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(value) else {
+        return Vec::new();
+    };
     let len = arr.length();
     let mut out = Vec::with_capacity(len as usize);
     for i in 0..len {
@@ -3202,18 +3281,30 @@ fn read_string_string_record<'s>(
     name: &str,
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    let Some(key) = v8::String::new(scope, name) else { return out; };
-    let Some(value) = obj.get(scope, key.into()) else { return out; };
+    let Some(key) = v8::String::new(scope, name) else {
+        return out;
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return out;
+    };
     if value.is_null_or_undefined() {
         return out;
     }
-    let Ok(record) = v8::Local::<v8::Object>::try_from(value) else { return out; };
-    let Some(names) = record.get_own_property_names(scope, v8::GetPropertyNamesArgsBuilder::new().build()) else {
+    let Ok(record) = v8::Local::<v8::Object>::try_from(value) else {
+        return out;
+    };
+    let Some(names) =
+        record.get_own_property_names(scope, v8::GetPropertyNamesArgsBuilder::new().build())
+    else {
         return out;
     };
     for i in 0..names.length() {
-        let Some(k) = names.get_index(scope, i) else { continue };
-        let Some(v) = record.get(scope, k) else { continue };
+        let Some(k) = names.get_index(scope, i) else {
+            continue;
+        };
+        let Some(v) = record.get(scope, k) else {
+            continue;
+        };
         out.insert(k.to_rust_string_lossy(scope), v.to_rust_string_lossy(scope));
     }
     out
@@ -3224,8 +3315,12 @@ fn read_bool_field<'s>(
     obj: v8::Local<'s, v8::Object>,
     name: &str,
 ) -> bool {
-    let Some(key) = v8::String::new(scope, name) else { return false; };
-    let Some(value) = obj.get(scope, key.into()) else { return false; };
+    let Some(key) = v8::String::new(scope, name) else {
+        return false;
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return false;
+    };
     value.boolean_value(scope)
 }
 
@@ -3235,8 +3330,12 @@ fn read_stdio_modes<'s>(
     name: &str,
 ) -> [StdioMode; 3] {
     let mut modes = [StdioMode::Pipe, StdioMode::Pipe, StdioMode::Pipe];
-    let Some(key) = v8::String::new(scope, name) else { return modes; };
-    let Some(value) = obj.get(scope, key.into()) else { return modes; };
+    let Some(key) = v8::String::new(scope, name) else {
+        return modes;
+    };
+    let Some(value) = obj.get(scope, key.into()) else {
+        return modes;
+    };
     if let Ok(arr) = v8::Local::<v8::Array>::try_from(value) {
         let len = arr.length().min(3);
         for i in 0..len {
@@ -3280,8 +3379,7 @@ fn make_node_error<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     err: &NetError,
 ) -> v8::Local<'s, v8::Value> {
-    let msg = v8::String::new(scope, &err.message)
-        .unwrap_or_else(|| v8::String::empty(scope));
+    let msg = v8::String::new(scope, &err.message).unwrap_or_else(|| v8::String::empty(scope));
     let exc = v8::Exception::error(scope, msg);
     if let Ok(obj) = TryInto::<v8::Local<v8::Object>>::try_into(exc) {
         set_string_field(scope, obj, "code", err.code);
@@ -3578,7 +3676,9 @@ fn op_crypto_aes_encrypt<'s>(
                 Ok(buf)
             }
         }
-        other => Err(Box::leak(format!("unsupported cipher {other}").into_boxed_str())),
+        other => Err(Box::leak(
+            format!("unsupported cipher {other}").into_boxed_str(),
+        )),
     };
     match result {
         Ok(out) => {
@@ -3673,12 +3773,21 @@ fn op_crypto_chacha20_seal<'s>(
     };
     let aad = bytes_arg(scope, &args, 3).unwrap_or_default();
     if key.len() != 32 || nonce.len() != 12 {
-        throw_error(scope, "chacha20-poly1305 requires 32-byte key and 12-byte nonce");
+        throw_error(
+            scope,
+            "chacha20-poly1305 requires 32-byte key and 12-byte nonce",
+        );
         return;
     }
     let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
     let nonce_arr = chacha20poly1305::Nonce::from_slice(&nonce);
-    match cipher.encrypt(nonce_arr, Payload { msg: &plaintext, aad: &aad }) {
+    match cipher.encrypt(
+        nonce_arr,
+        Payload {
+            msg: &plaintext,
+            aad: &aad,
+        },
+    ) {
         Ok(out) => {
             let arr = bytes_to_uint8array(scope, &out);
             rv.set(arr.into());
@@ -3707,12 +3816,21 @@ fn op_crypto_chacha20_open<'s>(
     };
     let aad = bytes_arg(scope, &args, 3).unwrap_or_default();
     if key.len() != 32 || nonce.len() != 12 {
-        throw_error(scope, "chacha20-poly1305 requires 32-byte key and 12-byte nonce");
+        throw_error(
+            scope,
+            "chacha20-poly1305 requires 32-byte key and 12-byte nonce",
+        );
         return;
     }
     let cipher = ChaCha20Poly1305::new_from_slice(&key).unwrap();
     let nonce_arr = chacha20poly1305::Nonce::from_slice(&nonce);
-    match cipher.decrypt(nonce_arr, Payload { msg: &ciphertext, aad: &aad }) {
+    match cipher.decrypt(
+        nonce_arr,
+        Payload {
+            msg: &ciphertext,
+            aad: &aad,
+        },
+    ) {
         Ok(out) => {
             let arr = bytes_to_uint8array(scope, &out);
             rv.set(arr.into());
@@ -3821,18 +3939,18 @@ where
 }
 
 fn ecdsa_p256_sign(key_pem: &str, data: &[u8]) -> Result<Vec<u8>, String> {
-    use p256::ecdsa::{Signature, SigningKey};
     use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
     use p256::pkcs8::DecodePrivateKey;
-    let signing = SigningKey::from_pkcs8_pem(key_pem)
-        .map_err(|e| format!("p256 private key parse: {e}"))?;
+    let signing =
+        SigningKey::from_pkcs8_pem(key_pem).map_err(|e| format!("p256 private key parse: {e}"))?;
     let sig: Signature = signing.sign(data);
     Ok(sig.to_der().as_bytes().to_vec())
 }
 
 fn ecdsa_p256_verify(key_pem: &str, data: &[u8], sig: &[u8]) -> Result<bool, String> {
-    use p256::ecdsa::{Signature, VerifyingKey};
     use p256::ecdsa::signature::Verifier;
+    use p256::ecdsa::{Signature, VerifyingKey};
     use p256::pkcs8::DecodePublicKey;
     let verifying = VerifyingKey::from_public_key_pem(key_pem)
         .map_err(|e| format!("p256 public key parse: {e}"))?;
@@ -3843,9 +3961,9 @@ fn ecdsa_p256_verify(key_pem: &str, data: &[u8], sig: &[u8]) -> Result<bool, Str
 }
 
 fn ed25519_sign(key_pem: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    use ed25519_dalek::Signer;
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::pkcs8::DecodePrivateKey;
-    use ed25519_dalek::Signer;
     let signing = SigningKey::from_pkcs8_pem(key_pem)
         .map_err(|e| format!("ed25519 private key parse: {e}"))?;
     let sig = signing.sign(data);
@@ -3853,12 +3971,15 @@ fn ed25519_sign(key_pem: &str, data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn ed25519_verify(key_pem: &str, data: &[u8], sig: &[u8]) -> Result<bool, String> {
-    use ed25519_dalek::{Signature, VerifyingKey, Verifier};
     use ed25519_dalek::pkcs8::DecodePublicKey;
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     let verifying = VerifyingKey::from_public_key_pem(key_pem)
         .map_err(|e| format!("ed25519 public key parse: {e}"))?;
     if sig.len() != 64 {
-        return Err(format!("ed25519 signature must be 64 bytes, got {}", sig.len()));
+        return Err(format!(
+            "ed25519 signature must be 64 bytes, got {}",
+            sig.len()
+        ));
     }
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(sig);

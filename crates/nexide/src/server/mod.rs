@@ -3,13 +3,13 @@
 //! Combines the static layer (zero-copy `ServeDir`) with the dynamic
 //! handler behind a single Axum frontend.
 
+pub mod accept_loop;
 pub mod config;
 pub mod fallback;
 mod next_bridge;
 mod prerender;
 mod static_assets;
 mod stream_listener;
-pub mod accept_loop;
 pub mod worker_runtime;
 
 use std::path::PathBuf;
@@ -219,12 +219,13 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let local = cfg.bind();
-    let mut joinset =
-        tokio::task::JoinSet::<Result<WorkerRuntime, WorkerSpawnError>>::new();
+    let mut joinset = tokio::task::JoinSet::<Result<WorkerRuntime, WorkerSpawnError>>::new();
     for idx in 0..worker_count {
         let cfg = cfg.clone();
         let entry = entrypoint.clone();
-        joinset.spawn(async move { WorkerRuntime::spawn_reuseport(idx, worker_count, cfg, entry).await });
+        joinset.spawn(async move {
+            WorkerRuntime::spawn_reuseport(idx, worker_count, cfg, entry).await
+        });
     }
 
     let mut workers: Vec<WorkerRuntime> = Vec::with_capacity(worker_count);
@@ -517,7 +518,14 @@ mod tests {
 
     #[test]
     fn reuseport_disabled_by_env_keeps_default_for_other_values() {
-        for raw in [None, Some(""), Some("1"), Some("true"), Some("yes"), Some("on")] {
+        for raw in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("true"),
+            Some("yes"),
+            Some("on"),
+        ] {
             assert!(
                 !super::reuseport_disabled_by_env(raw),
                 "expected {raw:?} to keep reuseport enabled"

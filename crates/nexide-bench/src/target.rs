@@ -142,8 +142,7 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Node => {
-            let server_js: PathBuf =
-                workspace_root.join("example/.next/standalone/server.js");
+            let server_js: PathBuf = workspace_root.join("example/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }
@@ -155,8 +154,7 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Deno => {
-            let server_js: PathBuf =
-                workspace_root.join("example/.next/standalone/server.js");
+            let server_js: PathBuf = workspace_root.join("example/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }
@@ -175,7 +173,9 @@ pub async fn spawn_target(
             c
         }
     };
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let mut child = cmd.spawn().context("spawn target")?;
     if let Some(out) = child.stdout.take() {
         tokio::spawn(drain("stdout", kind.label(), out));

@@ -1,4 +1,4 @@
-# Contributing to nexide
+# Contributing to Nexide
 
 Thank you for considering a contribution. This document describes the
 mechanics; the philosophy is "small, well-tested, well-documented changes

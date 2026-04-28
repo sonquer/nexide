@@ -210,10 +210,7 @@ mod tests {
 
     #[async_trait]
     impl EngineDispatcher for EchoDispatcher {
-        async fn dispatch(
-            &self,
-            request: ProtoRequest,
-        ) -> Result<ResponsePayload, DispatchError> {
+        async fn dispatch(&self, request: ProtoRequest) -> Result<ResponsePayload, DispatchError> {
             self.count.fetch_add(1, Ordering::Relaxed);
             let body = Bytes::from(format!(
                 "{}:{}",

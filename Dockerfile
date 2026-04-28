@@ -7,7 +7,7 @@
 # patches or an unsupported toolchain. The runtime image stays Alpine for
 # size, and uses `gcompat` to run the glibc-linked binary.
 
-ARG RUST_VERSION=1.85
+ARG RUST_VERSION=1.95
 ARG ALPINE_VERSION=3.20
 
 FROM rust:${RUST_VERSION}-bookworm AS builder

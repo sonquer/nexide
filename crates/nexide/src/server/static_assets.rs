@@ -75,9 +75,7 @@ fn bad_gateway(message: &str) -> Response<Body> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bad_gateway, dynamic_service, next_static_only, public_with_fallback_service,
-    };
+    use super::{bad_gateway, dynamic_service, next_static_only, public_with_fallback_service};
     use crate::server::fallback::{DynamicHandler, HandlerError, NotImplementedHandler};
     use axum::body::Body;
     use axum::http::{Request, Response, StatusCode};

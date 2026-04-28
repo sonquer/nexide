@@ -39,7 +39,10 @@ impl RequestMeta {
     ///   [`REQUEST_META_MAX_LEN`] bytes.
     /// * [`RequestMetaError::InvalidMethod`] — the method contains a
     ///   character outside the HTTP token set defined by RFC 7230.
-    pub fn try_new(method: impl Into<String>, uri: impl Into<String>) -> Result<Self, RequestMetaError> {
+    pub fn try_new(
+        method: impl Into<String>,
+        uri: impl Into<String>,
+    ) -> Result<Self, RequestMetaError> {
         let method = method.into();
         let uri = uri.into();
         if method.is_empty() {
@@ -236,11 +239,7 @@ mod tests {
     #[test]
     fn read_body_drains_in_chunks_and_signals_end() {
         let body = Bytes::from_static(b"hello world");
-        let mut slot = RequestSlot::new(
-            RequestMeta::try_new("GET", "/").unwrap(),
-            vec![],
-            body,
-        );
+        let mut slot = RequestSlot::new(RequestMeta::try_new("GET", "/").unwrap(), vec![], body);
 
         let mut buf = [0u8; 5];
         assert_eq!(slot.read_body(&mut buf), 5);
@@ -255,8 +254,14 @@ mod tests {
     #[test]
     fn header_order_is_preserved_for_multi_value() {
         let headers = vec![
-            HeaderPair { name: "set-cookie".to_owned(), value: "a=1".to_owned() },
-            HeaderPair { name: "set-cookie".to_owned(), value: "b=2".to_owned() },
+            HeaderPair {
+                name: "set-cookie".to_owned(),
+                value: "a=1".to_owned(),
+            },
+            HeaderPair {
+                name: "set-cookie".to_owned(),
+                value: "b=2".to_owned(),
+            },
         ];
         let slot = RequestSlot::new(
             RequestMeta::try_new("GET", "/").unwrap(),

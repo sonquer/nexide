@@ -69,10 +69,7 @@ impl HeapLimitConfig {
         } else {
             initial_mb
         };
-        Self {
-            initial_mb,
-            max_mb,
-        }
+        Self { initial_mb, max_mb }
     }
 
     /// Project default. Equivalent to

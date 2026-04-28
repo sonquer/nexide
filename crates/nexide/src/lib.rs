@@ -257,8 +257,7 @@ where
         workers = worker_count,
         "nexide runtime started"
     );
-    let outcome =
-        server::serve_with_workers(config, entrypoint.path, worker_count, shutdown).await;
+    let outcome = server::serve_with_workers(config, entrypoint.path, worker_count, shutdown).await;
     tracing::info!("nexide runtime stopped");
     outcome.map_err(RuntimeError::from)
 }
@@ -506,10 +505,9 @@ fn pool_size_from_cgroup_memory() -> Option<usize> {
 #[cfg(target_os = "linux")]
 fn cgroup_memory_limit_mb() -> Option<u64> {
     const HOST_SCALE_THRESHOLD_MB: u64 = 1024 * 1024;
-    let raw_bytes = read_cgroup_v2_memory_max()
-        .or_else(read_cgroup_v1_memory_limit)?;
+    let raw_bytes = read_cgroup_v2_memory_max().or_else(read_cgroup_v1_memory_limit)?;
     let mb = raw_bytes / (1024 * 1024);
-    if mb < 1 || mb >= HOST_SCALE_THRESHOLD_MB {
+    if !(1..HOST_SCALE_THRESHOLD_MB).contains(&mb) {
         return None;
     }
     Some(mb)
@@ -534,16 +532,13 @@ fn read_cgroup_v2_memory_max() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn read_cgroup_v1_memory_limit() -> Option<u64> {
-    let raw =
-        std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-            .ok()?;
+    let raw = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes").ok()?;
     let value = raw.trim().parse::<u64>().ok()?;
     if value >= 0x7FFF_FFFF_FFFF_F000 {
         return None;
     }
     Some(value)
 }
-
 
 /// RSS each isolate consumes when serving the production Next.js
 /// standalone bundle under sustained load.
@@ -791,7 +786,10 @@ fn delegate_to_next(cwd: &Path, argv: &[String]) -> Result<(), RuntimeError> {
     let (program, prefix_args) = if local_bin.is_file() {
         (local_bin.display().to_string(), Vec::<String>::new())
     } else {
-        ("npx".to_string(), vec!["--no-install".to_string(), "next".to_string()])
+        (
+            "npx".to_string(),
+            vec!["--no-install".to_string(), "next".to_string()],
+        )
     };
     let mut command = std::process::Command::new(&program);
     command.current_dir(cwd);
@@ -800,7 +798,10 @@ fn delegate_to_next(cwd: &Path, argv: &[String]) -> Result<(), RuntimeError> {
     tracing::info!(program = %program, args = ?argv, cwd = %cwd.display(), "delegating to next");
     let status = command
         .status()
-        .map_err(|source| RuntimeError::SpawnFailed { program: program.clone(), source })?;
+        .map_err(|source| RuntimeError::SpawnFailed {
+            program: program.clone(),
+            source,
+        })?;
     if status.success() {
         return Ok(());
     }
@@ -830,7 +831,11 @@ fn parse_bind(hostname: &str, port: u16) -> Result<SocketAddr, RuntimeError> {
 /// Resolves and canonicalises a directory passed on the CLI.
 fn absolute_dir(raw: &Path) -> Result<PathBuf, RuntimeError> {
     let cwd = std::env::current_dir().map_err(RuntimeError::Tokio)?;
-    let candidate = if raw.is_absolute() { raw.to_path_buf() } else { cwd.join(raw) };
+    let candidate = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
     if !candidate.is_dir() {
         return Err(RuntimeError::MissingDir(candidate));
     }
@@ -984,7 +989,9 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
     let workers = workers.max(1) as u64;
     let mut flags = format!("--max-semi-space-size={DEFAULT_SEMI_SPACE_CAP_MB}");
     if let Some(budget) = budget_mb {
-        let raw = budget.saturating_div(workers).saturating_sub(NON_V8_SAFETY_MB);
+        let raw = budget
+            .saturating_div(workers)
+            .saturating_sub(NON_V8_SAFETY_MB);
         let ceiling = HARD_OLD_SPACE_CAP_MB.max(raw / 2);
         let cap = raw.clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
         let _ = write!(flags, " --max-old-space-size={cap}");
@@ -1020,11 +1027,7 @@ fn apply_v8_flags(workers: usize) {
 /// defaults), otherwise returns [`compose_default_v8_flags`] applied
 /// to `budget_mb` and `workers`. Pure function so the resolution
 /// logic is unit-testable without touching V8's process-global state.
-fn resolve_v8_flags(
-    env_value: Option<&str>,
-    budget_mb: Option<u64>,
-    workers: usize,
-) -> String {
+fn resolve_v8_flags(env_value: Option<&str>, budget_mb: Option<u64>, workers: usize) -> String {
     env_value
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -1153,7 +1156,10 @@ mod tests {
         let cap = detected_blocking_cap();
         let cpus = detected_pool_size();
         assert!(cap >= cpus, "cap {cap} should be at least cpus {cpus}");
-        assert!(cap >= 4, "cap {cap} should never fall below the 4-thread floor");
+        assert!(
+            cap >= 4,
+            "cap {cap} should never fall below the 4-thread floor"
+        );
     }
 
     #[test]
@@ -1228,9 +1234,7 @@ mod tests {
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(flags.contains("--max-old-space-size=192"));
         let flags = compose_default_v8_flags(Some(1024), 2);
-        assert!(flags.contains(&format!(
-            "--max-old-space-size={HARD_OLD_SPACE_CAP_MB}"
-        )));
+        assert!(flags.contains(&format!("--max-old-space-size={HARD_OLD_SPACE_CAP_MB}")));
     }
 
     #[test]
@@ -1246,9 +1250,7 @@ mod tests {
         let flags = compose_default_v8_flags(Some(96), 1);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
         let flags = compose_default_v8_flags(Some(512), 0);
-        assert!(flags.contains(&format!(
-            "--max-old-space-size={HARD_OLD_SPACE_CAP_MB}"
-        )));
+        assert!(flags.contains(&format!("--max-old-space-size={HARD_OLD_SPACE_CAP_MB}")));
     }
 
     #[test]
@@ -1318,9 +1320,20 @@ mod tests {
 
     #[test]
     fn runtime_mode_env_pins_single_thread() {
-        for raw in ["single", "Single", "SINGLE-THREAD", "single_thread", "1", " single "] {
+        for raw in [
+            "single",
+            "Single",
+            "SINGLE-THREAD",
+            "single_thread",
+            "1",
+            " single ",
+        ] {
             let mode = resolve_runtime_mode(Some(raw), Some(64));
-            assert_eq!(mode, RuntimeMode::SingleThread, "expected single for {raw:?}");
+            assert_eq!(
+                mode,
+                RuntimeMode::SingleThread,
+                "expected single for {raw:?}"
+            );
         }
     }
 
@@ -1350,8 +1363,14 @@ mod tests {
 
     #[test]
     fn runtime_mode_auto_picks_multi_thread_for_multi_cpu_hosts() {
-        assert_eq!(resolve_runtime_mode(None, Some(2)), RuntimeMode::MultiThread);
-        assert_eq!(resolve_runtime_mode(None, Some(8)), RuntimeMode::MultiThread);
+        assert_eq!(
+            resolve_runtime_mode(None, Some(2)),
+            RuntimeMode::MultiThread
+        );
+        assert_eq!(
+            resolve_runtime_mode(None, Some(8)),
+            RuntimeMode::MultiThread
+        );
     }
 
     #[test]

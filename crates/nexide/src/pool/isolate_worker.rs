@@ -105,9 +105,7 @@ impl IsolateWorker {
             })
             .map_err(|err| WorkerError::Engine(format!("spawn failed: {err}")))?;
 
-        ready_rx
-            .await
-            .map_err(|_| WorkerError::Shutdown)??;
+        ready_rx.await.map_err(|_| WorkerError::Shutdown)??;
 
         Ok(Self { job_tx, health })
     }
@@ -199,8 +197,8 @@ async fn run_worker_loop(
         run_pump(pump_engine, pump_signal_for_pump).await;
     });
 
-    let shutdown_reason: &str = run_recv_loop(&engine, &mut job_rx, &pump_signal, &health, &handled)
-        .await;
+    let shutdown_reason: &str =
+        run_recv_loop(&engine, &mut job_rx, &pump_signal, &health, &handled).await;
 
     pump_handle.abort();
     let _ = pump_handle.await;

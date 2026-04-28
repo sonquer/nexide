@@ -27,9 +27,9 @@ pub use dispatch_table::{
 };
 pub use dns::{
     DnsError, LookupFamily, LookupResult, MxRecord, SrvRecord, lookup as dns_lookup,
-    resolve4 as dns_resolve4, resolve6 as dns_resolve6, resolve_cname as dns_resolve_cname,
-    resolve_mx as dns_resolve_mx, resolve_ns as dns_resolve_ns, resolve_srv as dns_resolve_srv,
-    resolve_txt as dns_resolve_txt, reverse as dns_reverse,
+    resolve_cname as dns_resolve_cname, resolve_mx as dns_resolve_mx, resolve_ns as dns_resolve_ns,
+    resolve_srv as dns_resolve_srv, resolve_txt as dns_resolve_txt, resolve4 as dns_resolve4,
+    resolve6 as dns_resolve6, reverse as dns_reverse,
 };
 pub use fs_sync::{
     DirEntry, FsBackend, FsError, FsHandle, FsStat, MemoryFs, PathSandbox, RealFs, Sandbox,
@@ -46,9 +46,8 @@ pub use process::{
     EnvOverlay, EnvSource, ExitRequested, MapEnv, OsEnv, ProcessConfig, ProcessConfigBuilder,
 };
 pub use process_spawn::{
-    ChildHandle, ExitInfo, SpawnRequest, StdioMode, kill as proc_kill,
-    read_pipe as proc_read_pipe, spawn as proc_spawn, wait as proc_wait,
-    write_pipe as proc_write_pipe,
+    ChildHandle, ExitInfo, SpawnRequest, StdioMode, kill as proc_kill, read_pipe as proc_read_pipe,
+    spawn as proc_spawn, wait as proc_wait, write_pipe as proc_write_pipe,
 };
 pub use queue::RequestQueue;
 pub use request::{

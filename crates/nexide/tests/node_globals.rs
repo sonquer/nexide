@@ -17,11 +17,7 @@ use nexide::ops::{MapEnv, ProcessConfig};
 
 /// Boots the engine with a CJS resolver pinned to `dir` plus a
 /// deterministic [`ProcessConfig`] over `env_pairs`.
-async fn run_with_env(
-    dir: &Path,
-    entry: &Path,
-    env_pairs: &[(&str, &str)],
-) -> Result<(), String> {
+async fn run_with_env(dir: &Path, entry: &Path, env_pairs: &[(&str, &str)]) -> Result<(), String> {
     let registry = Arc::new(default_registry().map_err(|e| e.to_string())?);
     let resolver = Arc::new(FsResolver::new(vec![dir.to_path_buf()], registry));
     let env = Arc::new(MapEnv::from_pairs(
@@ -43,8 +39,10 @@ async fn assert_passes(env: &[(&str, &str)], body: &str) {
     let entry = dir.path().join("entry.cjs");
     std::fs::write(&entry, body).expect("write entry");
     let dir_path = dir.path().to_path_buf();
-    let env_owned: Vec<(String, String)> =
-        env.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+    let env_owned: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| ((*k).into(), (*v).into()))
+        .collect();
     let local = tokio::task::LocalSet::new();
     let result = local
         .run_until(async move {

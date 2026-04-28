@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`nexide` is pre-1.0 and explicitly experimental. Only the `main` branch is
+Nexide is pre-1.0 and explicitly experimental. Only the `main` branch is
 supported. There are no LTS branches and there will not be security backports
 to older tags.
 
@@ -55,6 +55,6 @@ Out of scope:
 
 ## Hardening status
 
-`nexide` has not been audited and has not been deployed to production
+Nexide has not been audited and has not been deployed to production
 workloads we are aware of. Treat any findings accordingly: the absence of
 public CVEs reflects youth, not assurance.

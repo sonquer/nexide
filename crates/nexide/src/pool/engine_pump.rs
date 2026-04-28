@@ -54,7 +54,7 @@ use tokio::sync::Notify;
 use super::pump_strategy::pump_strategy_from_env;
 use super::worker::{DispatchJob, WorkerError, WorkerHealth};
 use crate::engine::cjs::{FsResolver, ROOT_PARENT};
-use crate::engine::{BootContext, V8Engine, IsolateHandle};
+use crate::engine::{BootContext, IsolateHandle, V8Engine};
 use crate::ops::{RequestMeta, RequestSlot};
 
 /// Boots a fresh [`V8Engine`], starts the JS pump matching the
@@ -158,7 +158,9 @@ pub(super) fn register_job(
     let slot = match build_slot(job.request) {
         Ok(slot) => slot,
         Err(err) => {
-            let _ = job.reply.send(Err(crate::ops::RequestFailure::Handler(err.to_string())));
+            let _ = job
+                .reply
+                .send(Err(crate::ops::RequestFailure::Handler(err.to_string())));
             return;
         }
     };

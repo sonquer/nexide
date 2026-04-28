@@ -8,10 +8,10 @@
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::{Request, Response};
-use thiserror::Error;
 #[cfg(test)]
 use axum::http::StatusCode;
+use axum::http::{Request, Response};
+use thiserror::Error;
 
 /// Errors raised by a [`DynamicHandler`].
 #[derive(Debug, Error)]

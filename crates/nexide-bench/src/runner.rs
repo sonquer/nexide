@@ -102,8 +102,7 @@ pub fn default_routes() -> Vec<RouteSpec> {
 }
 
 fn pick_free_port() -> Result<u16> {
-    let listener =
-        TcpListener::bind("127.0.0.1:0").context("bind ephemeral port")?;
+    let listener = TcpListener::bind("127.0.0.1:0").context("bind ephemeral port")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
@@ -129,13 +128,7 @@ async fn run_cell(
 ) -> Result<BenchResult> {
     let port = pick_free_port()?;
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
-    let mut handle = spawn_target(
-        runtime,
-        addr,
-        &cfg.workspace_root,
-        cfg.ready_timeout,
-    )
-    .await?;
+    let mut handle = spawn_target(runtime, addr, &cfg.workspace_root, cfg.ready_timeout).await?;
     warmup(addr, &route.path, cfg.warmup).await;
     let pid = handle.pid()?;
     let sampler = ProcessSampler::spawn(pid, cfg.sample_interval)?;

@@ -452,38 +452,32 @@ mod tests {
         assert_eq!(reap_heap_bytes_from_env(Some("abc")), None);
         assert_eq!(reap_heap_bytes_from_env(Some("0")), Some(0));
         assert_eq!(reap_heap_bytes_from_env(Some("1")), Some(1024 * 1024));
-        assert_eq!(reap_heap_bytes_from_env(Some(" 256 ")), Some(256 * 1024 * 1024));
+        assert_eq!(
+            reap_heap_bytes_from_env(Some(" 256 ")),
+            Some(256 * 1024 * 1024)
+        );
     }
 
     #[test]
     fn reap_rss_bytes_from_env_parses_megabytes() {
-        assert_eq!(reap_rss_bytes_from_env(Some("128")), Some(128 * 1024 * 1024));
+        assert_eq!(
+            reap_rss_bytes_from_env(Some("128")),
+            Some(128 * 1024 * 1024)
+        );
         assert_eq!(reap_rss_bytes_from_env(Some("0")), Some(0));
         assert_eq!(reap_rss_bytes_from_env(Some("-5")), None);
     }
 
     #[test]
     fn build_default_recycle_policy_with_includes_heap_bytes_when_configured() {
-        let policy = build_default_recycle_policy_with(
-            Some(0.0),
-            Some(0),
-            Some(1_000),
-            None,
-            None,
-        );
+        let policy = build_default_recycle_policy_with(Some(0.0), Some(0), Some(1_000), None, None);
         assert!(!policy.should_recycle(&health(999, 0, 0)));
         assert!(policy.should_recycle(&health(2_000, 0, 0)));
     }
 
     #[test]
     fn build_default_recycle_policy_with_skips_rss_when_sampler_missing() {
-        let policy = build_default_recycle_policy_with(
-            Some(0.0),
-            Some(0),
-            None,
-            Some(1),
-            None,
-        );
+        let policy = build_default_recycle_policy_with(Some(0.0), Some(0), None, Some(1), None);
         assert!(!policy.should_recycle(&health(0, 0, 0)));
     }
 }

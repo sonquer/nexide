@@ -52,10 +52,7 @@ use async_trait::async_trait;
 use tokio::task::JoinHandle;
 
 use super::isolate_worker::IsolateWorker;
-use super::recycle::{
-    RecyclePolicy, reap_heap_ratio_from_env,
-    reap_request_count_from_env,
-};
+use super::recycle::{RecyclePolicy, reap_heap_ratio_from_env, reap_request_count_from_env};
 use super::worker::{Job, Worker, WorkerError, WorkerHealth};
 use crate::dispatch::{DispatchError, EngineDispatcher, ProtoRequest};
 use crate::ops::ResponsePayload;
@@ -102,15 +99,17 @@ impl IsolateWorkerFactory {
     /// Constructs a factory pinned to `entrypoint` and a known pool size.
     #[must_use]
     pub const fn new(entrypoint: PathBuf, workers: usize) -> Self {
-        Self { entrypoint, workers }
+        Self {
+            entrypoint,
+            workers,
+        }
     }
 }
 
 #[async_trait]
 impl WorkerFactory for IsolateWorkerFactory {
     async fn build(&self, worker_id: usize) -> Result<Arc<dyn Worker>, WorkerError> {
-        let worker =
-            IsolateWorker::spawn(self.entrypoint.clone(), worker_id, self.workers).await?;
+        let worker = IsolateWorker::spawn(self.entrypoint.clone(), worker_id, self.workers).await?;
         Ok(Arc::new(worker))
     }
 }

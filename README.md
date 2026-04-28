@@ -1,7 +1,7 @@
-# nexide
+# Nexide
 
 <p align="center">
-  <img src="./img/nexide.png" alt="nexide logo" width="240" />
+  <img src="./img/nexide.png" alt="Nexide logo" width="240" />
 </p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sonquer/nexide/ci.yml?branch=main&label=CI)](https://github.com/sonquer/nexide/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 
 > A native Rust runtime for serving Next.js applications. No Node.js. No Deno.
 
-`nexide` embeds a pool of raw V8 isolates behind an Axum/Tower HTTP server, and
+Nexide embeds a pool of raw V8 isolates behind an Axum/Tower HTTP server, and
 exposes just enough of the Node.js compatibility surface for the Next.js
 standalone server bundle to boot and serve traffic. It is **not** a general
 purpose JavaScript runtime; it is a single-purpose Next.js host.
@@ -36,7 +36,7 @@ not put your customers on it yet.
 
 Node.js is the de facto Next.js host but pays a real tax on cold start, memory
 footprint and per-request overhead. Deno improves on parts of that but is not
-optimised for the Next.js critical path. `nexide` asks a narrower question:
+optimised for the Next.js critical path. Nexide asks a narrower question:
 
 > If we own the entire stack (HTTP, isolate lifecycle, Node API surface),
 > how fast can a Next.js standalone bundle actually serve?
@@ -47,8 +47,8 @@ All numbers below come from `nexide-bench docker-suite`: 4 routes × 3 runtimes
 × 4 container presets × 30 s window @ 64 connections, on identical Docker
 images of the same Next.js 16 application.
 
-Runtimes: `nexide` (this repo), `node` (Node 22 LTS standalone server),
-`deno` (Deno 2.x with `--unstable-node-modules-dir`).
+Runtimes: `nexide` (this repo, the binary name), `node` (Node 22 LTS standalone
+server), `deno` (Deno 2.x with `--unstable-node-modules-dir`).
 
 ### 1 vCPU, 512 MB RAM (typical small container)
 
@@ -80,7 +80,7 @@ Runtimes: `nexide` (this repo), `node` (Node 22 LTS standalone server),
 - **Route handlers are ~60-80% faster on a single core, ~140% faster on two.**
   V8 dispatch overhead is the dominant cost; Rust does not magically make your
   JS faster, it makes the path *to* your JS shorter.
-- **Memory cost is real.** `nexide` uses 2-4x the memory of Node.js because it
+- **Memory cost is real.** Nexide uses 2-4x the memory of Node.js because it
   pre-warms a pool of V8 isolates. This is the central trade-off.
 - **CPU utilisation is broadly comparable.** No magic; the wins come from
   parallelism in the pool and a leaner request path, not from running V8 less.
@@ -199,7 +199,7 @@ nexide/
 
 ## Node.js compatibility
 
-`nexide` ships its own implementations of the Node.js surface that Next.js
+Nexide ships its own implementations of the Node.js surface that Next.js
 actually uses. Both `require('node:foo')` and `require('foo')` resolve to the
 same instance.
 
@@ -404,7 +404,7 @@ conditions.
 
 ## Acknowledgements
 
-`nexide` stands on the shoulders of [V8](https://v8.dev),
+Nexide stands on the shoulders of [V8](https://v8.dev),
 [`rusty_v8`](https://github.com/denoland/rusty_v8) (the same V8 binding the
 Deno project maintains), [Tokio](https://tokio.rs),
 [Axum](https://github.com/tokio-rs/axum), [Hyper](https://hyper.rs), and the

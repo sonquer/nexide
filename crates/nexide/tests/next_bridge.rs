@@ -74,7 +74,9 @@ fn fixture_config() -> (TempDir, TempDir, TempDir, ServerConfig) {
 #[tokio::test]
 async fn ssr_route_returns_html_with_marker() {
     let (_handler_dir, entrypoint) = synthetic_entrypoint();
-    let dispatcher = IsolateDispatcher::spawn(entrypoint).await.expect("dispatcher");
+    let dispatcher = IsolateDispatcher::spawn(entrypoint)
+        .await
+        .expect("dispatcher");
     let dispatcher = Arc::new(dispatcher);
     let handler = Arc::new(NextBridgeHandler::new(dispatcher.clone()));
     let (_p, _s, _a, cfg) = fixture_config();
@@ -113,7 +115,9 @@ async fn ssr_route_returns_html_with_marker() {
 #[tokio::test]
 async fn api_route_returns_json() {
     let (_handler_dir, entrypoint) = synthetic_entrypoint();
-    let dispatcher = IsolateDispatcher::spawn(entrypoint).await.expect("dispatcher");
+    let dispatcher = IsolateDispatcher::spawn(entrypoint)
+        .await
+        .expect("dispatcher");
     let dispatcher = Arc::new(dispatcher);
     let handler = Arc::new(NextBridgeHandler::new(dispatcher.clone()));
     let (_p, _s, _a, cfg) = fixture_config();
@@ -151,7 +155,9 @@ async fn api_route_returns_json() {
 #[tokio::test]
 async fn static_assets_bypass_isolate() {
     let (_handler_dir, entrypoint) = synthetic_entrypoint();
-    let dispatcher = IsolateDispatcher::spawn(entrypoint).await.expect("dispatcher");
+    let dispatcher = IsolateDispatcher::spawn(entrypoint)
+        .await
+        .expect("dispatcher");
     let dispatcher = Arc::new(dispatcher);
     let handler = Arc::new(NextBridgeHandler::new(dispatcher.clone()));
     let (_p, _s, _a, cfg) = fixture_config();

@@ -116,8 +116,7 @@ impl LocalIsolateWorker {
         workers: usize,
     ) -> Result<Self, WorkerError> {
         let (job_tx, job_rx) = mpsc::channel::<DispatchJob>(MAILBOX_CAPACITY);
-        let (rebuild_tx, rebuild_rx) =
-            mpsc::channel::<oneshot::Sender<Result<(), WorkerError>>>(1);
+        let (rebuild_tx, rebuild_rx) = mpsc::channel::<oneshot::Sender<Result<(), WorkerError>>>(1);
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), WorkerError>>();
         let health = Arc::new(Mutex::new(WorkerHealth::fresh()));
         let health_for_task = Arc::clone(&health);
@@ -291,9 +290,7 @@ async fn drive_engine_until_event(
     let pump_engine = Rc::clone(&engine);
     let pump_signal_for_pump = Rc::clone(&pump_signal);
     let pump_handle =
-        tokio::task::spawn_local(
-            async move { run_pump(pump_engine, pump_signal_for_pump).await },
-        );
+        tokio::task::spawn_local(async move { run_pump(pump_engine, pump_signal_for_pump).await });
 
     let event = run_recv_loop(&engine, job_rx, rebuild_rx, &pump_signal, health, handled).await;
 

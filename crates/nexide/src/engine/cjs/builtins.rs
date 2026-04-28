@@ -38,29 +38,56 @@ const MODULES: &[(&str, &str)] = &[
         "async_hooks",
         include_str!("../../../runtime/polyfills/node/async_hooks.js"),
     ),
-    ("path", include_str!("../../../runtime/polyfills/node/path.js")),
-    ("url", include_str!("../../../runtime/polyfills/node/url.js")),
+    (
+        "path",
+        include_str!("../../../runtime/polyfills/node/path.js"),
+    ),
+    (
+        "url",
+        include_str!("../../../runtime/polyfills/node/url.js"),
+    ),
     (
         "querystring",
         include_str!("../../../runtime/polyfills/node/querystring.js"),
     ),
-    ("util", include_str!("../../../runtime/polyfills/node/util.js")),
+    (
+        "util",
+        include_str!("../../../runtime/polyfills/node/util.js"),
+    ),
     ("os", include_str!("../../../runtime/polyfills/node/os.js")),
     (
         "process",
         include_str!("../../../runtime/polyfills/node/process.js"),
     ),
-    ("events", include_str!("../../../runtime/polyfills/node/events.js")),
-    ("buffer", include_str!("../../../runtime/polyfills/node/buffer.js")),
-    ("stream", include_str!("../../../runtime/polyfills/node/stream.js")),
+    (
+        "events",
+        include_str!("../../../runtime/polyfills/node/events.js"),
+    ),
+    (
+        "buffer",
+        include_str!("../../../runtime/polyfills/node/buffer.js"),
+    ),
+    (
+        "stream",
+        include_str!("../../../runtime/polyfills/node/stream.js"),
+    ),
     ("fs", include_str!("../../../runtime/polyfills/node/fs.js")),
     (
         "fs/promises",
         include_str!("../../../runtime/polyfills/node/fs-promises.js"),
     ),
-    ("zlib", include_str!("../../../runtime/polyfills/node/zlib.js")),
-    ("crypto", include_str!("../../../runtime/polyfills/node/crypto.js")),
-    ("http", include_str!("../../../runtime/polyfills/node/http.js")),
+    (
+        "zlib",
+        include_str!("../../../runtime/polyfills/node/zlib.js"),
+    ),
+    (
+        "crypto",
+        include_str!("../../../runtime/polyfills/node/crypto.js"),
+    ),
+    (
+        "http",
+        include_str!("../../../runtime/polyfills/node/http.js"),
+    ),
     (
         "https",
         include_str!("../../../runtime/polyfills/node/https.js"),
@@ -69,8 +96,14 @@ const MODULES: &[(&str, &str)] = &[
         "inspector",
         include_str!("../../../runtime/polyfills/node/inspector.js"),
     ),
-    ("net", include_str!("../../../runtime/polyfills/node/net.js")),
-    ("tls", include_str!("../../../runtime/polyfills/node/tls.js")),
+    (
+        "net",
+        include_str!("../../../runtime/polyfills/node/net.js"),
+    ),
+    (
+        "tls",
+        include_str!("../../../runtime/polyfills/node/tls.js"),
+    ),
     (
         "timers",
         include_str!("../../../runtime/polyfills/node/timers.js"),
@@ -79,7 +112,10 @@ const MODULES: &[(&str, &str)] = &[
         "timers/promises",
         include_str!("../../../runtime/polyfills/node/timers_promises.js"),
     ),
-    ("dns", include_str!("../../../runtime/polyfills/node/dns.js")),
+    (
+        "dns",
+        include_str!("../../../runtime/polyfills/node/dns.js"),
+    ),
     (
         "dns/promises",
         include_str!("../../../runtime/polyfills/node/dns_promises.js"),
@@ -110,7 +146,10 @@ const MODULES: &[(&str, &str)] = &[
         "perf_hooks",
         include_str!("../../../runtime/polyfills/node/perf_hooks.js"),
     ),
-    ("tty", include_str!("../../../runtime/polyfills/node/tty.js")),
+    (
+        "tty",
+        include_str!("../../../runtime/polyfills/node/tty.js"),
+    ),
 ];
 
 /// Registers every shipped `node:*` module on `registry`.
@@ -151,11 +190,39 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "assert", "async_hooks", "buffer", "child_process", "constants", "crypto", "dns",
-                "dns/promises", "events", "fs", "fs/promises", "http", "https", "inspector",
-                "module", "net", "os", "path", "perf_hooks", "process", "querystring", "stream",
-                "string_decoder", "timers", "timers/promises", "tls", "tty", "url", "util", "v8",
-                "vm", "worker_threads", "zlib",
+                "assert",
+                "async_hooks",
+                "buffer",
+                "child_process",
+                "constants",
+                "crypto",
+                "dns",
+                "dns/promises",
+                "events",
+                "fs",
+                "fs/promises",
+                "http",
+                "https",
+                "inspector",
+                "module",
+                "net",
+                "os",
+                "path",
+                "perf_hooks",
+                "process",
+                "querystring",
+                "stream",
+                "string_decoder",
+                "timers",
+                "timers/promises",
+                "tls",
+                "tty",
+                "url",
+                "util",
+                "v8",
+                "vm",
+                "worker_threads",
+                "zlib",
             ],
         );
     }

@@ -29,9 +29,19 @@ fn absolute_table(results: &[BenchResult]) -> Table {
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
-            "route", "runtime", "RPS", "p50 ms", "p95 ms", "p99 ms",
-            "cpu avg %", "cpu max %", "mem avg MB", "mem max MB",
-            "threads", "RPS/CPU%", "errors",
+            "route",
+            "runtime",
+            "RPS",
+            "p50 ms",
+            "p95 ms",
+            "p99 ms",
+            "cpu avg %",
+            "cpu max %",
+            "mem avg MB",
+            "mem max MB",
+            "threads",
+            "RPS/CPU%",
+            "errors",
         ]);
     for r in results {
         let rps_per_cpu = if r.sample.cpu_avg > 0.0 {
@@ -59,8 +69,7 @@ fn absolute_table(results: &[BenchResult]) -> Table {
 }
 
 fn delta_table(results: &[BenchResult], protagonist: TargetKind) -> Option<Table> {
-    let mut by_route: BTreeMap<String, BTreeMap<TargetKind, &BenchResult>> =
-        BTreeMap::new();
+    let mut by_route: BTreeMap<String, BTreeMap<TargetKind, &BenchResult>> = BTreeMap::new();
     for r in results {
         by_route
             .entry(r.route.clone())
@@ -167,8 +176,7 @@ fn render_scaling<F>(points: &[SweepPoint], metric: &str, fmt: F) -> String
 where
     F: Fn(&BenchResult) -> String,
 {
-    let mut by_cell: BTreeMap<(String, TargetKind), BTreeMap<usize, String>> =
-        BTreeMap::new();
+    let mut by_cell: BTreeMap<(String, TargetKind), BTreeMap<usize, String>> = BTreeMap::new();
     let mut conns: Vec<usize> = points.iter().map(|p| p.connections).collect();
     conns.sort_unstable();
     conns.dedup();
@@ -190,8 +198,7 @@ where
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(header);
     for ((route, runtime), per_conn) in &by_cell {
-        let mut row: Vec<Cell> =
-            vec![Cell::new(route), Cell::new(runtime.label())];
+        let mut row: Vec<Cell> = vec![Cell::new(route), Cell::new(runtime.label())];
         for c in &conns {
             row.push(Cell::new(per_conn.get(c).cloned().unwrap_or_default()));
         }

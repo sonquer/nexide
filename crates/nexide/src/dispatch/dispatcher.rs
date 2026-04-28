@@ -32,7 +32,8 @@ pub struct ProtoRequest {
 
 impl ProtoRequest {
     fn into_slot(self) -> Result<RequestSlot, DispatchError> {
-        let meta = RequestMeta::try_new(self.method, self.uri).map_err(DispatchError::BadRequest)?;
+        let meta =
+            RequestMeta::try_new(self.method, self.uri).map_err(DispatchError::BadRequest)?;
         Ok(RequestSlot::new(meta, self.headers, self.body))
     }
 }

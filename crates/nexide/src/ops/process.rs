@@ -359,7 +359,9 @@ mod tests {
 
     fn cfg_with(pairs: &[(&str, &str)]) -> ProcessConfig {
         let env = Arc::new(MapEnv::from_pairs(
-            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
         ));
         ProcessConfig::builder(env).build()
     }

@@ -5,12 +5,16 @@
 //! a self-contained module tree on disk, so the suite is hermetic
 //! and can run in parallel without crosstalk.
 
-#![allow(clippy::significant_drop_tightening, clippy::manual_let_else, clippy::future_not_send)]
+#![allow(
+    clippy::significant_drop_tightening,
+    clippy::manual_let_else,
+    clippy::future_not_send
+)]
 
 use std::io::Write;
 use std::path::PathBuf;
 
-use nexide::engine::{V8Engine, EngineError, IsolateHandle};
+use nexide::engine::{EngineError, IsolateHandle, V8Engine};
 use tempfile::TempDir;
 
 /// Builds a single-file ESM fixture under a fresh temporary directory.

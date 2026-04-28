@@ -67,8 +67,7 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
         .default_headers(headers)
         .build()
         .context("reqwest client")?;
-    let histogram =
-        Arc::new(Mutex::new(Histogram::<u64>::new_with_max(60_000_000, 3)?));
+    let histogram = Arc::new(Mutex::new(Histogram::<u64>::new_with_max(60_000_000, 3)?));
     let ok = Arc::new(AtomicU64::new(0));
     let err = Arc::new(AtomicU64::new(0));
     let deadline = Instant::now() + spec.duration;
@@ -86,8 +85,8 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
                     Ok(resp) => {
                         let status_ok = resp.status().is_success();
                         let _ = resp.bytes().await;
-                        let micros = u64::try_from(started.elapsed().as_micros())
-                            .unwrap_or(u64::MAX);
+                        let micros =
+                            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                         let mut h = histogram.lock().await;
                         h.record(micros).ok();
                         drop(h);

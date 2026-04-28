@@ -488,7 +488,10 @@ impl FsBackend for MemoryFs {
                 mode: 0o755,
             });
         }
-        Err(FsError::new("ENOENT", format!("ENOENT: {}", path.display())))
+        Err(FsError::new(
+            "ENOENT",
+            format!("ENOENT: {}", path.display()),
+        ))
     }
     fn exists(&self, path: &Path) -> bool {
         self.stat(path, true).is_ok()
@@ -536,7 +539,10 @@ impl FsBackend for MemoryFs {
             }
             return Ok(());
         }
-        Err(FsError::new("ENOENT", format!("ENOENT: {}", path.display())))
+        Err(FsError::new(
+            "ENOENT",
+            format!("ENOENT: {}", path.display()),
+        ))
     }
     fn copy(&self, from: &Path, to: &Path) -> Result<(), FsError> {
         let data = self.read(from)?;

@@ -26,7 +26,10 @@ impl NetError {
     /// Builds an error from a code + message pair.
     #[must_use]
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
 
     /// Maps a `std::io::Error` onto a Node-canonical error code.
@@ -48,12 +51,17 @@ impl NetError {
             io::ErrorKind::UnexpectedEof => "ECONNRESET",
             _ => "EIO",
         };
-        Self { code, message: err.to_string() }
+        Self {
+            code,
+            message: err.to_string(),
+        }
     }
 }
 
 impl From<io::Error> for NetError {
-    fn from(value: io::Error) -> Self { Self::from_io(&value) }
+    fn from(value: io::Error) -> Self {
+        Self::from_io(&value)
+    }
 }
 
 /// Address summary (`host`, `port`, `family`) returned by the
@@ -83,7 +91,10 @@ impl From<SocketAddr> for AddressInfo {
 /// `host` is resolved through the OS resolver; the first address
 /// reachable is used. Returns `(stream, local, remote)` so the caller
 /// can populate the JS-facing socket properties immediately.
-pub async fn connect(host: &str, port: u16) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
+pub async fn connect(
+    host: &str,
+    port: u16,
+) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
     let target = format!("{host}:{port}");
     let stream = TcpStream::connect(&target).await?;
     let local = stream.local_addr()?;
@@ -101,7 +112,9 @@ pub async fn listen(host: &str, port: u16) -> Result<(TcpListener, AddressInfo),
 }
 
 /// Awaits the next inbound connection on `listener`.
-pub async fn accept(listener: &TcpListener) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
+pub async fn accept(
+    listener: &TcpListener,
+) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
     let (stream, peer) = listener.accept().await?;
     let local = stream.local_addr()?;
     Ok((stream, local.into(), peer.into()))
@@ -110,7 +123,7 @@ pub async fn accept(listener: &TcpListener) -> Result<(TcpStream, AddressInfo, A
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on
 /// EOF — JavaScript can detect the half-close by checking `len === 0`.
 pub async fn read_chunk(stream: &mut TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
-    let cap = max.min(64 * 1024).max(1);
+    let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];
     let n = stream.read(&mut buf).await?;
     buf.truncate(n);

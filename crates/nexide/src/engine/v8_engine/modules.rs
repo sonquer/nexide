@@ -32,7 +32,12 @@ impl ModuleMap {
 
     /// Inserts a freshly compiled module. The next [`Self::get`] for
     /// `path` returns the same global handle.
-    pub(super) fn insert(&mut self, path: PathBuf, module_hash: i32, module: v8::Global<v8::Module>) {
+    pub(super) fn insert(
+        &mut self,
+        path: PathBuf,
+        module_hash: i32,
+        module: v8::Global<v8::Module>,
+    ) {
         self.by_hash.insert(module_hash, path.clone());
         self.by_path.insert(path, module);
     }

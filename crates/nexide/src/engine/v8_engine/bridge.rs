@@ -17,9 +17,7 @@ use tokio::sync::mpsc;
 use super::async_ops::{Completion, CompletionChannel};
 use super::handle_table::HandleTable;
 use crate::engine::cjs::CjsResolver;
-use crate::ops::{
-    DispatchTable, EnvOverlay, FsHandle, ProcessConfig, RequestQueue, WorkerId,
-};
+use crate::ops::{DispatchTable, EnvOverlay, FsHandle, ProcessConfig, RequestQueue, WorkerId};
 
 /// TCP socket entry: shared, async-locked stream so reads and writes
 /// from JS land on the same FD without racing. `Rc` because each
@@ -33,20 +31,15 @@ pub(super) type TcpListenerSlot = std::rc::Rc<tokio::net::TcpListener>;
 
 /// TLS-wrapped client stream slot. Same shared+locked pattern as
 /// [`TcpStreamSlot`] so reads and writes serialise on the same FD.
-pub(super) type TlsStreamSlot = std::rc::Rc<
-    tokio::sync::Mutex<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>,
->;
+pub(super) type TlsStreamSlot =
+    std::rc::Rc<tokio::sync::Mutex<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>>;
 
 /// Streaming HTTP response body slot. The receiver is held under a
 /// `Mutex` because successive `read` ops poll it across awaits; only
 /// one read may be in flight at a time per response which matches the
 /// Node Readable contract.
 pub(super) type HttpResponseSlot = std::rc::Rc<
-    tokio::sync::Mutex<
-        tokio::sync::mpsc::UnboundedReceiver<
-            Result<Vec<u8>, crate::ops::NetError>,
-        >,
-    >,
+    tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<Vec<u8>, crate::ops::NetError>>>,
 >;
 
 /// Tracked child process plus optional captured pipes. Wrapped in a

@@ -151,7 +151,10 @@ async fn require_unknown_node_module_throws_module_not_found() {
 #[tokio::test(flavor = "current_thread")]
 async fn require_exposes_dirname_and_filename() {
     assert_passes(
-        &[("meta.cjs", "module.exports = { d: __dirname, f: __filename };")],
+        &[(
+            "meta.cjs",
+            "module.exports = { d: __dirname, f: __filename };",
+        )],
         "const m = require('./meta.cjs');\n\
          if (!m.f.endsWith('meta.cjs')) throw new Error('__filename: ' + m.f);\n\
          if (typeof m.d !== 'string' || m.d.length === 0) throw new Error('__dirname: ' + m.d);\n",

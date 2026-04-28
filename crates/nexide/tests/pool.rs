@@ -11,8 +11,7 @@ use nexide::dispatch::{EngineDispatcher, ProtoRequest};
 use nexide::engine::HeapStats;
 use nexide::ops::{ResponseHead, ResponsePayload};
 use nexide::pool::{
-    IsolatePool, Job, RecyclePolicy, RequestCount, Worker, WorkerError, WorkerFactory,
-    WorkerHealth,
+    IsolatePool, Job, RecyclePolicy, RequestCount, Worker, WorkerError, WorkerFactory, WorkerHealth,
 };
 
 /// Worker that records which instance handled each request. All
@@ -240,6 +239,9 @@ async fn pool_stats_aggregates_worker_health() {
     let total: u64 = stats.worker_health.iter().map(|h| h.requests_handled).sum();
     assert_eq!(total, 3);
     for live in &stats.worker_inflight {
-        assert_eq!(*live, 0, "inflight returns to zero after dispatch completes");
+        assert_eq!(
+            *live, 0,
+            "inflight returns to zero after dispatch completes"
+        );
     }
 }

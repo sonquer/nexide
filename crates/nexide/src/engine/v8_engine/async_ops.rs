@@ -34,12 +34,8 @@ use tokio::sync::mpsc;
 /// The closure runs after the spawned `tokio` task completes and the
 /// engine pump re-enters JavaScript. It is given the active scope so
 /// it can construct fresh `v8::Local` values to hand back to V8.
-pub(super) type Settler = Box<
-    dyn for<'s, 'a> FnOnce(
-        &mut v8::PinScope<'s, 'a>,
-        v8::Local<'s, v8::PromiseResolver>,
-    ),
->;
+pub(super) type Settler =
+    Box<dyn for<'s, 'a> FnOnce(&mut v8::PinScope<'s, 'a>, v8::Local<'s, v8::PromiseResolver>)>;
 
 /// One pending async-op completion ready to be delivered to V8.
 pub(super) struct Completion {
@@ -49,10 +45,7 @@ pub(super) struct Completion {
 
 impl Completion {
     /// Pairs `resolver` with the `settler` that will fulfil it.
-    pub(super) fn new(
-        resolver: v8::Global<v8::PromiseResolver>,
-        settler: Settler,
-    ) -> Self {
+    pub(super) fn new(resolver: v8::Global<v8::PromiseResolver>, settler: Settler) -> Self {
         Self { resolver, settler }
     }
 }
@@ -124,14 +117,12 @@ pub(super) fn drain<'s>(
 /// `'static` and can be carried across `tokio` task boundaries.
 pub(super) fn reject_with_code(message: String, code: &'static str) -> Settler {
     Box::new(move |scope, resolver| {
-        let msg = v8::String::new(scope, &message)
-            .unwrap_or_else(|| v8::String::empty(scope));
+        let msg = v8::String::new(scope, &message).unwrap_or_else(|| v8::String::empty(scope));
         let err = v8::Exception::error(scope, msg);
         if let Ok(err_obj) = TryInto::<v8::Local<v8::Object>>::try_into(err) {
-            let code_key = v8::String::new(scope, "code")
-                .unwrap_or_else(|| v8::String::empty(scope));
-            let code_val = v8::String::new(scope, code)
-                .unwrap_or_else(|| v8::String::empty(scope));
+            let code_key =
+                v8::String::new(scope, "code").unwrap_or_else(|| v8::String::empty(scope));
+            let code_val = v8::String::new(scope, code).unwrap_or_else(|| v8::String::empty(scope));
             err_obj.set(scope, code_key.into(), code_val.into());
         }
         resolver.reject(scope, err);

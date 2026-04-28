@@ -48,18 +48,9 @@ async fn boot_with_entry(body: &str) -> Booted {
     }
 }
 
-async fn dispatch(
-    engine: &mut V8Engine,
-    method: &str,
-    uri: &str,
-    body: &[u8],
-) -> ResponsePayload {
+async fn dispatch(engine: &mut V8Engine, method: &str, uri: &str, body: &[u8]) -> ResponsePayload {
     let meta = RequestMeta::try_new(method, uri).expect("meta");
-    let slot = RequestSlot::new(
-        meta,
-        Vec::<HeaderPair>::new(),
-        Bytes::copy_from_slice(body),
-    );
+    let slot = RequestSlot::new(meta, Vec::<HeaderPair>::new(), Bytes::copy_from_slice(body));
     let mut rx = engine.enqueue(slot);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {

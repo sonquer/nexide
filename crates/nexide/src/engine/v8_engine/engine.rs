@@ -118,10 +118,7 @@ pub struct V8Engine {
 
 impl V8Engine {
     /// Boots the engine and runs the entrypoint module.
-    pub async fn boot_with(
-        entrypoint: &Path,
-        ctx: BootContext,
-    ) -> Result<Self, EngineError> {
+    pub async fn boot_with(entrypoint: &Path, ctx: BootContext) -> Result<Self, EngineError> {
         Self::boot_internal(entrypoint, ctx)
     }
 
@@ -142,11 +139,10 @@ impl V8Engine {
     fn boot_internal(entrypoint: &Path, ctx: BootContext) -> Result<Self, EngineError> {
         ensure_v8_initialized();
 
-        let entry_path = std::fs::canonicalize(entrypoint).map_err(|_| {
-            EngineError::ModuleResolution {
+        let entry_path =
+            std::fs::canonicalize(entrypoint).map_err(|_| EngineError::ModuleResolution {
                 path: entrypoint.to_path_buf(),
-            }
-        })?;
+            })?;
 
         let heap_limit = ctx.heap_limit.unwrap_or_default();
         let create_params = heap_limit.to_create_params();
@@ -195,11 +191,12 @@ impl V8Engine {
                 .cjs
                 .is_some();
             if use_cjs {
-                let path_lit = serde_json::to_string(&entry_path.to_string_lossy()).map_err(
-                    |err| EngineError::Bootstrap {
-                        message: format!("entrypoint json encode: {err}"),
-                    },
-                )?;
+                let path_lit =
+                    serde_json::to_string(&entry_path.to_string_lossy()).map_err(|err| {
+                        EngineError::Bootstrap {
+                            message: format!("entrypoint json encode: {err}"),
+                        }
+                    })?;
                 let src = format!("globalThis.__nexideCjs.load(\"<root>\", {path_lit});");
                 eval_script(scope_cs, "[nexide:entrypoint]", &src)?;
             } else {
@@ -324,8 +321,7 @@ impl V8Engine {
                 .get_slot::<BridgeStateHandle>()
                 .cloned()
                 .expect("bridge state must be installed");
-            let rx = handle.0.borrow().async_completions_rx.clone();
-            rx
+            handle.0.borrow().async_completions_rx.clone()
         };
         {
             v8::scope!(let scope, &mut self.isolate);
@@ -368,9 +364,7 @@ fn capture_heap_stats(isolate: &mut v8::Isolate) -> HeapStats {
     }
 }
 
-fn run_polyfill_bootstrap<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-) -> Result<(), EngineError> {
+fn run_polyfill_bootstrap<'s>(scope: &mut v8::PinScope<'s, '_>) -> Result<(), EngineError> {
     for (name, src) in POLYFILL_SCRIPTS {
         eval_script(scope, name, src)?;
     }
@@ -493,9 +487,7 @@ fn compile_module<'s>(
 }
 
 /// Returns `Some(&mut ModuleMap)` from the isolate's slot store.
-fn get_module_map_mut<'s, 'a>(
-    scope: &'a mut v8::PinScope<'s, '_>,
-) -> Option<&'a mut ModuleMap> {
+fn get_module_map_mut<'s, 'a>(scope: &'a mut v8::PinScope<'s, '_>) -> Option<&'a mut ModuleMap> {
     scope.get_slot_mut::<ModuleMap>()
 }
 

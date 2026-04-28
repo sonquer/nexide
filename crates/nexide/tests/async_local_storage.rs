@@ -12,7 +12,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use nexide::engine::{V8Engine, IsolateHandle};
+use nexide::engine::{IsolateHandle, V8Engine};
 use tempfile::TempDir;
 
 /// Writes a JavaScript module under a fresh temporary directory and

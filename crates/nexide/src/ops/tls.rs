@@ -38,7 +38,10 @@ fn tls_error(err: &io::Error) -> NetError {
     let mut mapped = NetError::from_io(err);
     if mapped.code == "EIO" {
         let lower = err.to_string().to_lowercase();
-        if lower.contains("certificate") || lower.contains("handshake") || lower.contains("verifier") {
+        if lower.contains("certificate")
+            || lower.contains("handshake")
+            || lower.contains("verifier")
+        {
             mapped.code = "CERT_HAS_EXPIRED";
         }
     }
@@ -58,7 +61,9 @@ pub async fn connect(
     port: u16,
 ) -> Result<(TlsStream<TcpStream>, AddressInfo, AddressInfo), NetError> {
     let target = format!("{host}:{port}");
-    let tcp = TcpStream::connect(&target).await.map_err(|e| tls_error(&e))?;
+    let tcp = TcpStream::connect(&target)
+        .await
+        .map_err(|e| tls_error(&e))?;
     let local = tcp.local_addr().map_err(|e| tls_error(&e))?;
     let remote = tcp.peer_addr().map_err(|e| tls_error(&e))?;
     let server_name = ServerName::try_from(host.to_owned())
@@ -77,7 +82,7 @@ pub async fn read_chunk(
     stream: &mut TlsStream<TcpStream>,
     max: usize,
 ) -> Result<Vec<u8>, NetError> {
-    let cap = max.min(64 * 1024).max(1);
+    let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];
     let n = stream.read(&mut buf).await.map_err(|e| tls_error(&e))?;
     buf.truncate(n);
@@ -111,6 +116,6 @@ mod tests {
     #[tokio::test]
     async fn invalid_hostname_returns_typed_error() {
         let result = connect("..invalid..", 443).await;
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 }

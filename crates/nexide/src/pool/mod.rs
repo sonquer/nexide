@@ -21,9 +21,9 @@ pub use isolate_pool::{IsolatePool, IsolateWorkerFactory, PoolStats, WorkerFacto
 pub use isolate_worker::IsolateWorker;
 pub use local_isolate_worker::LocalIsolateWorker;
 pub use local_pool::LocalIsolatePool;
-pub use mem_sampler::{MemorySampler, MemorySample, MockSampler, ProcessSampler};
+pub use mem_sampler::{MemorySample, MemorySampler, MockSampler, ProcessSampler};
 pub use pump_strategy::{
-    Coalesced, BoxedPumpStrategy, DEFAULT_BATCH, MAX_BATCH, Serial, PumpStrategy,
+    BoxedPumpStrategy, Coalesced, DEFAULT_BATCH, MAX_BATCH, PumpStrategy, Serial,
     pump_strategy_from_env,
 };
 pub use recycle::{

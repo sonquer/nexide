@@ -77,7 +77,10 @@ pub async fn run_accept_loop<F>(
 where
     F: Future<Output = ()> + Send,
 {
-    assert!(!workers.is_empty(), "accept loop requires at least one worker");
+    assert!(
+        !workers.is_empty(),
+        "accept loop requires at least one worker"
+    );
     let picker_a = AtomicUsize::new(0);
     let picker_b = AtomicUsize::new(0);
     tokio::pin!(shutdown);
@@ -171,11 +174,7 @@ fn pick_worker(
     }
     let depth_a = workers[a].queue_depth();
     let depth_b = workers[b].queue_depth();
-    if depth_b < depth_a {
-        (b, a)
-    } else {
-        (a, b)
-    }
+    if depth_b < depth_a { (b, a) } else { (a, b) }
 }
 
 /// Returns `true` for `accept(2)` errors that the loop can retry

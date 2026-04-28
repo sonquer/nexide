@@ -77,9 +77,8 @@ impl LocalIsolatePool {
         workers: usize,
     ) -> Result<Self, WorkerError> {
         let policy = resolve_policy_from_env();
-        let worker = Arc::new(
-            LocalIsolateWorker::spawn_local(entrypoint, worker_id, workers).await?,
-        );
+        let worker =
+            Arc::new(LocalIsolateWorker::spawn_local(entrypoint, worker_id, workers).await?);
         let recycle_notify = Arc::new(Notify::new());
         let recycle_count = Arc::new(AtomicUsize::new(0));
         let handle = tokio::task::spawn_local(run_recycler(

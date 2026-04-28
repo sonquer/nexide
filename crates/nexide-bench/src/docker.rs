@@ -18,8 +18,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder,
-    StartContainerOptions, StatsOptionsBuilder, StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
+    StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -50,25 +50,55 @@ pub struct DockerPreset {
 
 impl DockerPreset {
     /// AWS Lambda min (1 cpu, 128 MiB).
-    pub const MICRO: Self = Self { cpus: 1.0, memory_mb: 128 };
+    pub const MICRO: Self = Self {
+        cpus: 1.0,
+        memory_mb: 128,
+    };
     /// Fly.io shared-cpu-1x (1 cpu, 256 MiB).
-    pub const TINY: Self = Self { cpus: 1.0, memory_mb: 256 };
+    pub const TINY: Self = Self {
+        cpus: 1.0,
+        memory_mb: 256,
+    };
     /// Common entry tier (1 cpu, 512 MiB).
-    pub const SMALL: Self = Self { cpus: 1.0, memory_mb: 512 };
+    pub const SMALL: Self = Self {
+        cpus: 1.0,
+        memory_mb: 512,
+    };
     /// Cloud Run minimum (1 cpu, 1024 MiB).
-    pub const MEDIUM: Self = Self { cpus: 1.0, memory_mb: 1024 };
+    pub const MEDIUM: Self = Self {
+        cpus: 1.0,
+        memory_mb: 1024,
+    };
     /// Lambda 1-cpu break point (1 cpu, 1769 MiB).
-    pub const LAMBDA_1C: Self = Self { cpus: 1.0, memory_mb: 1769 };
+    pub const LAMBDA_1C: Self = Self {
+        cpus: 1.0,
+        memory_mb: 1769,
+    };
     /// 2 cpu, 512 MiB — exposes CPU vs memory trade-off.
-    pub const SMALL_2C: Self = Self { cpus: 2.0, memory_mb: 512 };
+    pub const SMALL_2C: Self = Self {
+        cpus: 2.0,
+        memory_mb: 512,
+    };
     /// Typical k8s pod (2 cpu, 1024 MiB).
-    pub const MEDIUM_2C: Self = Self { cpus: 2.0, memory_mb: 1024 };
+    pub const MEDIUM_2C: Self = Self {
+        cpus: 2.0,
+        memory_mb: 1024,
+    };
     /// Cloud Run default (2 cpu, 2048 MiB).
-    pub const LARGE_2C: Self = Self { cpus: 2.0, memory_mb: 2048 };
+    pub const LARGE_2C: Self = Self {
+        cpus: 2.0,
+        memory_mb: 2048,
+    };
     /// Container worker (4 cpu, 2048 MiB).
-    pub const LARGE_4C: Self = Self { cpus: 4.0, memory_mb: 2048 };
+    pub const LARGE_4C: Self = Self {
+        cpus: 4.0,
+        memory_mb: 2048,
+    };
     /// Dedicated host tier (4 cpu, 4096 MiB).
-    pub const XLARGE_4C: Self = Self { cpus: 4.0, memory_mb: 4096 };
+    pub const XLARGE_4C: Self = Self {
+        cpus: 4.0,
+        memory_mb: 4096,
+    };
 
     /// Catalog of named presets in ascending resource order.
     pub const CATALOG: &'static [(&'static str, Self)] = &[
@@ -85,12 +115,8 @@ impl DockerPreset {
     ];
 
     /// Default sweep used when the user does not pass `--preset`.
-    pub const DEFAULT_SWEEP: &'static [Self] = &[
-        Self::TINY,
-        Self::SMALL,
-        Self::MEDIUM,
-        Self::MEDIUM_2C,
-    ];
+    pub const DEFAULT_SWEEP: &'static [Self] =
+        &[Self::TINY, Self::SMALL, Self::MEDIUM, Self::MEDIUM_2C];
 
     /// Parse a preset label (`<n>cpu-<m>mb`).
     ///
@@ -180,8 +206,8 @@ pub struct DockerRun {
 const GUEST_PORT: u16 = 3000;
 
 fn pick_host_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .context("bind ephemeral host port")?;
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").context("bind ephemeral host port")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
@@ -273,8 +299,7 @@ impl StatsAccumulator {
         let cpu_avg = mean(&self.cpu_samples);
         let cpu_max = self.cpu_samples.iter().copied().fold(0.0_f64, f64::max);
         let mem_avg_mb = mean(&self.mem_samples_mb);
-        let mem_max_mb =
-            self.mem_samples_mb.iter().copied().fold(0.0_f64, f64::max);
+        let mem_max_mb = self.mem_samples_mb.iter().copied().fold(0.0_f64, f64::max);
         SampleStats {
             cpu_avg,
             cpu_max,
@@ -355,8 +380,7 @@ fn build_create_body(
     host_port: u16,
 ) -> ContainerCreateBody {
     let nano_cpus = (preset.cpus * 1_000_000_000.0) as i64;
-    let memory_bytes = i64::try_from(preset.memory_mb * 1024 * 1024)
-        .unwrap_or(i64::MAX);
+    let memory_bytes = i64::try_from(preset.memory_mb * 1024 * 1024).unwrap_or(i64::MAX);
     let port_key = format!("{GUEST_PORT}/tcp");
     let port_bindings = std::collections::HashMap::from([(
         port_key.clone(),
@@ -406,8 +430,7 @@ async fn run_cell(
         host_port
     );
     let body = build_create_body(image, kind, preset, host_port);
-    let create_opts =
-        CreateContainerOptionsBuilder::default().name(&name).build();
+    let create_opts = CreateContainerOptionsBuilder::default().name(&name).build();
     let created = docker
         .create_container(Some(create_opts), body)
         .await
@@ -498,10 +521,7 @@ async fn run_cell(
 /// # Errors
 /// Returns an error when the Docker daemon is unreachable, an image
 /// is missing, or a container fails its readiness probe.
-pub async fn run_docker(
-    docker: &Arc<Docker>,
-    spec: &DockerBench,
-) -> Result<Vec<DockerRun>> {
+pub async fn run_docker(docker: &Arc<Docker>, spec: &DockerBench) -> Result<Vec<DockerRun>> {
     info!(
         presets = spec.presets.len(),
         runtimes = spec.runtimes.len(),
@@ -514,16 +534,9 @@ pub async fn run_docker(
         let mut cells = Vec::new();
         for kind in &spec.runtimes {
             let image = image_for(&spec.images, *kind);
-            let cell =
-                run_cell(Arc::clone(docker), *kind, image, *preset, spec)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "preset={} runtime={}",
-                            preset.label(),
-                            kind.label()
-                        )
-                    })?;
+            let cell = run_cell(Arc::clone(docker), *kind, image, *preset, spec)
+                .await
+                .with_context(|| format!("preset={} runtime={}", preset.label(), kind.label()))?;
             cells.extend(cell);
         }
         runs.push(DockerRun {
@@ -540,8 +553,7 @@ pub async fn run_docker(
 /// # Errors
 /// Returns an error when the Docker daemon is not reachable.
 pub fn connect_docker() -> Result<Docker> {
-    Docker::connect_with_local_defaults()
-        .context("connect to local docker daemon")
+    Docker::connect_with_local_defaults().context("connect to local docker daemon")
 }
 
 /// Locate the workspace root by walking up from `cwd` until a

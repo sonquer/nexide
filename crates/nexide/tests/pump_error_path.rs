@@ -48,10 +48,7 @@ async fn boot_handler() -> (V8Engine, tempfile::TempDir) {
     (engine, dir)
 }
 
-async fn drive_until<T>(
-    engine: &mut V8Engine,
-    rx: &mut tokio::sync::oneshot::Receiver<T>,
-) -> T {
+async fn drive_until<T>(engine: &mut V8Engine, rx: &mut tokio::sync::oneshot::Receiver<T>) -> T {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         engine.pump_once();

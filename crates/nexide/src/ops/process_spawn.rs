@@ -176,8 +176,7 @@ pub fn kill(child: &mut Child, signal: i32) -> Result<(), NetError> {
     {
         if let Some(pid) = child.id() {
             let pid = pid as i32;
-            let res =
-                unsafe { libc::kill(pid, signal) };
+            let res = unsafe { libc::kill(pid, signal) };
             if res != 0 {
                 return Err(map_io_err(io::Error::last_os_error()));
             }
@@ -221,8 +220,16 @@ mod tests {
     fn spawn_echo_returns_stdout() {
         local_runtime(async {
             let req = SpawnRequest {
-                command: if cfg!(windows) { "cmd".into() } else { "/bin/echo".into() },
-                args: if cfg!(windows) { vec!["/C".into(), "echo hi".into()] } else { vec!["hi".into()] },
+                command: if cfg!(windows) {
+                    "cmd".into()
+                } else {
+                    "/bin/echo".into()
+                },
+                args: if cfg!(windows) {
+                    vec!["/C".into(), "echo hi".into()]
+                } else {
+                    vec!["hi".into()]
+                },
                 cwd: None,
                 env: HashMap::new(),
                 clear_env: false,

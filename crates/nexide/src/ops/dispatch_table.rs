@@ -158,10 +158,7 @@ enum Slot {
     /// Slot currently hosting an in-flight request. `generation`
     /// matches the [`RequestId`] handed to JS — any op call carrying
     /// a different generation is [`DispatchError::Stale`].
-    Occupied {
-        generation: u32,
-        inflight: InFlight,
-    },
+    Occupied { generation: u32, inflight: InFlight },
 }
 
 /// Failure modes for [`DispatchTable`] lookups.
@@ -298,9 +295,7 @@ impl DispatchTable {
                 generation,
                 inflight,
             } if *generation == id.generation => Ok(inflight),
-            Slot::Occupied { generation, .. } => {
-                Err(DispatchError::Stale(id.index, *generation))
-            }
+            Slot::Occupied { generation, .. } => Err(DispatchError::Stale(id.index, *generation)),
             Slot::Vacant { .. } => Err(DispatchError::Released(id.index)),
         }
     }
@@ -397,9 +392,7 @@ impl DispatchTable {
             .ok_or(DispatchError::OutOfRange(id.index))?;
         match slot {
             Slot::Occupied { generation, .. } if *generation == id.generation => Ok(slot),
-            Slot::Occupied { generation, .. } => {
-                Err(DispatchError::Stale(id.index, *generation))
-            }
+            Slot::Occupied { generation, .. } => Err(DispatchError::Stale(id.index, *generation)),
             Slot::Vacant { .. } => Err(DispatchError::Released(id.index)),
         }
     }
@@ -502,7 +495,10 @@ mod tests {
         let mut table = DispatchTable::new();
         let id = table.insert(slot(), completion());
         let _ = table.remove(id).unwrap();
-        assert_eq!(table.get(id).unwrap_err(), DispatchError::Released(id.index()));
+        assert_eq!(
+            table.get(id).unwrap_err(),
+            DispatchError::Released(id.index())
+        );
     }
 
     #[test]
@@ -512,7 +508,10 @@ mod tests {
             index: 42,
             generation: 0,
         };
-        assert_eq!(table.get(phantom).unwrap_err(), DispatchError::OutOfRange(42));
+        assert_eq!(
+            table.get(phantom).unwrap_err(),
+            DispatchError::OutOfRange(42)
+        );
     }
 
     #[test]

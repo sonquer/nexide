@@ -103,12 +103,7 @@ impl MemorySampler for ProcessSampler {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;
         for line in status.lines() {
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kib = rest
-                    .trim()
-                    .split_whitespace()
-                    .next()?
-                    .parse::<u64>()
-                    .ok()?;
+                let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
                 return Some(MemorySample {
                     rss_bytes: kib.saturating_mul(1024),
                 });
@@ -155,7 +150,9 @@ mod tests {
     #[test]
     fn live_sampler_returns_some_on_linux() {
         let sampler = ProcessSampler;
-        let sample = sampler.sample().expect("/proc available on linux test runner");
+        let sample = sampler
+            .sample()
+            .expect("/proc available on linux test runner");
         assert!(sample.rss_bytes > 0, "test process must have non-zero RSS");
     }
 

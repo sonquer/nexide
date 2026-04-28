@@ -35,8 +35,7 @@ const CACHE_CAPACITY: usize = 4096;
 
 /// Service alias mirroring [`DynamicService`] so the router can chain
 /// `ServeDir → Prerender → Dynamic` without naming concrete futures.
-pub(super) type PrerenderService =
-    BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
+pub(super) type PrerenderService = BoxCloneSyncService<Request<Body>, Response<Body>, Infallible>;
 
 /// Builds a hot-path service that serves prerendered pages out of
 /// `app_dir` (typically `<standalone>/.next/server/app`) and forwards
@@ -112,10 +111,7 @@ fn stamp_server_timing(
     if let Ok(v) = HeaderValue::from_str(&value) {
         headers.insert("server-timing", v);
     }
-    headers.insert(
-        "timing-allow-origin",
-        HeaderValue::from_static("*"),
-    );
+    headers.insert("timing-allow-origin", HeaderValue::from_static("*"));
 }
 
 /// Cached payload plus the metadata required to detect ISR rewrites.
@@ -193,9 +189,7 @@ fn file_matches(root: &Path, key: &str, asset: &CachedAsset) -> bool {
     if meta.len() != asset.size {
         return false;
     }
-    meta.modified()
-        .map(|m| m == asset.mtime)
-        .unwrap_or(false)
+    meta.modified().map(|m| m == asset.mtime).unwrap_or(false)
 }
 
 /// Loads `<root>/<key>` and its `.meta` sidecar (if present) into a
@@ -290,8 +284,7 @@ fn build_response(asset: &CachedAsset, head_only: bool) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedAsset, compute_etag, file_matches, load_asset, lookup_key,
-        prerender_with_fallback,
+        CachedAsset, compute_etag, file_matches, load_asset, lookup_key, prerender_with_fallback,
     };
     use crate::server::fallback::NotImplementedHandler;
     use crate::server::static_assets::dynamic_service;
@@ -436,11 +429,15 @@ mod tests {
             .expect("infallible");
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-type").map(|h| h.to_str().unwrap()),
+            resp.headers()
+                .get("content-type")
+                .map(|h| h.to_str().unwrap()),
             Some("text/html; charset=utf-8"),
         );
         assert_eq!(
-            resp.headers().get("x-nextjs-cache").map(|h| h.to_str().unwrap()),
+            resp.headers()
+                .get("x-nextjs-cache")
+                .map(|h| h.to_str().unwrap()),
             Some("HIT"),
         );
         assert_eq!(
@@ -513,7 +510,9 @@ mod tests {
             .expect("infallible");
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-type").map(|h| h.to_str().unwrap()),
+            resp.headers()
+                .get("content-type")
+                .map(|h| h.to_str().unwrap()),
             Some("text/x-component"),
         );
     }
@@ -538,7 +537,9 @@ mod tests {
             .expect("infallible");
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("content-length").map(|h| h.to_str().unwrap()),
+            resp.headers()
+                .get("content-length")
+                .map(|h| h.to_str().unwrap()),
             Some("18"),
         );
         let body = resp.into_body().collect().await.expect("body").to_bytes();
