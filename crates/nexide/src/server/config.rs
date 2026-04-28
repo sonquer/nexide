@@ -57,11 +57,16 @@ impl ServerConfig {
     /// `next build`; it powers the prerender hot path that bypasses
     /// V8 for cacheable HTML/RSC payloads.
     ///
+    /// `public_dir` is allowed to be absent on disk - `public/` is an
+    /// optional Next.js convention and small/SaaS-style apps often
+    /// ship without it. The path is still validated as absolute so
+    /// downstream code can join URL fragments deterministically; a
+    /// non-existent directory simply yields 404s through `ServeDir`.
+    ///
     /// # Errors
     /// [`ConfigError::PublicDirRelative`] /
     /// [`ConfigError::NextStaticDirRelative`] /
     /// [`ConfigError::AppDirRelative`] when a path is not absolute.
-    /// [`ConfigError::PublicDirMissing`] /
     /// [`ConfigError::NextStaticDirMissing`] /
     /// [`ConfigError::AppDirMissing`] when a directory does not exist
     /// at validation time.
@@ -79,9 +84,6 @@ impl ServerConfig {
         }
         if !app_dir.is_absolute() {
             return Err(ConfigError::AppDirRelative(app_dir));
-        }
-        if !public_dir.is_dir() {
-            return Err(ConfigError::PublicDirMissing(public_dir));
         }
         if !next_static_dir.is_dir() {
             return Err(ConfigError::NextStaticDirMissing(next_static_dir));
@@ -197,16 +199,19 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_missing_public_dir() {
+    fn try_new_accepts_missing_public_dir() {
         let (_p, static_dir, app_dir) = three_dirs();
-        let err = ServerConfig::try_new(
+        let cfg = ServerConfig::try_new(
             addr(),
             PathBuf::from("/definitely/does/not/exist/nexide"),
             static_dir.path().to_path_buf(),
             app_dir.path().to_path_buf(),
         )
-        .unwrap_err();
-        assert!(matches!(err, ConfigError::PublicDirMissing(_)));
+        .expect("public_dir is optional");
+        assert_eq!(
+            cfg.public_dir(),
+            std::path::Path::new("/definitely/does/not/exist/nexide"),
+        );
     }
 
     #[test]

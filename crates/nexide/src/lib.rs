@@ -171,24 +171,39 @@ impl AppLayout {
     /// Resolves a Next.js standalone layout under `root` and binds it
     /// to the supplied `SocketAddr`.
     ///
-    /// Two on-disk shapes are accepted, in this order:
+    /// Three on-disk shapes are accepted, in this order:
     ///
-    /// 1. **Project root** (`root` is the directory that holds
+    /// 1. **Standalone directory, flat** (`root` is the deploy artefact,
+    ///    i.e. the contents of `.next/standalone/`). Selected when
+    ///    `<root>/server.js` exists. The resolver then expects:
+    ///    - `<root>/server.js`
+    ///    - `<root>/public/` (you must copy it from the project root;
+    ///      `next build` does NOT copy `public/` and `.next/static/`
+    ///      into the standalone bundle)
+    ///    - `<root>/.next/static/` (likewise, copied manually)
+    ///    - `<root>/.next/server/app/`
+    ///
+    /// 2. **Standalone directory, monorepo-nested** (pnpm/yarn/turbo
+    ///    workspaces). Selected when `<root>/server.js` is absent but
+    ///    exactly one immediate sub-directory `<sub>` contains both
+    ///    `<sub>/server.js` and `<sub>/.next/server/app/`. Next.js emits
+    ///    this layout when `next.config` is not at the workspace root;
+    ///    the workspace `node_modules/` and linked packages live at
+    ///    `<root>/...` while the app sits at `<root>/<sub>/...`. The
+    ///    resolver then expects:
+    ///    - `<root>/<sub>/server.js`
+    ///    - `<root>/<sub>/public/` *or* `<root>/public/` (whichever
+    ///      exists; copied manually from the project)
+    ///    - `<root>/.next/static/` *or* `<root>/<sub>/.next/static/`
+    ///      (whichever exists; copied manually)
+    ///    - `<root>/<sub>/.next/server/app/`
+    ///
+    /// 3. **Project root** (`root` is the directory that holds
     ///    `package.json`). The resolver expects:
     ///    - `<root>/public/`
     ///    - `<root>/.next/static/`
     ///    - `<root>/.next/standalone/server.js`
     ///    - `<root>/.next/standalone/.next/server/app/`
-    ///
-    /// 2. **Standalone directory** (`root` is the deploy artefact, i.e.
-    ///    the contents of `.next/standalone/`). Selected when
-    ///    `<root>/server.js` exists. The resolver then expects:
-    ///    - `<root>/server.js`
-    ///    - `<root>/public/` (you must copy it from the project root -
-    ///      `next build` does NOT copy `public/` and `.next/static/`
-    ///      into the standalone bundle)
-    ///    - `<root>/.next/static/` (likewise, copied manually)
-    ///    - `<root>/.next/server/app/`
     ///
     /// # Errors
     /// Returns [`RuntimeError::MissingDir`] / [`RuntimeError::MissingFile`]
@@ -198,11 +213,42 @@ impl AppLayout {
         if root.join("server.js").is_file() {
             return Self::resolve_standalone_dir(root, bind);
         }
+        if let Some(nested) = detect_nested_standalone(root) {
+            return Self::resolve_nested_standalone_dir(root, &nested, bind);
+        }
         Self::resolve_project_root(root, bind)
     }
 
+    fn resolve_nested_standalone_dir(
+        root: &Path,
+        nested: &Path,
+        bind: SocketAddr,
+    ) -> Result<Self, RuntimeError> {
+        let public_dir = if nested.join("public").is_dir() {
+            nested.join("public")
+        } else if root.join("public").is_dir() {
+            root.join("public")
+        } else {
+            nested.join("public")
+        };
+        let next_static_dir = if root.join(".next/static").is_dir() {
+            root.join(".next/static")
+        } else if nested.join(".next/static").is_dir() {
+            nested.join(".next/static")
+        } else {
+            return Err(RuntimeError::MissingDir(root.join(".next/static")));
+        };
+        let app_dir = absolute_existing_dir(nested, ".next/server/app")?;
+        let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
+        let entrypoint = ResolvedEntrypoint {
+            path: nested.join("server.js"),
+            kind: EntrypointKind::NextStandalone,
+        };
+        Ok(Self { config, entrypoint })
+    }
+
     fn resolve_project_root(root: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
-        let public_dir = absolute_existing_dir(root, "public")?;
+        let public_dir = root.join("public");
         let next_static_dir = absolute_existing_dir(root, ".next/static")?;
         let app_dir = absolute_existing_dir(root, ".next/standalone/.next/server/app")?;
         let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
@@ -214,7 +260,7 @@ impl AppLayout {
     }
 
     fn resolve_standalone_dir(root: &Path, bind: SocketAddr) -> Result<Self, RuntimeError> {
-        let public_dir = absolute_existing_dir(root, "public")?;
+        let public_dir = root.join("public");
         let next_static_dir = absolute_existing_dir(root, ".next/static")?;
         let app_dir = absolute_existing_dir(root, ".next/server/app")?;
         let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
@@ -901,6 +947,35 @@ fn absolute_existing_dir(root: &Path, rel: &str) -> Result<PathBuf, RuntimeError
     Ok(candidate)
 }
 
+/// Detects the monorepo-nested Next.js standalone layout. Scans the
+/// immediate children of `root` for the unique sub-directory that
+/// holds both `server.js` and `.next/server/app/`. Returns the nested
+/// path on a clean match, or `None` if zero or more than one candidate
+/// exists (ambiguous layouts must be disambiguated explicitly to keep
+/// the resolver deterministic).
+fn detect_nested_standalone(root: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut hit: Option<PathBuf> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "node_modules" || name.starts_with('.') {
+            continue;
+        }
+        if path.join("server.js").is_file() && path.join(".next/server/app").is_dir() {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(path);
+        }
+    }
+    hit
+}
+
 async fn wait_for_ctrl_c() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         tracing::error!(%error, "failed to listen for ctrl-c");
@@ -1464,19 +1539,32 @@ mod tests {
     }
 
     #[test]
-    fn app_layout_standalone_dir_missing_public_reports_path() {
+    fn app_layout_standalone_dir_allows_missing_public() {
         let tmp = tempfile::tempdir().expect("tmp");
         let root = tmp.path();
         std::fs::write(root.join("server.js"), "// noop\n").unwrap();
         std::fs::create_dir_all(root.join(".next/static")).unwrap();
         std::fs::create_dir_all(root.join(".next/server/app")).unwrap();
         let bind: std::net::SocketAddr = "127.0.0.1:3000".parse().unwrap();
-        let err = AppLayout::resolve(root, bind).expect_err("missing public");
-        match err {
-            RuntimeError::MissingDir(p) => {
-                assert!(p.ends_with("public"), "unexpected path {}", p.display());
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let layout = AppLayout::resolve(root, bind).expect("public is optional");
+        assert_eq!(layout.config.public_dir(), root.join("public"));
+    }
+
+    #[test]
+    fn app_layout_resolves_nested_standalone_workspace() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("node_modules/foo")).unwrap();
+        std::fs::create_dir_all(root.join(".next/static")).unwrap();
+        std::fs::create_dir_all(root.join("web-ui/.next/server/app")).unwrap();
+        std::fs::write(root.join("web-ui/server.js"), "// noop\n").unwrap();
+        let bind: std::net::SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let layout = AppLayout::resolve(root, bind).expect("nested layout");
+        assert_eq!(layout.entrypoint.path, root.join("web-ui/server.js"));
+        assert_eq!(
+            layout.config.app_dir(),
+            root.join("web-ui/.next/server/app")
+        );
+        assert_eq!(layout.config.next_static_dir(), root.join(".next/static"));
     }
 }
