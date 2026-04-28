@@ -31,14 +31,13 @@ export default function RootLayout({
               className="flex items-center gap-2 text-sm font-semibold tracking-wide text-white"
             >
               <Image
-                src="/vercel.svg"
-                alt="Next.js"
-                width={12}
-                height={12}
+                src="/nexide.png"
+                alt="Nexide logo"
+                width={89}
+                height={28}
                 priority
                 preload
               />
-              Nexide
             </Link>
             <ul className="flex items-center gap-1 text-sm text-white/70">
               {NAV_LINKS.map((link) => (

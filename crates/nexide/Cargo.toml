@@ -54,6 +54,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 libc = "0.2.186"
+sysinfo = { workspace = true }
 tikv-jemallocator = { version = "0.6", optional = true }
 hickory-resolver = { workspace = true }
 tokio-rustls = { workspace = true }

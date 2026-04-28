@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "nexide"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1768,6 +1768,7 @@ dependencies = [
  "sha1",
  "sha2",
  "spki",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
  "tikv-jemallocator",
@@ -1783,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-bench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1803,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "nexide",

@@ -76,6 +76,14 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_process_env_delete", op_process_env_delete);
     install_fn(scope, ops, "op_process_hrtime_ns", op_process_hrtime_ns);
     install_fn(scope, ops, "op_process_exit", op_process_exit);
+    install_fn(scope, ops, "op_process_kill", op_process_kill);
+    install_fn(scope, ops, "op_process_cpu_usage", op_process_cpu_usage);
+    install_fn(
+        scope,
+        ops,
+        "op_process_memory_usage",
+        op_process_memory_usage,
+    );
     install_fn(scope, ops, "op_cjs_root_parent", op_cjs_root_parent);
     install_fn(scope, ops, "op_cjs_resolve", op_cjs_resolve);
     install_fn(scope, ops, "op_cjs_read_source", op_cjs_read_source);
@@ -973,6 +981,20 @@ fn op_process_env_set<'s>(
 ) {
     let key = args.get(0).to_rust_string_lossy(scope);
     let value = args.get(1).to_rust_string_lossy(scope);
+    if key.is_empty() || key.contains('=') || key.contains('\0') {
+        throw_error(
+            scope,
+            "ERR_INVALID_ARG_VALUE: env key must be non-empty and contain neither '=' nor NUL",
+        );
+        return;
+    }
+    if value.contains('\0') {
+        throw_error(
+            scope,
+            "ERR_INVALID_ARG_VALUE: env value must not contain NUL bytes",
+        );
+        return;
+    }
     let handle = from_isolate(scope);
     handle.0.borrow().env_overlay.set(key, value);
     rv.set_undefined();
@@ -984,6 +1006,13 @@ fn op_process_env_delete<'s>(
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
     let key = args.get(0).to_rust_string_lossy(scope);
+    if key.is_empty() || key.contains('=') || key.contains('\0') {
+        throw_error(
+            scope,
+            "ERR_INVALID_ARG_VALUE: env key must be non-empty and contain neither '=' nor NUL",
+        );
+        return;
+    }
     let handle = from_isolate(scope);
     handle.0.borrow().env_overlay.delete(key);
     rv.set_undefined();
@@ -1020,10 +1049,149 @@ fn op_process_exit<'s>(
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
-    let code = args.get(0).int32_value(scope).unwrap_or(0);
+    let raw = args.get(0).int32_value(scope).unwrap_or(0);
+    // Node clamps exit codes to 0..=255 (POSIX waitstatus). Negative or
+    // out-of-range values flow into a benign 1 instead of corrupting the
+    // signed representation we expose to embedders.
+    let code = if (0..=255).contains(&raw) { raw } else { 1 };
     let handle = from_isolate(scope);
     handle.0.borrow_mut().exit_requested = Some(code);
     rv.set_undefined();
+}
+
+/// `process.kill(pid, signum)` — gated on
+/// [`ProcessConfig::subprocess_allowed`] because the syscall reaches
+/// arbitrary host PIDs. Returns `true` on success, throws
+/// Node-shaped errors on failure.
+fn op_process_kill<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let pid = args.get(0).int32_value(scope).unwrap_or(0);
+    let signum = args.get(1).int32_value(scope).unwrap_or(15);
+    let handle = from_isolate(scope);
+    {
+        let state = handle.0.borrow();
+        let allowed = state
+            .process
+            .as_ref()
+            .map_or(true, crate::ops::ProcessConfig::subprocess_allowed);
+        if !allowed {
+            drop(state);
+            let err = NetError::new("EPERM", "process.kill is disabled by ProcessConfig");
+            let exc = make_node_error(scope, &err);
+            scope.throw_exception(exc);
+            return;
+        }
+    }
+    if !(0..=64).contains(&signum) {
+        let err = NetError::new(
+            "ERR_INVALID_ARG_VALUE",
+            format!("signal {signum} is outside the supported 0..=64 range"),
+        );
+        let exc = make_node_error(scope, &err);
+        scope.throw_exception(exc);
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let res = unsafe { libc::kill(pid, signum) };
+        if res != 0 {
+            let io = std::io::Error::last_os_error();
+            let code = match io.raw_os_error() {
+                Some(libc::ESRCH) => "ESRCH",
+                Some(libc::EPERM) => "EPERM",
+                Some(libc::EINVAL) => "EINVAL",
+                _ => "EIO",
+            };
+            let err = NetError::new(code, io.to_string());
+            let exc = make_node_error(scope, &err);
+            scope.throw_exception(exc);
+            return;
+        }
+        rv.set(v8::Boolean::new(scope, true).into());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        let err = NetError::new("ENOSYS", "process.kill is not supported on this platform");
+        let exc = make_node_error(scope, &err);
+        scope.throw_exception(exc);
+    }
+}
+
+/// `process.cpuUsage()` — returns `{ user, system }` in microseconds.
+/// Unix uses `getrusage(RUSAGE_SELF)`; other platforms return zeroes.
+fn op_process_cpu_usage<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let (user, sys) = cpu_usage_micros();
+    let obj = v8::Object::new(scope);
+    let user_key = v8::String::new(scope, "user").unwrap();
+    let user_val = v8::Number::new(scope, user as f64);
+    obj.set(scope, user_key.into(), user_val.into());
+    let sys_key = v8::String::new(scope, "system").unwrap();
+    let sys_val = v8::Number::new(scope, sys as f64);
+    obj.set(scope, sys_key.into(), sys_val.into());
+    rv.set(obj.into());
+}
+
+#[cfg(unix)]
+fn cpu_usage_micros() -> (u64, u64) {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    if rc != 0 {
+        return (0, 0);
+    }
+    let to_micros = |t: libc::timeval| {
+        (t.tv_sec as i64).saturating_mul(1_000_000).saturating_add(t.tv_usec as i64)
+    };
+    let user = to_micros(usage.ru_utime).max(0) as u64;
+    let sys = to_micros(usage.ru_stime).max(0) as u64;
+    (user, sys)
+}
+
+#[cfg(not(unix))]
+fn cpu_usage_micros() -> (u64, u64) {
+    (0, 0)
+}
+
+/// `process.memoryUsage()` — best-effort RSS via the `sysinfo` crate.
+/// `heapTotal`, `heapUsed`, `external`, and `arrayBuffers` are reported
+/// as zero (V8 does not expose these stats through the public op
+/// surface yet).
+fn op_process_memory_usage<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let rss = current_rss_bytes();
+    let obj = v8::Object::new(scope);
+    for (name, value) in [
+        ("rss", rss),
+        ("heapTotal", 0),
+        ("heapUsed", 0),
+        ("external", 0),
+        ("arrayBuffers", 0),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let val = v8::Number::new(scope, value as f64);
+        obj.set(scope, key.into(), val.into());
+    }
+    rv.set(obj.into());
+}
+
+fn current_rss_bytes() -> u64 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
+    let mut sys = System::new_with_specifics(
+        RefreshKind::new().with_processes(ProcessRefreshKind::new().with_memory()),
+    );
+    let pid = Pid::from_u32(std::process::id());
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    sys.process(pid).map(sysinfo::Process::memory).unwrap_or(0)
 }
 
 fn op_cjs_root_parent<'s>(
@@ -1044,6 +1212,13 @@ fn op_cjs_resolve<'s>(
 ) {
     let parent = args.get(0).to_rust_string_lossy(scope);
     let request = args.get(1).to_rust_string_lossy(scope);
+    let bad = |s: &str| {
+        s.chars().any(|c| c == '\n' || c == '\r' || c == '\0')
+    };
+    if bad(&parent) || bad(&request) {
+        throw_error(scope, "EINVAL: invalid module specifier");
+        return;
+    }
     let handle = from_isolate(scope);
     let resolver = handle.0.borrow().cjs.clone();
     let Some(resolver) = resolver else {
@@ -1065,6 +1240,14 @@ fn op_cjs_read_source<'s>(
     mut rv: v8::ReturnValue<'s, v8::Value>,
 ) {
     let specifier = args.get(0).to_rust_string_lossy(scope);
+    if specifier.is_empty()
+        || specifier
+            .chars()
+            .any(|c| c == '\n' || c == '\r' || c == '\0')
+    {
+        throw_error(scope, "EINVAL: invalid module specifier");
+        return;
+    }
     let resolved = match crate::engine::cjs::Resolved::from_specifier(&specifier) {
         Ok(r) => r,
         Err(err) => {
@@ -1072,36 +1255,57 @@ fn op_cjs_read_source<'s>(
             return;
         }
     };
-    let (kind_int, source) = match resolved {
-        crate::engine::cjs::Resolved::Builtin(name) => {
-            let handle = from_isolate(scope);
-            let resolver = handle.0.borrow().cjs.clone();
-            let Some(resolver) = resolver else {
+    let resolver = {
+        let handle = from_isolate(scope);
+        let cjs = handle.0.borrow().cjs.clone();
+        match cjs {
+            Some(r) => r,
+            None => {
                 throw_error(scope, "cjs resolver not configured");
                 return;
-            };
-            match resolver.builtin_source(&name) {
-                Some(src) => (2u32, src.to_owned()),
-                None => {
-                    throw_error(scope, &format!("node:{name} not registered"));
+            }
+        }
+    };
+    let (kind_int, source) = match resolved {
+        crate::engine::cjs::Resolved::Builtin(name) => match resolver.builtin_source(&name) {
+            Some(src) => (2u32, src.to_owned()),
+            None => {
+                throw_error(scope, &format!("node:{name} not registered"));
+                return;
+            }
+        },
+        crate::engine::cjs::Resolved::File(path) => {
+            if !resolver.is_path_admitted(path.as_path()) {
+                throw_error(
+                    scope,
+                    &format!("EACCES: read denied for '{}'", path.display()),
+                );
+                return;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => (0u32, text),
+                Err(err) => {
+                    throw_error(scope, &format!("read failed: {err}"));
                     return;
                 }
             }
         }
-        crate::engine::cjs::Resolved::File(path) => match std::fs::read_to_string(&path) {
-            Ok(text) => (0u32, text),
-            Err(err) => {
-                throw_error(scope, &format!("read failed: {err}"));
+        crate::engine::cjs::Resolved::Json(path) => {
+            if !resolver.is_path_admitted(path.as_path()) {
+                throw_error(
+                    scope,
+                    &format!("EACCES: read denied for '{}'", path.display()),
+                );
                 return;
             }
-        },
-        crate::engine::cjs::Resolved::Json(path) => match std::fs::read_to_string(&path) {
-            Ok(text) => (1u32, text),
-            Err(err) => {
-                throw_error(scope, &format!("read failed: {err}"));
-                return;
+            match std::fs::read_to_string(&path) {
+                Ok(text) => (1u32, text),
+                Err(err) => {
+                    throw_error(scope, &format!("read failed: {err}"));
+                    return;
+                }
             }
-        },
+        }
     };
     let arr = v8::Array::new(scope, 2);
     let src_str = v8::String::new(scope, &source).unwrap();
@@ -2980,6 +3184,23 @@ fn op_proc_spawn<'s>(
         }
     };
     let handle = from_isolate(scope);
+    {
+        let state = handle.0.borrow();
+        let allowed = state
+            .process
+            .as_ref()
+            .map_or(true, crate::ops::ProcessConfig::subprocess_allowed);
+        if !allowed {
+            drop(state);
+            let err = NetError::new(
+                "EPERM",
+                "subprocess spawning is disabled by ProcessConfig",
+            );
+            let exc = make_node_error(scope, &err);
+            scope.throw_exception(exc);
+            return;
+        }
+    }
     let table = handle.0.borrow().child_processes.clone();
     match proc_spawn(descriptor) {
         Ok(child_handle) => {

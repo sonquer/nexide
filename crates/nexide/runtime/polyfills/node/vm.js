@@ -29,8 +29,18 @@
     if (typeof code !== "string") {
       throw new TypeError("compileFunction requires a string");
     }
-    const list = Array.isArray(params) ? params.join(",") : "";
-    return new Function(list, code);
+    const list = Array.isArray(params) ? params : [];
+    const safe = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+    for (const p of list) {
+      if (typeof p !== "string" || !safe.test(p)) {
+        const err = new TypeError(
+          "compileFunction params must be valid JavaScript identifiers"
+        );
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+    }
+    return new Function(list.join(","), code);
   }
 
   module.exports = {

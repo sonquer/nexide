@@ -166,6 +166,7 @@ pub struct ProcessConfig {
     boot: Instant,
     platform: &'static str,
     arch: &'static str,
+    allow_subprocess: bool,
 }
 
 impl std::fmt::Debug for ProcessConfig {
@@ -176,6 +177,7 @@ impl std::fmt::Debug for ProcessConfig {
             .field("cwd", &self.cwd)
             .field("platform", &self.platform)
             .field("arch", &self.arch)
+            .field("allow_subprocess", &self.allow_subprocess)
             .finish()
     }
 }
@@ -187,6 +189,7 @@ pub struct ProcessConfigBuilder {
     prefixes: Vec<String>,
     keys: BTreeSet<String>,
     cwd: Option<String>,
+    allow_subprocess: bool,
 }
 
 impl ProcessConfigBuilder {
@@ -200,6 +203,7 @@ impl ProcessConfigBuilder {
             prefixes: DEFAULT_PREFIXES.iter().map(|p| (*p).to_owned()).collect(),
             keys: DEFAULT_KEYS.iter().map(|k| (*k).to_owned()).collect(),
             cwd: None,
+            allow_subprocess: true,
         }
     }
 
@@ -225,6 +229,16 @@ impl ProcessConfigBuilder {
         self
     }
 
+    /// Toggles whether the JS guest may spawn child processes through
+    /// `node:child_process` (`op_proc_spawn`). Defaults to `true` for
+    /// Node compatibility; embedders running untrusted code or tightly
+    /// scoped sandboxes should disable it explicitly.
+    #[must_use]
+    pub const fn allow_subprocess(mut self, allowed: bool) -> Self {
+        self.allow_subprocess = allowed;
+        self
+    }
+
     /// Materialises the configuration.
     #[must_use]
     pub fn build(self) -> ProcessConfig {
@@ -242,6 +256,7 @@ impl ProcessConfigBuilder {
             boot: Instant::now(),
             platform: host_platform(),
             arch: host_arch(),
+            allow_subprocess: self.allow_subprocess,
         }
     }
 }
@@ -314,6 +329,12 @@ impl ProcessConfig {
     #[must_use]
     pub fn hrtime_ns(&self) -> u64 {
         u64::try_from(self.boot.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Reports whether subprocess spawning is currently permitted.
+    #[must_use]
+    pub const fn subprocess_allowed(&self) -> bool {
+        self.allow_subprocess
     }
 }
 

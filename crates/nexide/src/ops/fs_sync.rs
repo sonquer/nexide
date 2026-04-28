@@ -252,14 +252,20 @@ pub struct PathSandbox {
 }
 
 impl PathSandbox {
-    /// Builds a sandbox pinned to `roots`.
+    /// Builds a sandbox pinned to `roots`. Each root is canonicalised
+    /// once at construction; symlink swaps after this point cannot
+    /// retroactively widen the sandbox.
     ///
     /// # Panics
     /// Panics when `roots` is empty.
     #[must_use]
     pub fn new(roots: Vec<PathBuf>) -> Self {
         assert!(!roots.is_empty(), "PathSandbox requires at least one root");
-        Self { roots }
+        let canonical = roots
+            .into_iter()
+            .map(|r| r.canonicalize().unwrap_or(r))
+            .collect();
+        Self { roots: canonical }
     }
 
     fn lexical_normalise(path: &Path) -> PathBuf {
@@ -278,15 +284,15 @@ impl PathSandbox {
     }
 
     fn canonical_within(&self, path: &Path) -> Option<PathBuf> {
+        let lexical = Self::lexical_normalise(path);
         let canon = path.canonicalize().ok().or_else(|| {
             let parent = path.parent()?.canonicalize().ok()?;
             let file = path.file_name()?;
             Some(parent.join(file))
         });
-        let probe = canon.unwrap_or_else(|| Self::lexical_normalise(path));
+        let probe = canon.unwrap_or(lexical);
         for root in &self.roots {
-            let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if probe.starts_with(&canon_root) {
+            if probe.starts_with(root) {
                 return Some(probe);
             }
         }
