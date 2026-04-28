@@ -1,7 +1,7 @@
 # Nexide
 
 <p align="center">
-  <img src="./img/nexide.png" alt="Nexide logo" width="240" />
+  <img src="./img/nexide.png" alt="Nexide logo" width="420" />
 </p>
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sonquer/nexide/ci.yml?branch=main&label=CI)](https://github.com/sonquer/nexide/actions/workflows/ci.yml)
