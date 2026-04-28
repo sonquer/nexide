@@ -6,8 +6,8 @@
 //! the isolate's slot store so V8 callbacks can fetch them through a
 //! raw `&Isolate` reference.
 
-use std::path::{Path, PathBuf};
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Once;
 

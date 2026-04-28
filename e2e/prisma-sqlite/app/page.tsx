@@ -1,9 +1,10 @@
+import type { Post, User } from "@prisma/client";
 import { prisma } from "./db";
 
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const users = await prisma.user.findMany({
+  const users: (User & { posts: Post[] })[] = await prisma.user.findMany({
     include: { posts: true },
     orderBy: { id: "asc" }
   });

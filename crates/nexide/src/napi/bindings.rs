@@ -1246,32 +1246,37 @@ pub unsafe extern "C" fn napi_create_typedarray(
     let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(local) else {
         return NapiStatus::ArraybufferExpected;
     };
-    let Some(ta) = (match type_ {
-        NapiTypedArrayType::Int8 => v8::Int8Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Uint8 => v8::Uint8Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Uint8Clamped => {
-            v8::Uint8ClampedArray::new(scope, ab, byte_offset, length)
-                .map(v8::Local::<v8::Value>::from)
-        }
-        NapiTypedArrayType::Int16 => v8::Int16Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Uint16 => v8::Uint16Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Int32 => v8::Int32Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Uint32 => v8::Uint32Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Float32 => v8::Float32Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::Float64 => v8::Float64Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::BigInt64 => v8::BigInt64Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-        NapiTypedArrayType::BigUint64 => v8::BigUint64Array::new(scope, ab, byte_offset, length)
-            .map(v8::Local::<v8::Value>::from),
-    }) else {
+    let Some(ta) =
+        (match type_ {
+            NapiTypedArrayType::Int8 => {
+                v8::Int8Array::new(scope, ab, byte_offset, length).map(v8::Local::<v8::Value>::from)
+            }
+            NapiTypedArrayType::Uint8 => v8::Uint8Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Uint8Clamped => {
+                v8::Uint8ClampedArray::new(scope, ab, byte_offset, length)
+                    .map(v8::Local::<v8::Value>::from)
+            }
+            NapiTypedArrayType::Int16 => v8::Int16Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Uint16 => v8::Uint16Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Int32 => v8::Int32Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Uint32 => v8::Uint32Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Float32 => v8::Float32Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::Float64 => v8::Float64Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::BigInt64 => v8::BigInt64Array::new(scope, ab, byte_offset, length)
+                .map(v8::Local::<v8::Value>::from),
+            NapiTypedArrayType::BigUint64 => {
+                v8::BigUint64Array::new(scope, ab, byte_offset, length)
+                    .map(v8::Local::<v8::Value>::from)
+            }
+        })
+    else {
         return NapiStatus::GenericFailure;
     };
     unsafe { write_value_out(env, result, ta, scope) }
@@ -1692,10 +1697,7 @@ pub unsafe extern "C" fn napi_create_reference(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_delete_reference(
-    env: napi_env,
-    reference: napi_ref,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_delete_reference(env: napi_env, reference: napi_ref) -> NapiStatus {
     if (unsafe { env_ref(env) }).is_none() {
         return NapiStatus::InvalidArg;
     }
@@ -1827,10 +1829,7 @@ pub unsafe extern "C" fn napi_cancel_async_work(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_queue_async_work(
-    env: napi_env,
-    work: napi_async_work,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_queue_async_work(env: napi_env, work: napi_async_work) -> NapiStatus {
     let Some(env_ref_) = (unsafe { env_ref(env) }) else {
         return NapiStatus::InvalidArg;
     };
@@ -1857,7 +1856,9 @@ pub unsafe extern "C" fn napi_queue_async_work(
     rt.spawn_blocking(move || {
         let inner_ptr = inner_addr as *mut AsyncWorkInner;
         let inner_ref = unsafe { &*inner_ptr };
-        let cancelled = inner_ref.cancelled.load(std::sync::atomic::Ordering::SeqCst);
+        let cancelled = inner_ref
+            .cancelled
+            .load(std::sync::atomic::Ordering::SeqCst);
         if !cancelled {
             unsafe { (inner_ref.execute)(std::ptr::null_mut(), inner_ref.data.0) };
         }
@@ -1878,9 +1879,7 @@ pub unsafe extern "C" fn napi_queue_async_work(
                 let mut cb_env = NapiEnv::new(scope_ptr, context_ptr);
                 let env_ptr: napi_env = std::ptr::from_mut(&mut cb_env);
                 unsafe { complete(env_ptr, status, inner.data.0) };
-                drop(unsafe {
-                    Box::from_raw(context_ptr.cast::<v8::Global<v8::Context>>())
-                });
+                drop(unsafe { Box::from_raw(context_ptr.cast::<v8::Global<v8::Context>>()) });
             }
         });
         let _ = tx.send(work_box);
@@ -1991,34 +1990,40 @@ pub unsafe extern "C" fn napi_release_threadsafe_function(
         return NapiStatus::InvalidArg;
     };
     if mode == NapiThreadsafeFunctionReleaseMode::Abort {
-        inner.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+        inner
+            .aborted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     let prev = inner
         .thread_count
         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     if prev == 0 {
-        inner.thread_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        inner
+            .thread_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         return NapiStatus::InvalidArg;
     }
     if prev == 1 {
         // last thread released — schedule finalize on JS thread.
         let tsfn_addr = func.0 as usize;
-        let _ = inner.work_tx.send(Box::new(move |scope: &mut v8::PinScope<'_, '_>| {
-            let raw = tsfn_addr as *mut TsfnInner;
-            let owned = unsafe { &*raw };
-            if let Some(finalize) = owned.finalize {
-                let scope_ptr: *mut c_void =
-                    std::ptr::from_mut::<v8::PinScope<'_, '_>>(scope).cast();
-                let context = scope.get_current_context();
-                let context_box = Box::new(v8::Global::new(scope, context));
-                let context_ptr = Box::into_raw(context_box).cast::<c_void>();
-                let mut cb_env = NapiEnv::new(scope_ptr, context_ptr);
-                let env_ptr: napi_env = std::ptr::from_mut(&mut cb_env);
-                unsafe { finalize(env_ptr, owned.finalize_data, owned.context) };
-                drop(unsafe { Box::from_raw(context_ptr.cast::<v8::Global<v8::Context>>()) });
-            }
-            unsafe { TsfnInner::drop_raw(raw) };
-        }));
+        let _ = inner
+            .work_tx
+            .send(Box::new(move |scope: &mut v8::PinScope<'_, '_>| {
+                let raw = tsfn_addr as *mut TsfnInner;
+                let owned = unsafe { &*raw };
+                if let Some(finalize) = owned.finalize {
+                    let scope_ptr: *mut c_void =
+                        std::ptr::from_mut::<v8::PinScope<'_, '_>>(scope).cast();
+                    let context = scope.get_current_context();
+                    let context_box = Box::new(v8::Global::new(scope, context));
+                    let context_ptr = Box::into_raw(context_box).cast::<c_void>();
+                    let mut cb_env = NapiEnv::new(scope_ptr, context_ptr);
+                    let env_ptr: napi_env = std::ptr::from_mut(&mut cb_env);
+                    unsafe { finalize(env_ptr, owned.finalize_data, owned.context) };
+                    drop(unsafe { Box::from_raw(context_ptr.cast::<v8::Global<v8::Context>>()) });
+                }
+                unsafe { TsfnInner::drop_raw(raw) };
+            }));
     }
     NapiStatus::Ok
 }
@@ -2051,8 +2056,7 @@ pub unsafe extern "C" fn napi_call_threadsafe_function(
             return;
         }
         let data_ptr = data_addr as *mut c_void;
-        let scope_ptr: *mut c_void =
-            std::ptr::from_mut::<v8::PinScope<'_, '_>>(scope).cast();
+        let scope_ptr: *mut c_void = std::ptr::from_mut::<v8::PinScope<'_, '_>>(scope).cast();
         let context = scope.get_current_context();
         let context_box = Box::new(v8::Global::new(scope, context));
         let context_ptr = Box::into_raw(context_box).cast::<c_void>();
@@ -2377,9 +2381,8 @@ unsafe fn settle_deferred(
     let Some(val_g) = env.resolve(value) else {
         return NapiStatus::InvalidArg;
     };
-    let resolver_box = unsafe {
-        Box::from_raw(deferred.0.cast::<v8::Global<v8::PromiseResolver>>())
-    };
+    let resolver_box =
+        unsafe { Box::from_raw(deferred.0.cast::<v8::Global<v8::PromiseResolver>>()) };
     let scope = unsafe { scope_from_env(env) };
     let resolver = v8::Local::new(scope, &*resolver_box);
     let val_local = v8::Local::new(scope, &val_g);
@@ -2553,7 +2556,9 @@ pub unsafe extern "C" fn napi_define_class(
             return NapiStatus::InvalidArg;
         };
         let proto_key = v8::String::new(scope, "prototype").unwrap();
-        let proto_val = ctor_fn.get(scope, proto_key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+        let proto_val = ctor_fn
+            .get(scope, proto_key.into())
+            .unwrap_or_else(|| v8::undefined(scope).into());
         let Ok(proto_obj) = v8::Local::<v8::Object>::try_from(proto_val) else {
             return NapiStatus::InvalidArg;
         };
@@ -2584,13 +2589,21 @@ unsafe fn apply_descriptor<'s>(
     // Resolve the property name
     let name_local: v8::Local<v8::Name> = if !d.utf8name.is_null() {
         let cstr = unsafe { std::ffi::CStr::from_ptr(d.utf8name) };
-        let Ok(s) = cstr.to_str() else { return NapiStatus::InvalidArg };
-        let Some(v) = v8::String::new(scope, s) else { return NapiStatus::GenericFailure };
+        let Ok(s) = cstr.to_str() else {
+            return NapiStatus::InvalidArg;
+        };
+        let Some(v) = v8::String::new(scope, s) else {
+            return NapiStatus::GenericFailure;
+        };
         v.into()
     } else if !d.name.0.is_null() {
-        let Some(g) = env.resolve(d.name) else { return NapiStatus::InvalidArg };
+        let Some(g) = env.resolve(d.name) else {
+            return NapiStatus::InvalidArg;
+        };
         let l = v8::Local::new(scope, &g);
-        let Ok(n) = v8::Local::<v8::Name>::try_from(l) else { return NapiStatus::InvalidArg };
+        let Ok(n) = v8::Local::<v8::Name>::try_from(l) else {
+            return NapiStatus::InvalidArg;
+        };
         n
     } else {
         return NapiStatus::InvalidArg;
@@ -2611,7 +2624,9 @@ unsafe fn apply_descriptor<'s>(
         if st != NapiStatus::Ok {
             return st;
         }
-        let Some(fn_g) = env.resolve(fn_val) else { return NapiStatus::InvalidArg };
+        let Some(fn_g) = env.resolve(fn_val) else {
+            return NapiStatus::InvalidArg;
+        };
         let fn_local = v8::Local::new(scope, &fn_g);
         target.set(scope, name_local.into(), fn_local);
     } else if d.getter.is_some() || d.setter.is_some() {
@@ -2620,7 +2635,9 @@ unsafe fn apply_descriptor<'s>(
         // pulling in v8 accessor APIs that vary across versions.
         let _ = (d.getter, d.setter);
     } else if !d.value.0.is_null() {
-        let Some(val_g) = env.resolve(d.value) else { return NapiStatus::InvalidArg };
+        let Some(val_g) = env.resolve(d.value) else {
+            return NapiStatus::InvalidArg;
+        };
         let val_local = v8::Local::new(scope, &val_g);
         target.set(scope, name_local.into(), val_local);
     }
@@ -2686,10 +2703,7 @@ pub unsafe extern "C" fn napi_fatal_error(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_fatal_exception(
-    env: napi_env,
-    err: napi_value,
-) -> NapiStatus {
+pub unsafe extern "C" fn napi_fatal_exception(env: napi_env, err: napi_value) -> NapiStatus {
     let Some(env) = (unsafe { env_ref(env) }) else {
         return NapiStatus::InvalidArg;
     };

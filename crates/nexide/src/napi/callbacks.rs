@@ -35,8 +35,7 @@ pub fn trampoline<'s>(
     let context = scope.get_current_context();
     let context_global = Box::new(Global::new(scope, context));
     let context_ptr: *mut c_void = Box::into_raw(context_global).cast::<c_void>();
-    let scope_ptr: *mut c_void =
-        std::ptr::from_mut::<v8::PinScope<'s, '_>>(scope).cast::<c_void>();
+    let scope_ptr: *mut c_void = std::ptr::from_mut::<v8::PinScope<'s, '_>>(scope).cast::<c_void>();
 
     let mut env = NapiEnv::new(scope_ptr, context_ptr);
     let env_ptr: napi_env = std::ptr::from_mut(&mut env);
@@ -53,8 +52,7 @@ pub fn trampoline<'s>(
         },
         return_value: None,
     };
-    let info_ptr: napi_callback_info =
-        napi_callback_info(std::ptr::from_ref(&info) as *mut c_void);
+    let info_ptr: napi_callback_info = napi_callback_info(std::ptr::from_ref(&info) as *mut c_void);
 
     let returned = unsafe { (bundle.callback)(env_ptr, info_ptr) };
 

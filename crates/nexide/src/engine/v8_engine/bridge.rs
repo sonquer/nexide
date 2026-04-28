@@ -157,9 +157,7 @@ pub(super) fn from_isolate(isolate: &v8::Isolate) -> BridgeStateHandle {
 }
 
 /// Returns a clonable sender for the per-isolate N-API work channel.
-pub(crate) fn napi_work_sender(
-    isolate: &v8::Isolate,
-) -> mpsc::UnboundedSender<NapiWorkItem> {
+pub(crate) fn napi_work_sender(isolate: &v8::Isolate) -> mpsc::UnboundedSender<NapiWorkItem> {
     from_isolate(isolate).0.borrow().napi_work_tx.clone()
 }
 

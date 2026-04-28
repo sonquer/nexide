@@ -142,7 +142,8 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Node => {
-            let server_js: PathBuf = workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
+            let server_js: PathBuf =
+                workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }
@@ -154,7 +155,8 @@ pub async fn spawn_target(
             c
         }
         TargetKind::Deno => {
-            let server_js: PathBuf = workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
+            let server_js: PathBuf =
+                workspace_root.join("e2e/next-fixture/.next/standalone/server.js");
             if !server_js.is_file() {
                 bail!("missing standalone bundle: {}", server_js.display());
             }

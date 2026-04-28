@@ -103,8 +103,7 @@ pub type NapiAddonRegisterFn =
 
 pub type NapiCallback = unsafe extern "C" fn(env: napi_env, info: napi_callback_info) -> napi_value;
 
-pub type NapiAsyncExecute =
-    unsafe extern "C" fn(env: napi_env, data: *mut std::ffi::c_void);
+pub type NapiAsyncExecute = unsafe extern "C" fn(env: napi_env, data: *mut std::ffi::c_void);
 
 pub type NapiAsyncComplete =
     unsafe extern "C" fn(env: napi_env, status: NapiStatus, data: *mut std::ffi::c_void);

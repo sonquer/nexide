@@ -120,7 +120,12 @@ impl NexideProcess {
         let port = pick_free_port()?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
         let mut cmd = Command::new(nexide_binary());
-        cmd.env("NEXIDE_BIND", addr.to_string())
+        cmd.arg("start")
+            .arg(".")
+            .arg("--hostname")
+            .arg(addr.ip().to_string())
+            .arg("--port")
+            .arg(addr.port().to_string())
             .current_dir(cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

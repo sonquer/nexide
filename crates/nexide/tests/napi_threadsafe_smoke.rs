@@ -143,10 +143,7 @@ async fn run_module_with_pump(dir: &Path, entry: &Path) -> Result<(), String> {
 
     for _ in 0..400 {
         engine.pump_once();
-        let probe = engine.execute(
-            "probe",
-            "if (globalThis.__sum !== 7 + 14 + 21) throw 0;",
-        );
+        let probe = engine.execute("probe", "if (globalThis.__sum !== 7 + 14 + 21) throw 0;");
         if probe.is_ok() {
             return Ok(());
         }
