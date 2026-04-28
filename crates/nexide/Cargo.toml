@@ -39,7 +39,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 ed25519-dalek = { version = "2", features = ["pem", "pkcs8"] }
 spki = { version = "0.7", features = ["pem"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
-rand = "0.8"
+rand = "0.9"
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
@@ -80,6 +80,7 @@ jemalloc = ["dep:tikv-jemallocator"]
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
 
 [lints]
 workspace = true

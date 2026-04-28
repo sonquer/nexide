@@ -125,9 +125,9 @@ async fn ed25519_sign_verify_round_trip() {
     use ed25519_dalek::SigningKey;
     use ed25519_dalek::pkcs8::EncodePrivateKey;
     use ed25519_dalek::pkcs8::spki::EncodePublicKey;
-    use rand::RngCore;
+    use rand_core::{OsRng, RngCore};
     let mut secret = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    OsRng.fill_bytes(&mut secret);
     let signing = SigningKey::from_bytes(&secret);
     let private_pem = signing
         .to_pkcs8_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF)
@@ -155,7 +155,7 @@ async fn ed25519_sign_verify_round_trip() {
 async fn ecdsa_p256_sign_verify_round_trip() {
     use p256::ecdsa::SigningKey;
     use p256::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     let signing = SigningKey::random(&mut OsRng);
     let private_pem = signing.to_pkcs8_pem(LineEnding::LF).expect("private pem");
     let public_pem = signing

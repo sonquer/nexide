@@ -5,14 +5,14 @@
 # apples with `nexide` and `node`.
 #
 # Stage 1: build the same standalone bundle the node and nexide images
-#          consume. Built on `node:20-bookworm-slim` because `next
+#          consume. Built on `node:24-bookworm-slim` because `next
 #          build` itself still expects Node tooling.
 # Stage 2: slim Deno runtime that only carries the standalone bundle
 #          and serves it via `deno run`.
 #
 # Build context: workspace root (only `example/` is needed).
 
-FROM node:20-bookworm-slim AS next-builder
+FROM node:24-bookworm-slim AS next-builder
 WORKDIR /build/example
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1

@@ -1190,7 +1190,7 @@ fn op_process_memory_usage<'s>(
 fn current_rss_bytes() -> u64 {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
     let mut sys = System::new_with_specifics(
-        RefreshKind::new().with_processes(ProcessRefreshKind::new().with_memory()),
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing().with_memory()),
     );
     let pid = Pid::from_u32(std::process::id());
     sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
@@ -1874,7 +1874,7 @@ fn op_crypto_random_bytes<'s>(
     use rand::RngCore;
     let len = args.get(0).uint32_value(scope).unwrap_or(0) as usize;
     let mut buf = vec![0u8; len];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::rng().fill_bytes(&mut buf);
     let arr = bytes_to_uint8array(scope, &buf);
     rv.set(arr.into());
 }
@@ -1886,7 +1886,7 @@ fn op_crypto_random_uuid<'s>(
 ) {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let s = format!(
