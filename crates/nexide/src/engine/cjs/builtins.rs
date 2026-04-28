@@ -150,6 +150,10 @@ const MODULES: &[(&str, &str)] = &[
         "tty",
         include_str!("../../../runtime/polyfills/node/tty.js"),
     ),
+    (
+        "punycode",
+        include_str!("../../../runtime/polyfills/node/punycode.js"),
+    ),
 ];
 
 /// Registers every shipped `node:*` module on `registry`.
@@ -210,6 +214,7 @@ mod tests {
                 "path",
                 "perf_hooks",
                 "process",
+                "punycode",
                 "querystring",
                 "stream",
                 "string_decoder",
