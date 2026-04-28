@@ -99,7 +99,6 @@ fn delta_table(results: &[BenchResult], protagonist: TargetKind) -> Option<Table
             "Δ p99",
             "Δ cpu",
             "Δ mem",
-            &format!("({} vs baseline)", protagonist.label()),
         ]);
     for (route, cells) in &by_route {
         let Some(new) = cells.get(&protagonist) else {
@@ -118,7 +117,6 @@ fn delta_table(results: &[BenchResult], protagonist: TargetKind) -> Option<Table
                 Cell::new(delta(ms(new.load.p99), ms(base.load.p99))),
                 Cell::new(delta(new.sample.cpu_avg, base.sample.cpu_avg)),
                 Cell::new(delta(new.sample.mem_avg_mb, base.sample.mem_avg_mb)),
-                Cell::new(""),
             ]);
         }
     }
@@ -134,7 +132,10 @@ pub fn render_report(results: &[BenchResult], protagonist: TargetKind) -> String
     out.push_str(&absolute_table(results).to_string());
     out.push('\n');
     if let Some(delta) = delta_table(results, protagonist) {
-        out.push_str("\n>>> delta vs baselines\n");
+        out.push_str(&format!(
+            "\n>>> delta vs baselines ({} vs baseline)\n",
+            protagonist.label()
+        ));
         out.push_str(&delta.to_string());
         out.push('\n');
     }

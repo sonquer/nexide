@@ -563,3 +563,19 @@ Nexide stands on the shoulders of [V8](https://v8.dev),
 Deno project maintains), [Tokio](https://tokio.rs),
 [Axum](https://github.com/tokio-rs/axum), [Hyper](https://hyper.rs), and the
 WHATWG / Node.js spec bodies whose work made any of this tractable.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=sonquer%2Fnexide&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=sonquer/nexide&type=date&legend=top-left" />
+ </picture>
+</a>
+
+## Contributors Hall of Fame
+
+<a href="https://github.com/sonquer/nexide/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=sonquer/nexide" alt="Nexide contributors" />
+</a>
