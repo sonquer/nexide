@@ -1274,6 +1274,8 @@ mod tests {
         resolve_runtime_mode, resolve_v8_flags,
     };
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn runtime_error_display_uses_stable_prefixes() {
         let tracing_err = RuntimeError::Tracing("boom".into());
@@ -1298,8 +1300,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_falls_back_to_default_when_env_missing() {
-        // SAFETY: tests run sequentially in this module; manipulating
-        // process-global env is acceptable for the duration of the test.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var(BIND_ENV) };
         let addr = resolve_default_bind().expect("bind");
         assert_eq!(addr.to_string(), DEFAULT_BIND);
@@ -1307,6 +1308,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_honors_env_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var(BIND_ENV, "127.0.0.1:54321") };
         let addr = resolve_default_bind().expect("bind");
         assert_eq!(addr.port(), 54321);
@@ -1315,6 +1317,7 @@ mod tests {
 
     #[test]
     fn resolve_bind_returns_error_for_unparseable_value() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var(BIND_ENV, "not an address") };
         assert!(resolve_default_bind().is_err());
         unsafe { std::env::remove_var(BIND_ENV) };
