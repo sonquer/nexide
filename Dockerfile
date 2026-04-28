@@ -44,7 +44,8 @@ COPY --from=builder /usr/local/bin/nexide /usr/local/bin/nexide
 USER nexide
 WORKDIR /app
 
-ENV NEXIDE_BIND=0.0.0.0:3000 \
+ENV HOSTNAME=0.0.0.0 \
+    PORT=3000 \
     RUST_LOG=info
 
 EXPOSE 3000

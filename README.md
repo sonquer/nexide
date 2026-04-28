@@ -334,14 +334,19 @@ COPY --from=builder --chown=nexide:nexide /app/.next/standalone ./
 COPY --from=builder --chown=nexide:nexide /app/.next/static ./.next/static
 COPY --from=builder --chown=nexide:nexide /app/public ./public
 EXPOSE 3000
-# ENTRYPOINT and CMD are inherited from the Nexide image
+# ENTRYPOINT ["/usr/local/bin/nexide"] and CMD ["start", "/app"] are
+# inherited from the base image. Override CMD if you need to customise
+# bind address or port (although usually setting HOSTNAME/PORT env vars
+# is cleaner):
+# CMD ["start", "/app", "--hostname", "0.0.0.0", "--port", "8080"]
 ```
 
 What changed:
 
 - Runtime image: `node:22-alpine` → `ghcr.io/sonquer/nexide:latest`.
-- No `CMD ["node", "server.js"]`. The Nexide image already entrypoints into
-  the runtime and serves whatever is mounted at `/app`.
+- `CMD ["node", "server.js"]` is **replaced** by the inherited Nexide
+  entrypoint `nexide start /app`. There is no `node` process — Nexide
+  loads the standalone bundle directly into V8.
 - `--chown=nexide:nexide` because the Nexide image runs as the non-root
   `nexide` user (uid 10001).
 
@@ -364,9 +369,37 @@ EXPOSE 3000
 CMD ["deno", "run", "-A", "--unstable-node-modules-dir", "server.js"]
 ```
 
-**After** (Nexide): identical to the Node.js "after" example above. Nexide
-does not care which runtime built the bundle, only that the resulting
-`.next/standalone` directory is laid out correctly.
+**After** (Nexide):
+
+```dockerfile
+FROM denoland/deno:2.0.0 AS builder
+WORKDIR /app
+COPY . .
+RUN deno task build
+
+FROM ghcr.io/sonquer/nexide:latest AS runtime
+WORKDIR /app
+COPY --from=builder --chown=nexide:nexide /app/.next/standalone ./
+COPY --from=builder --chown=nexide:nexide /app/.next/static ./.next/static
+COPY --from=builder --chown=nexide:nexide /app/public ./public
+EXPOSE 3000
+# ENTRYPOINT ["/usr/local/bin/nexide"] and CMD ["start", "/app"] are
+# inherited from the base image.
+```
+
+What changed:
+
+- Runtime image: `denoland/deno:2.0.0` → `ghcr.io/sonquer/nexide:latest`.
+- `CMD ["deno", "run", "-A", "--unstable-node-modules-dir", "server.js"]`
+  is **replaced** by the inherited Nexide entrypoint `nexide start /app`.
+  No `-A` permission flags, no `--unstable-*` flags, no `node_modules`
+  resolver toggles — Nexide loads the Next.js standalone bundle directly
+  into V8 via its native HTTP server.
+- `--chown=nexide:nexide` because Nexide runs as the non-root `nexide`
+  user (uid 10001).
+
+Nexide does not care which runtime produced the bundle, only that the
+resulting `.next/standalone` directory is laid out correctly.
 
 ### Pinning to a specific Nexide version
 
@@ -383,13 +416,16 @@ deliberately.
 
 ### Environment variables
 
-| Variable        | Default          | Effect                                   |
-|-----------------|------------------|------------------------------------------|
-| `NEXIDE_BIND`   | `0.0.0.0:3000`   | Listen address. Set to `0.0.0.0:8080` for typical k8s.   |
-| `RUST_LOG`      | `info`           | Standard `tracing-subscriber` filter syntax.             |
-| `NODE_ENV`      | inherited        | Forwarded to the JS runtime; Next.js reads it.           |
-| `NEXT_*`        | inherited        | Whitelisted into `process.env` for Next.js.              |
-| `NEXT_PUBLIC_*` | inherited        | Whitelisted for client-side env injection.               |
+| Variable        | Default          | Effect                                                 |
+|-----------------|------------------|--------------------------------------------------------|
+| `HOSTNAME`      | `127.0.0.1` (`0.0.0.0` in the published image) | Bind address for `nexide start`. Override to `0.0.0.0` when running in a container. |
+| `PORT`          | `3000`           | TCP port for `nexide start`.                           |
+| `RUST_LOG`      | `info`           | Standard `tracing-subscriber` filter syntax.           |
+| `NODE_ENV`      | inherited        | Forwarded into `process.env`; Next.js reads it.        |
+| `NEXT_*`        | inherited        | Whitelisted into `process.env` for Next.js.            |
+| `NEXT_PUBLIC_*` | inherited        | Whitelisted for client-side env injection.             |
+
+The same flags can be passed on the CLI: `nexide start /app --hostname 0.0.0.0 --port 8080`.
 
 ## Building and testing
 
