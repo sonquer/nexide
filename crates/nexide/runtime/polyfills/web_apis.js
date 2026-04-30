@@ -236,6 +236,22 @@
     globalThis.EventTarget = EventTarget;
   }
 
+  if (typeof globalThis.addEventListener !== "function") {
+    const _globalET = new globalThis.EventTarget();
+    Object.defineProperty(globalThis, "addEventListener", {
+      value: function () { return _globalET.addEventListener.apply(_globalET, arguments); },
+      writable: true, configurable: true, enumerable: false,
+    });
+    Object.defineProperty(globalThis, "removeEventListener", {
+      value: function () { return _globalET.removeEventListener.apply(_globalET, arguments); },
+      writable: true, configurable: true, enumerable: false,
+    });
+    Object.defineProperty(globalThis, "dispatchEvent", {
+      value: function () { return _globalET.dispatchEvent.apply(_globalET, arguments); },
+      writable: true, configurable: true, enumerable: false,
+    });
+  }
+
   if (typeof globalThis.Headers === "undefined") {
     class Headers {
       constructor(init) {
@@ -836,6 +852,51 @@
       }
     }
     globalThis.TransformStream = TransformStream;
+  }
+
+  if (typeof globalThis.TextEncoderStream === "undefined") {
+    class TextEncoderStream {
+      constructor() {
+        const encoder = new globalThis.TextEncoder();
+        const ts = new globalThis.TransformStream({
+          transform(chunk, controller) {
+            const out = encoder.encode(String(chunk));
+            if (out.length > 0) controller.enqueue(out);
+          },
+        });
+        this.readable = ts.readable;
+        this.writable = ts.writable;
+      }
+      get encoding() { return "utf-8"; }
+    }
+    globalThis.TextEncoderStream = TextEncoderStream;
+  }
+
+  if (typeof globalThis.TextDecoderStream === "undefined") {
+    class TextDecoderStream {
+      constructor(label = "utf-8", options = {}) {
+        const decoder = new globalThis.TextDecoder(label, options);
+        this._encoding = decoder.encoding;
+        this._fatal = !!options.fatal;
+        this._ignoreBOM = !!options.ignoreBOM;
+        const ts = new globalThis.TransformStream({
+          transform(chunk, controller) {
+            const out = decoder.decode(chunk, { stream: true });
+            if (out.length > 0) controller.enqueue(out);
+          },
+          flush(controller) {
+            const out = decoder.decode();
+            if (out.length > 0) controller.enqueue(out);
+          },
+        });
+        this.readable = ts.readable;
+        this.writable = ts.writable;
+      }
+      get encoding() { return this._encoding; }
+      get fatal() { return this._fatal; }
+      get ignoreBOM() { return this._ignoreBOM; }
+    }
+    globalThis.TextDecoderStream = TextDecoderStream;
   }
 
   if (typeof globalThis.ByteLengthQueuingStrategy === "undefined") {

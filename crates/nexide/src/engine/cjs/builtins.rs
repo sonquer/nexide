@@ -129,6 +129,10 @@ const MODULES: &[(&str, &str)] = &[
         include_str!("../../../runtime/polyfills/node/constants.js"),
     ),
     (
+        "console",
+        include_str!("../../../runtime/polyfills/node/console.js"),
+    ),
+    (
         "worker_threads",
         include_str!("../../../runtime/polyfills/node/worker_threads.js"),
     ),
@@ -243,6 +247,7 @@ mod tests {
                 "async_hooks",
                 "buffer",
                 "child_process",
+                "console",
                 "constants",
                 "crypto",
                 "diagnostics_channel",

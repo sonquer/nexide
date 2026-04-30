@@ -17,7 +17,7 @@
  *
  * That matches what user code observes when running on the main
  * thread of Node.js, so the common pattern
- * `if (isMainThread) { /* primary */ } else { /* worker */ }`
+ * `if (isMainThread) { ...primary... } else { ...worker... }`
  * always takes the primary branch under nexide.
  *
  * Constructing `new Worker(...)` throws an `Error` with

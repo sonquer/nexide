@@ -31,6 +31,15 @@
           value: c.webcrypto, writable: true, configurable: true, enumerable: false,
         });
       }
+      const cryptoClasses = ["Crypto", "CryptoKey", "SubtleCrypto"];
+      for (let i = 0; i < cryptoClasses.length; i++) {
+        const name = cryptoClasses[i];
+        if (typeof globalThis[name] === "undefined" && c[name]) {
+          Object.defineProperty(globalThis, name, {
+            value: c[name], writable: true, configurable: true, enumerable: false,
+          });
+        }
+      }
     } catch { }
   }
 })();

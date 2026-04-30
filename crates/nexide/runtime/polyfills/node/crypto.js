@@ -374,6 +374,37 @@ const webcrypto = {
   subtle,
 };
 
+class CryptoKey {
+  constructor() {
+    const err = new TypeError("Illegal constructor");
+    err.code = "ERR_INVALID_THIS";
+    throw err;
+  }
+}
+
+class SubtleCrypto {
+  constructor() {
+    const err = new TypeError("Illegal constructor");
+    err.code = "ERR_INVALID_THIS";
+    throw err;
+  }
+}
+
+class Crypto {
+  constructor() {
+    const err = new TypeError("Illegal constructor");
+    err.code = "ERR_INVALID_THIS";
+    throw err;
+  }
+}
+
+Object.setPrototypeOf(webcrypto, Crypto.prototype);
+Object.setPrototypeOf(subtle, SubtleCrypto.prototype);
+
+webcrypto.CryptoKey = CryptoKey;
+webcrypto.SubtleCrypto = SubtleCrypto;
+webcrypto.Crypto = Crypto;
+
 module.exports = {
   createHash,
   createHmac,
@@ -396,6 +427,9 @@ module.exports = {
   Hash,
   Hmac,
   webcrypto,
+  Crypto,
+  CryptoKey,
+  SubtleCrypto,
   constants: {},
   getCiphers: () => [
     "aes-128-cbc", "aes-192-cbc", "aes-256-cbc",

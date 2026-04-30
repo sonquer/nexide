@@ -11,18 +11,26 @@
     return (0, eval)(code);
   }
 
-  function runInNewContext(code, sandbox) {
+  function runInNewContext(code, sandbox, options) {
     if (typeof code !== "string") {
       throw new TypeError("runInNewContext requires a string");
     }
     if (sandbox == null) {
       return (0, eval)(code);
     }
-    const fn = new Function(
-      "sandbox",
-      "var self = sandbox; var globalThis = sandbox; var global = sandbox; with (sandbox) { " + code + " }"
-    );
-    return fn(sandbox);
+    ensureContextEventTarget(sandbox);
+
+    var keys = Object.keys(sandbox);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === "globalThis" || k === "global" || k === "self") continue;
+      try { globalThis[k] = sandbox[k]; } catch (_) {}
+    }
+    var src = "(function(){\n" + code + "\n})()";
+    if (options && typeof options === "object" && typeof options.filename === "string") {
+      src += "\n//# sourceURL=" + options.filename;
+    }
+    return (0, eval)(src);
   }
 
   function compileFunction(code, params) {
@@ -43,12 +51,44 @@
     return new Function(list.join(","), code);
   }
 
+  function ensureContextEventTarget(sandbox) {
+    if (!sandbox || typeof sandbox !== "object") return sandbox;
+    if (typeof sandbox.addEventListener === "function") return sandbox;
+    var ET = globalThis.EventTarget;
+    var et = ET ? new ET() : null;
+    if (!et) {
+      et = (function () {
+        var listeners = Object.create(null);
+        return {
+          addEventListener: function (type, fn) {
+            (listeners[type] || (listeners[type] = [])).push(fn);
+          },
+          removeEventListener: function (type, fn) {
+            var arr = listeners[type]; if (!arr) return;
+            var i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1);
+          },
+          dispatchEvent: function (event) {
+            var arr = listeners[event && event.type]; if (!arr) return true;
+            for (var i = 0; i < arr.length; i++) {
+              try { arr[i].call(sandbox, event); } catch (_) {}
+            }
+            return !(event && event.defaultPrevented);
+          },
+        };
+      })();
+    }
+    sandbox.addEventListener = function () { return et.addEventListener.apply(et, arguments); };
+    sandbox.removeEventListener = function () { return et.removeEventListener.apply(et, arguments); };
+    sandbox.dispatchEvent = function () { return et.dispatchEvent.apply(et, arguments); };
+    return sandbox;
+  }
+
   module.exports = {
     runInThisContext,
     runInNewContext,
     runInContext: runInNewContext,
     compileFunction,
-    createContext: (sandbox) => sandbox || {},
+    createContext: (sandbox) => ensureContextEventTarget(sandbox || {}),
     isContext: () => false,
     Script: class Script {
       constructor(code) { this._code = code; }

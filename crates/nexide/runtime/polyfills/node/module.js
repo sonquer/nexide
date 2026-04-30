@@ -32,7 +32,7 @@
   }
 
   const builtinModules = [
-    "assert", "async_hooks", "buffer", "crypto", "events",
+    "assert", "async_hooks", "buffer", "console", "crypto", "events",
     "fs", "fs/promises", "http", "module", "net", "os",
     "path", "perf_hooks", "process", "querystring", "stream",
     "tty", "url", "util", "zlib",
