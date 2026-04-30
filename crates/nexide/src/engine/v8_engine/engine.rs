@@ -200,6 +200,7 @@ impl V8Engine {
             http_responses: super::handle_table::HandleTable::default(),
             child_processes: super::handle_table::HandleTable::default(),
             zlib_streams: super::handle_table::HandleTable::default(),
+            vm_contexts: super::handle_table::HandleTable::default(),
         };
         isolate.set_slot(BridgeStateHandle::new(bridge));
         isolate.set_slot(ModuleMap::new());

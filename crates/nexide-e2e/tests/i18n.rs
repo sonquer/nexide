@@ -28,13 +28,10 @@ async fn i18n_serves_translated_pages() {
     }
 
     let cwd = workspace_root().join("e2e/i18n");
-    let server = NexideProcess::spawn_at_with_env(
-        cwd,
-        READY_TIMEOUT,
-        &[("LANG", ""), ("LC_ALL", "")],
-    )
-    .await
-    .expect("nexide ready against i18n fixture");
+    let server =
+        NexideProcess::spawn_at_with_env(cwd, READY_TIMEOUT, &[("LANG", ""), ("LC_ALL", "")])
+            .await
+            .expect("nexide ready against i18n fixture");
 
     let base = format!("http://{}", server.addr());
     let client = reqwest::Client::builder()
@@ -63,7 +60,9 @@ async fn i18n_serves_translated_pages() {
         "noArgs toLocaleString must succeed: {body}"
     );
     assert!(
-        body["explicit"]["pl-PL"].as_str().is_some_and(|s| s.contains('\u{a0}') || s.contains(' ')),
+        body["explicit"]["pl-PL"]
+            .as_str()
+            .is_some_and(|s| s.contains('\u{a0}') || s.contains(' ')),
         "pl-PL number formatted: {body}"
     );
     assert_eq!(
@@ -79,10 +78,10 @@ async fn i18n_serves_translated_pages() {
     );
 
     for (path, marker) in [
-        ("/en", "Hello, świat"),
+        ("/", "Hello, świat"),
         ("/pl", "Cześć, świat"),
         ("/pl/utf8", "Zażółć gęślą jaźń"),
-        ("/en/utf8", "Polish text test"),
+        ("/utf8", "Polish text test"),
         ("/pl/static", "Zażółć gęślą jaźń"),
         ("/en/static", "Polish text test"),
     ] {
@@ -97,6 +96,24 @@ async fn i18n_serves_translated_pages() {
             html.contains(marker),
             "{path} missing marker '{marker}': {}",
             &html[..html.len().min(800)]
+        );
+    }
+
+    for (path, expected_loc) in [("/en", "/"), ("/en/utf8", "/utf8")] {
+        let resp = client
+            .get(format!("{base}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {path} failed: {e}"));
+        assert_eq!(resp.status().as_u16(), 307, "{path} status");
+        let loc = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            loc.starts_with(expected_loc),
+            "{path} location='{loc}' expected to start with '{expected_loc}'"
         );
     }
 

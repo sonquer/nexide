@@ -189,6 +189,10 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_zlib_feed", op_zlib_feed);
     install_fn(scope, ops, "op_zlib_finish", op_zlib_finish);
     install_fn(scope, ops, "op_zlib_close", op_zlib_close);
+
+    install_fn(scope, ops, "op_vm_create_context", op_vm_create_context);
+    install_fn(scope, ops, "op_vm_run_in_context", op_vm_run_in_context);
+    install_fn(scope, ops, "op_vm_is_context", op_vm_is_context);
 }
 
 fn install_fn<'s, F>(
@@ -4268,4 +4272,198 @@ fn ed25519_verify(key_pem: &str, data: &[u8], sig: &[u8]) -> Result<bool, String
     sig_arr.copy_from_slice(sig);
     let signature = Signature::from_bytes(&sig_arr);
     Ok(verifying.verify(data, &signature).is_ok())
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// node:vm — real V8 contexts
+// ──────────────────────────────────────────────────────────────────────
+
+/// Property name of the hidden symbol that links a JS sandbox handed
+/// to `vm.createContext` back to its `Global<Context>` slot in
+/// [`super::bridge::BridgeState::vm_contexts`].
+const VM_CONTEXT_ID_PROP: &str = "__nexide_vm_context_id__";
+
+fn op_vm_create_context<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let template = v8::ObjectTemplate::new(scope);
+    template.set_internal_field_count(1);
+
+    let new_context = v8::Context::new(
+        scope,
+        v8::ContextOptions {
+            global_template: Some(template),
+            ..Default::default()
+        },
+    );
+
+    let host_context = scope.get_current_context();
+    let host_token = host_context.get_security_token(scope);
+    new_context.set_security_token(host_token);
+
+    let context_global = v8::Global::new(scope, new_context);
+    let bridge = from_isolate(scope);
+    let table = bridge.0.borrow().vm_contexts.clone();
+    let id = table.insert(context_global);
+
+    let new_global = new_context.global(scope);
+    let id_external = v8::External::new(scope, id as *mut std::ffi::c_void);
+    new_global.set_internal_field(0, id_external.into());
+
+    if let Some(key) = v8::String::new(scope, VM_CONTEXT_ID_PROP) {
+        let id_num = v8::Number::new(scope, f64::from(id));
+        new_global.set(scope, key.into(), id_num.into());
+    }
+
+    if args.length() >= 1
+        && args.get(0).is_object()
+        && let Ok(seed) = TryInto::<v8::Local<v8::Object>>::try_into(args.get(0))
+        && let Some(names) = seed.get_own_property_names(scope, Default::default())
+    {
+        let len = names.length();
+        for i in 0..len {
+            if let Some(key) = names.get_index(scope, i)
+                && let Some(value) = seed.get(scope, key)
+            {
+                new_global.set(scope, key, value);
+            }
+        }
+    }
+
+    rv.set(new_global.into());
+}
+
+fn op_vm_run_in_context<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    if args.length() < 2 {
+        throw_type_error(
+            scope,
+            "op_vm_run_in_context: expected (sandbox, code, filename?)",
+        );
+        return;
+    }
+    let sandbox: v8::Local<v8::Object> = match args.get(0).try_into() {
+        Ok(o) => o,
+        Err(_) => {
+            throw_type_error(scope, "op_vm_run_in_context: sandbox must be an Object");
+            return;
+        }
+    };
+    let id = match read_vm_context_id(scope, sandbox) {
+        Some(id) => id,
+        None => {
+            throw_error(
+                scope,
+                "op_vm_run_in_context: object was not produced by vm.createContext",
+            );
+            return;
+        }
+    };
+
+    let bridge = from_isolate(scope);
+    let table = bridge.0.borrow().vm_contexts.clone();
+    let context_global = match table.with(id, |g| g.clone()) {
+        Some(g) => g,
+        None => {
+            throw_error(scope, "op_vm_run_in_context: context handle not found");
+            return;
+        }
+    };
+
+    let code = args.get(1).to_rust_string_lossy(scope);
+    let filename = if args.length() >= 3 && args.get(2).is_string() {
+        args.get(2).to_rust_string_lossy(scope)
+    } else {
+        "[vm:runInContext]".to_owned()
+    };
+
+    let target_context = v8::Local::new(scope, &context_global);
+    let mut ctx_scope = v8::ContextScope::new(scope, target_context);
+    let scope_cs: &mut v8::PinScope<'_, '_> = &mut ctx_scope;
+
+    let code_str = match v8::String::new(scope_cs, &code) {
+        Some(s) => s,
+        None => {
+            throw_error(
+                scope_cs,
+                "op_vm_run_in_context: failed to allocate code string",
+            );
+            return;
+        }
+    };
+    let resource = v8::String::new(scope_cs, &filename)
+        .unwrap_or_else(|| v8::String::new(scope_cs, "[vm:runInContext]").expect("static name"));
+    let undefined = v8::undefined(scope_cs).into();
+    let origin = v8::ScriptOrigin::new(
+        scope_cs,
+        resource.into(),
+        0,
+        0,
+        false,
+        0,
+        Some(undefined),
+        false,
+        false,
+        false,
+        None,
+    );
+    let mut source = v8::script_compiler::Source::new(code_str, Some(&origin));
+    let script = match v8::script_compiler::compile(
+        scope_cs,
+        &mut source,
+        v8::script_compiler::CompileOptions::NoCompileOptions,
+        v8::script_compiler::NoCacheReason::NoReason,
+    ) {
+        Some(s) => s,
+        None => {
+            // Compile threw — the exception is already on the isolate
+            // and propagates out of this op naturally.
+            return;
+        }
+    };
+    let result = match script.run(scope_cs) {
+        Some(v) => v,
+        None => return, // run threw; exception propagates
+    };
+    rv.set(result);
+}
+
+fn op_vm_is_context<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let is_ctx = if args.length() >= 1 {
+        match TryInto::<v8::Local<v8::Object>>::try_into(args.get(0)) {
+            Ok(obj) => read_vm_context_id(scope, obj).is_some(),
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+    rv.set(v8::Boolean::new(scope, is_ctx).into());
+}
+
+/// Reads the registry id stamped on a sandbox by
+/// [`op_vm_create_context`]. Returns `None` if the object was not
+/// produced by us.
+fn read_vm_context_id<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    obj: v8::Local<'s, v8::Object>,
+) -> Option<u32> {
+    if obj.internal_field_count() < 1 {
+        return None;
+    }
+    let raw = obj.get_internal_field(scope, 0)?;
+    let external: v8::Local<v8::External> = raw.try_into().ok()?;
+    let ptr = external.value();
+    if ptr.is_null() {
+        return None;
+    }
+    Some(ptr as usize as u32)
 }
