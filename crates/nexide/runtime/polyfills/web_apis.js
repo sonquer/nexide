@@ -306,6 +306,11 @@
       get(k) { return this._map.get(String(k).toLowerCase()) ?? null; }
       has(k) { return this._map.has(String(k).toLowerCase()); }
       set(k, v) { this._map.set(String(k).toLowerCase(), String(v)); }
+      getSetCookie() {
+        const v = this._map.get("set-cookie");
+        if (!v) return [];
+        return Array.isArray(v) ? v.slice() : String(v).split(/, (?=[^;]+=)/);
+      }
       forEach(cb, thisArg) { for (const [k, v] of this._map) cb.call(thisArg, v, k, this); }
       *entries() { yield* this._map.entries(); }
       *keys() { yield* this._map.keys(); }
@@ -644,6 +649,7 @@
         this._cancelled = false;
         this._locked = false;
         this._waiters = [];
+        this._byteStream = underlying && underlying.type === "bytes";
         const wakeWaiters = () => {
           const waiters = this._waiters;
           this._waiters = [];
@@ -654,12 +660,28 @@
             if (this._closed || this._cancelled) {
               return;
             }
+            if (chunk && typeof chunk === "object" && chunk instanceof Uint8Array) {
+              chunk = new Uint8Array(chunk);
+            } else if (
+              chunk &&
+              typeof chunk === "object" &&
+              chunk.buffer instanceof ArrayBuffer &&
+              typeof chunk.byteLength === "number"
+            ) {
+              const u = new Uint8Array(
+                chunk.buffer,
+                chunk.byteOffset || 0,
+                chunk.byteLength,
+              );
+              chunk = new Uint8Array(u);
+            }
             this._chunks.push(chunk);
             wakeWaiters();
           },
           close: () => { this._closed = true; wakeWaiters(); },
           error: (err) => { this._error = err; this._closed = true; wakeWaiters(); },
           get desiredSize() { return 1; },
+          get byobRequest() { return null; },
         };
         try {
           if (typeof underlying.start === "function") {
