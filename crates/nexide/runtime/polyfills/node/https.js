@@ -29,15 +29,14 @@ function createServer() {
   throw err;
 }
 
-function Agent() {}
-Agent.prototype.destroy = function destroy() {};
+class Agent extends http.Agent {}
 
 const https = {
   request,
   get,
   createServer,
   Agent,
-  globalAgent: new Agent(),
+  globalAgent: new Agent({ keepAlive: false }),
 };
 https.default = https;
 

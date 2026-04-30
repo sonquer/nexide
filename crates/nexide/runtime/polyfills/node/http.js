@@ -609,14 +609,36 @@ function createServer(opts, handler) {
   return new Server(opts, handler);
 }
 
+class Agent extends EventEmitter {
+  constructor(options) {
+    super();
+    this.options = { ...(options || {}) };
+    this.maxSockets = this.options.maxSockets ?? Infinity;
+    this.maxTotalSockets = this.options.maxTotalSockets ?? Infinity;
+    this.maxFreeSockets = this.options.maxFreeSockets ?? 256;
+    this.keepAlive = !!this.options.keepAlive;
+    this.keepAliveMsecs = this.options.keepAliveMsecs ?? 1000;
+    this.sockets = Object.create(null);
+    this.freeSockets = Object.create(null);
+    this.requests = Object.create(null);
+  }
+  destroy() {}
+  getName() { return ""; }
+  addRequest() {}
+  createConnection() { return null; }
+  removeSocket() {}
+  reuseSocket() {}
+  keepSocketAlive() { return false; }
+}
+
 const http = {
   createServer,
   Server,
   IncomingMessage,
   ServerResponse,
   ClientRequest,
-  Agent: function Agent() {},
-  globalAgent: {},
+  Agent,
+  globalAgent: new Agent({ keepAlive: false }),
   STATUS_CODES,
   METHODS,
   request: (opts, cb) => clientRequest("http:", opts, cb),
