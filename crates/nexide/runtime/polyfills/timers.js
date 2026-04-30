@@ -53,17 +53,43 @@
     cb(...args);
   }
 
+  function makeTimeout(id) {
+    const t = Object.create(timeoutProto);
+    t._id = id;
+    return t;
+  }
+  const timeoutProto = {
+    [Symbol.toPrimitive](hint) {
+      return hint === "string" ? String(this._id) : this._id;
+    },
+    valueOf() { return this._id; },
+    toString() { return String(this._id); },
+    ref() { return this; },
+    unref() { return this; },
+    hasRef() { return true; },
+    refresh() { return this; },
+    [Symbol.dispose]() { cancelled.add(this._id); },
+  };
+
+  function idOf(t) {
+    if (t == null) return -1;
+    if (typeof t === "number") return t;
+    if (typeof t === "object" && typeof t._id === "number") return t._id;
+    return -1;
+  }
+
   globalThis.setTimeout = function setTimeout(cb, ms, ...args) {
     if (typeof cb !== "function") {
       throw new TypeError("setTimeout requires a function");
     }
     const id = nextTimerId();
     opTimerSleep(coerceDelay(ms)).then(() => runOnce(id, cb, args));
-    return id;
+    return makeTimeout(id);
   };
 
-  globalThis.clearTimeout = function clearTimeout(id) {
-    if (typeof id === "number") cancelled.add(id);
+  globalThis.clearTimeout = function clearTimeout(t) {
+    const id = idOf(t);
+    if (id >= 0) cancelled.add(id);
   };
 
   globalThis.setInterval = function setInterval(cb, ms, ...args) {
@@ -82,11 +108,12 @@
       opTimerSleep(delay).then(tick);
     };
     opTimerSleep(delay).then(tick);
-    return id;
+    return makeTimeout(id);
   };
 
-  globalThis.clearInterval = function clearInterval(id) {
-    if (typeof id === "number") cancelled.add(id);
+  globalThis.clearInterval = function clearInterval(t) {
+    const id = idOf(t);
+    if (id >= 0) cancelled.add(id);
   };
 
   globalThis.setImmediate = function setImmediate(cb, ...args) {
@@ -97,11 +124,12 @@
     opVoidDeferred().then(() => {
       runOnce(id, cb, args);
     });
-    return id;
+    return makeTimeout(id);
   };
 
-  globalThis.clearImmediate = function clearImmediate(id) {
-    if (typeof id === "number") cancelled.add(id);
+  globalThis.clearImmediate = function clearImmediate(t) {
+    const id = idOf(t);
+    if (id >= 0) cancelled.add(id);
   };
 
   if (typeof globalThis.queueMicrotask !== "function") {

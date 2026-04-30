@@ -151,15 +151,69 @@ const types = {
   isRegExp: (v) => v instanceof RegExp,
   isMap: (v) => v instanceof Map,
   isSet: (v) => v instanceof Set,
+  isWeakMap: (v) => v instanceof WeakMap,
+  isWeakSet: (v) => v instanceof WeakSet,
   isPromise: (v) => v instanceof Promise,
   isArrayBuffer: (v) => v instanceof ArrayBuffer,
+  isSharedArrayBuffer: (v) =>
+    typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer,
+  isDataView: (v) => v instanceof DataView,
   isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
   isUint8Array: (v) => v instanceof Uint8Array,
+  isUint8ClampedArray: (v) => v instanceof Uint8ClampedArray,
+  isUint16Array: (v) => v instanceof Uint16Array,
+  isUint32Array: (v) => v instanceof Uint32Array,
+  isInt8Array: (v) => v instanceof Int8Array,
+  isInt16Array: (v) => v instanceof Int16Array,
+  isInt32Array: (v) => v instanceof Int32Array,
+  isFloat32Array: (v) => v instanceof Float32Array,
+  isFloat64Array: (v) => v instanceof Float64Array,
+  isBigInt64Array: (v) =>
+    typeof BigInt64Array !== "undefined" && v instanceof BigInt64Array,
+  isBigUint64Array: (v) =>
+    typeof BigUint64Array !== "undefined" && v instanceof BigUint64Array,
   isNativeError: (v) => v instanceof Error,
   isAsyncFunction: (v) =>
     typeof v === "function" &&
     v.constructor &&
     v.constructor.name === "AsyncFunction",
+  isGeneratorFunction: (v) =>
+    typeof v === "function" &&
+    v.constructor &&
+    v.constructor.name === "GeneratorFunction",
+  isGeneratorObject: (v) =>
+    !!v &&
+    typeof v === "object" &&
+    typeof v[Symbol.iterator] === "function" &&
+    typeof v.next === "function" &&
+    typeof v.throw === "function" &&
+    typeof v.return === "function",
+  isProxy: () => false,
+  isModuleNamespaceObject: (v) =>
+    !!v && typeof v === "object" && v[Symbol.toStringTag] === "Module",
+  isAnyArrayBuffer: (v) =>
+    v instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
+  isBoxedPrimitive: (v) =>
+    v instanceof Number ||
+    v instanceof String ||
+    v instanceof Boolean ||
+    (typeof Symbol !== "undefined" && Object(Symbol.prototype) === Symbol.prototype && v instanceof Object && Object.prototype.toString.call(v) === "[object Symbol]") ||
+    (typeof BigInt !== "undefined" && Object.prototype.toString.call(v) === "[object BigInt]"),
+  isNumberObject: (v) => v instanceof Number,
+  isStringObject: (v) => v instanceof String,
+  isBooleanObject: (v) => v instanceof Boolean,
+  isSymbolObject: (v) =>
+    typeof v === "object" && v !== null && Object.prototype.toString.call(v) === "[object Symbol]",
+  isBigIntObject: (v) =>
+    typeof v === "object" && v !== null && Object.prototype.toString.call(v) === "[object BigInt]",
+  isExternal: () => false,
+  isMapIterator: (v) =>
+    !!v && Object.prototype.toString.call(v) === "[object Map Iterator]",
+  isSetIterator: (v) =>
+    !!v && Object.prototype.toString.call(v) === "[object Set Iterator]",
+  isArgumentsObject: (v) =>
+    Object.prototype.toString.call(v) === "[object Arguments]",
 };
 
 function parseDebuglogSections() {

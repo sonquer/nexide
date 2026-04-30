@@ -1,0 +1,12 @@
+{
+  "title": "Nexide i18n fixture",
+  "greeting": "Hello, {{name}}!",
+  "intro": "This page is rendered server-side via i18next on nexide.",
+  "polish_marker": "Polish text test",
+  "links": {
+    "utf8": "UTF-8 streaming",
+    "intl": "Intl smoke",
+    "static": "Static prerender"
+  },
+  "amount": "Amount: {{value}}"
+}

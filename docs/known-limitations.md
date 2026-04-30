@@ -85,16 +85,6 @@ path is serialised onto the request loop. For most workloads this is
 invisible; if you have heavy CPU-bound revalidation, scale horizontally
 instead.
 
-## ICU / `Intl` data
-
-V8 is built with `small-icu` (English-only ICU data).
-`Intl.DateTimeFormat`, `Intl.NumberFormat`, `Intl.RelativeTimeFormat`,
-`Intl.Collator` and `Intl.Segmenter` will silently fall back to `en-US`
-for any other locale. If your app uses `next-intl`, `date-fns/locale`,
-or hand-rolled formatters keyed off `Intl`, format the strings on the
-client or precompute them at build time. Full-ICU support is on the
-roadmap.
-
 ## Inspector / debugger protocol
 
 `require('node:inspector')` loads (so deps probing it don't crash) but

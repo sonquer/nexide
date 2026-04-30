@@ -1,0 +1,12 @@
+{
+  "title": "Nexide — fixture i18n",
+  "greeting": "Cześć, {{name}}!",
+  "intro": "Ta strona jest renderowana po stronie serwera przez i18next na nexide.",
+  "polish_marker": "Zażółć gęślą jaźń",
+  "links": {
+    "utf8": "Strumieniowanie UTF-8",
+    "intl": "Test Intl",
+    "static": "Prerender statyczny"
+  },
+  "amount": "Kwota: {{value}}"
+}

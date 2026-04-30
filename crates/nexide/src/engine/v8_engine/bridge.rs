@@ -91,6 +91,7 @@ pub(super) struct BridgeState {
     pub http_responses: HandleTable<HttpResponseSlot>,
     pub child_processes: HandleTable<ChildSlotHandle>,
     pub zlib_streams: HandleTable<ZlibSlot>,
+    pub vm_contexts: HandleTable<v8::Global<v8::Context>>,
 }
 
 impl Default for BridgeState {
@@ -121,6 +122,7 @@ impl Default for BridgeState {
             http_responses: HandleTable::default(),
             child_processes: HandleTable::default(),
             zlib_streams: HandleTable::default(),
+            vm_contexts: HandleTable::default(),
         }
     }
 }

@@ -65,6 +65,19 @@ pub fn prisma_prerequisites_present() -> bool {
     prisma_sqlite_standalone().is_file() && nexide_binary().is_file()
 }
 
+/// Path to the i18n fixture's standalone build output.
+#[must_use]
+pub fn i18n_standalone() -> PathBuf {
+    workspace_root().join("e2e/i18n/.next/standalone/server.js")
+}
+
+/// Returns `true` when the i18n fixture has been built and the
+/// release nexide binary is present.
+#[must_use]
+pub fn i18n_prerequisites_present() -> bool {
+    i18n_standalone().is_file() && nexide_binary().is_file()
+}
+
 /// Pick a free TCP port on the loopback interface. The port is
 /// released immediately, so callers should bind quickly to avoid a
 /// race with another process.
@@ -114,6 +127,20 @@ impl NexideProcess {
     /// # Errors
     /// Same conditions as [`Self::spawn`].
     pub async fn spawn_at(cwd: PathBuf, timeout: Duration) -> Result<Self> {
+        Self::spawn_at_with_env(cwd, timeout, &[]).await
+    }
+
+    /// Same as [`Self::spawn_at`] but applies extra environment
+    /// variables to the child process.  Pass `("LANG", "")` to force
+    /// an empty locale for ICU regression coverage.
+    ///
+    /// # Errors
+    /// Same conditions as [`Self::spawn`].
+    pub async fn spawn_at_with_env(
+        cwd: PathBuf,
+        timeout: Duration,
+        env: &[(&str, &str)],
+    ) -> Result<Self> {
         if !nexide_binary().is_file() {
             bail!("missing release nexide binary; run `cargo build --release`");
         }
@@ -130,6 +157,9 @@ impl NexideProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         let mut child = cmd.spawn().context("spawn nexide")?;
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(drain("nexide.stderr", stderr));

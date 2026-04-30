@@ -26,8 +26,18 @@ use crate::ops::{
 
 static V8_INIT: Once = Once::new();
 
+#[repr(C, align(16))]
+struct IcuData<T: ?Sized>(T);
+
+static ICU_DATA_RAW: &IcuData<[u8]> = &IcuData(*include_bytes!("../../../runtime/icudtl.dat"));
+
+static ICU_DATA: &[u8] = &ICU_DATA_RAW.0;
+
 fn ensure_v8_initialized() {
     V8_INIT.call_once(|| {
+        if let Err(code) = v8::icu::set_common_data_77(ICU_DATA) {
+            panic!("failed to load ICU data into V8: error code {code}");
+        }
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
@@ -190,6 +200,7 @@ impl V8Engine {
             http_responses: super::handle_table::HandleTable::default(),
             child_processes: super::handle_table::HandleTable::default(),
             zlib_streams: super::handle_table::HandleTable::default(),
+            vm_contexts: super::handle_table::HandleTable::default(),
         };
         isolate.set_slot(BridgeStateHandle::new(bridge));
         isolate.set_slot(ModuleMap::new());
