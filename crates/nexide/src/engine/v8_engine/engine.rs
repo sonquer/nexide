@@ -644,4 +644,32 @@ mod tests {
             })
             .await;
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn text_decoder_streams_split_utf8() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let src = r#"
+                  const json = JSON.stringify({"hello":"świecie","poly":"łódź żółć","amount":"1 234 567,89"});
+                  const bytes = new TextEncoder().encode(json);
+                  for (const chunkSize of [1, 2, 3, 5, 7, 11, 13, 17]) {
+                    const td = new TextDecoder("utf-8");
+                    let out = "";
+                    for (let i = 0; i < bytes.length; i += chunkSize) {
+                      out += td.decode(bytes.subarray(i, Math.min(i + chunkSize, bytes.length)), { stream: true });
+                    }
+                    out += td.decode();
+                    if (out !== json) {
+                      throw new Error("mismatch at chunkSize=" + chunkSize + ":\nexpected: " + json + "\ngot:      " + out);
+                    }
+                    JSON.parse(out);
+                  }
+                "#;
+                let file = write_temp(src);
+                let result = V8Engine::boot(file.path()).await;
+                assert!(result.is_ok(), "TextDecoder streaming failed: {:?}", result.err());
+            })
+            .await;
+    }
 }
