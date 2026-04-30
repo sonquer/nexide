@@ -290,7 +290,7 @@ same instance.
 | `readline` / `readline/promises` | functional | line buffering over any Readable; no TTY UI |
 | `child_process`      | core        | `spawn` / `exec` with stdio piping                 |
 | `worker_threads`     | not supported | throws on `new Worker(...)`                      |
-| `vm`                 | core        | `runInNewContext`, `compileFunction`               |
+| `vm`                 | full        | real `v8::Context` per sandbox; not a security boundary |
 | `async_hooks`        | ALS only    | `AsyncLocalStorage` works; full hooks do not       |
 | `perf_hooks`         | core        | monotonic clock, basic marks                       |
 | `timers` / `timers/promises` | full | backed by Tokio                                    |
@@ -313,7 +313,7 @@ same instance.
 
 Nexide is a V8-only Next.js runtime; some Node platform surfaces are
 intentionally absent or partial. The full list — N-API/native addons,
-`http2`, worker threads, ICU, inspector, ESM at runtime, source maps,
+`http2`, worker threads, inspector, ESM at runtime, source maps,
 corporate proxies, log rotation, etc. — lives in
 [`docs/known-limitations.md`](docs/known-limitations.md).
 
