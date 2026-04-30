@@ -32,6 +32,20 @@ class Readable extends EventEmitter {
     return r;
   }
   setEncoding(enc) { this._encoding = enc; return this; }
+  on(event, cb) {
+    super.on(event, cb);
+    if (event === "data" && this._buffer.length) {
+      const replay = this._buffer.slice();
+      queueMicrotask(() => {
+        for (const chunk of replay) cb(chunk);
+        if (this._ended) this.emit("end");
+      });
+    } else if (event === "end" && this._ended) {
+      queueMicrotask(() => this.emit("end"));
+    }
+    return this;
+  }
+  addListener(event, cb) { return this.on(event, cb); }
   push(chunk) {
     if (chunk === null) { this._ended = true; this.emit("end"); return false; }
     this._buffer.push(chunk);
@@ -43,9 +57,19 @@ class Readable extends EventEmitter {
     return this._buffer.shift();
   }
   pipe(dest) {
-    this.on("data", (chunk) => dest.write(chunk));
-    this.on("end", () => dest.end());
-    this.on("error", (err) => dest.destroy(err));
+    if (this._buffer.length) {
+      const replay = this._buffer.slice();
+      this._buffer = [];
+      queueMicrotask(() => {
+        for (const chunk of replay) dest.write(chunk);
+        if (this._ended) dest.end();
+      });
+    } else if (this._ended) {
+      queueMicrotask(() => dest.end());
+    }
+    super.on("data", (chunk) => dest.write(chunk));
+    super.on("end", () => dest.end());
+    super.on("error", (err) => dest.destroy(err));
     return dest;
   }
   destroy(err) {
