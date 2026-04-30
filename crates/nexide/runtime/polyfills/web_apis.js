@@ -70,20 +70,65 @@
         this.encoding = String(label).toLowerCase();
         this.fatal = !!options.fatal;
         this.ignoreBOM = !!options.ignoreBOM;
+        this._pending = null;
+        this._pendingNeed = 0;
       }
-      decode(input) {
-        if (input == null) return "";
-        const u = input instanceof Uint8Array ? input
-          : input.buffer instanceof ArrayBuffer ? new Uint8Array(input.buffer, input.byteOffset || 0, input.byteLength)
-          : new Uint8Array(input);
+      decode(input, options) {
+        const stream = !!(options && options.stream);
+        let u;
+        if (input == null) {
+          u = new Uint8Array(0);
+        } else if (input instanceof Uint8Array) {
+          u = input;
+        } else if (input.buffer instanceof ArrayBuffer) {
+          u = new Uint8Array(input.buffer, input.byteOffset || 0, input.byteLength);
+        } else {
+          u = new Uint8Array(input);
+        }
+
+        let bytes;
+        if (this._pending && this._pending.length > 0) {
+          bytes = new Uint8Array(this._pending.length + u.length);
+          bytes.set(this._pending, 0);
+          bytes.set(u, this._pending.length);
+          this._pending = null;
+          this._pendingNeed = 0;
+        } else {
+          bytes = u;
+        }
+
         let out = "";
-        for (let i = 0; i < u.length;) {
-          let b = u[i++], cp;
-          if (b < 0x80) cp = b;
-          else if ((b & 0xE0) === 0xC0) cp = ((b & 0x1F) << 6) | (u[i++] & 0x3F);
-          else if ((b & 0xF0) === 0xE0) cp = ((b & 0x0F) << 12) | ((u[i++] & 0x3F) << 6) | (u[i++] & 0x3F);
-          else if ((b & 0xF8) === 0xF0) cp = ((b & 0x07) << 18) | ((u[i++] & 0x3F) << 12) | ((u[i++] & 0x3F) << 6) | (u[i++] & 0x3F);
-          else cp = 0xFFFD;
+        let i = 0;
+        const n = bytes.length;
+        while (i < n) {
+          const b = bytes[i];
+          let need;
+          if (b < 0x80) need = 1;
+          else if ((b & 0xE0) === 0xC0) need = 2;
+          else if ((b & 0xF0) === 0xE0) need = 3;
+          else if ((b & 0xF8) === 0xF0) need = 4;
+          else { out += String.fromCharCode(0xFFFD); i += 1; continue; }
+
+          if (i + need > n) {
+            if (stream) {
+              this._pending = bytes.slice(i);
+              this._pendingNeed = need - (n - i);
+              i = n;
+              break;
+            }
+            out += String.fromCharCode(0xFFFD);
+            i = n;
+            break;
+          }
+
+          let cp;
+          if (need === 1) cp = b;
+          else if (need === 2) cp = ((b & 0x1F) << 6) | (bytes[i + 1] & 0x3F);
+          else if (need === 3) cp = ((b & 0x0F) << 12) | ((bytes[i + 1] & 0x3F) << 6) | (bytes[i + 2] & 0x3F);
+          else cp = ((b & 0x07) << 18) | ((bytes[i + 1] & 0x3F) << 12) | ((bytes[i + 2] & 0x3F) << 6) | (bytes[i + 3] & 0x3F);
+
+          i += need;
+
           if (cp > 0xFFFF) {
             cp -= 0x10000;
             out += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
@@ -91,6 +136,13 @@
             out += String.fromCharCode(cp);
           }
         }
+
+        if (!stream && this._pending) {
+          out += String.fromCharCode(0xFFFD);
+          this._pending = null;
+          this._pendingNeed = 0;
+        }
+
         return out;
       }
     }

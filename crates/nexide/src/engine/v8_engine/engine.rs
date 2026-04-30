@@ -31,6 +31,19 @@ fn ensure_v8_initialized() {
         let platform = v8::new_default_platform(0, false).make_shared();
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
+        let preferred = std::env::var("LC_ALL")
+            .ok()
+            .or_else(|| std::env::var("LANG").ok())
+            .and_then(|raw| {
+                let trimmed = raw.split('.').next().unwrap_or("").trim().to_owned();
+                if trimmed.is_empty() || trimmed == "C" || trimmed == "POSIX" {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+            .unwrap_or_else(|| "en_US".to_owned());
+        v8::icu::set_default_locale(&preferred);
     });
 }
 

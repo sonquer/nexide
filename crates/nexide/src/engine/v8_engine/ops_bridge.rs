@@ -1538,6 +1538,28 @@ fn throw_fs_error(scope: &mut v8::PinScope<'_, '_>, err: &crate::ops::FsError) {
     throw_error(scope, &format!("{}: {}", err.code, err.message));
 }
 
+/// Maps a [`std::io::Error`] to a Node-style error `code` (`ENOENT`,
+/// `EACCES`, …). Used by the fallback fs ops where the [`FsHandle`]
+/// is absent and we delegate directly to `std::fs`. Mirrors the same
+/// table as [`crate::ops::FsError::from_io`] so error codes look the
+/// same regardless of whether the sandbox is wired up.
+fn io_error_code(err: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind as K;
+    match err.kind() {
+        K::NotFound => "ENOENT",
+        K::PermissionDenied => "EACCES",
+        K::AlreadyExists => "EEXIST",
+        K::InvalidInput | K::InvalidData => "EINVAL",
+        K::Unsupported => "ENOSYS",
+        _ => "EIO",
+    }
+}
+
+fn map_io_err(err: std::io::Error) -> (&'static str, String) {
+    let code = io_error_code(&err);
+    (code, err.to_string())
+}
+
 fn op_fs_read<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
@@ -1547,7 +1569,7 @@ fn op_fs_read<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.read(&path).map_err(|e| (e.code, e.message))
     } else {
-        std::fs::read(&path).map_err(|e| ("ENOENT", e.to_string()))
+        std::fs::read(&path).map_err(map_io_err)
     };
     match result {
         Ok(bytes) => {
@@ -1571,7 +1593,7 @@ fn op_fs_write<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.write(&path, &data).map_err(|e| (e.code, e.message))
     } else {
-        std::fs::write(&path, &data).map_err(|e| ("EIO", e.to_string()))
+        std::fs::write(&path, &data).map_err(map_io_err)
     };
     if let Err((code, msg)) = result {
         throw_error(scope, &format!("{code}: {msg}"));
@@ -1669,7 +1691,7 @@ fn op_fs_realpath<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.realpath(&path).map_err(|e| (e.code, e.message))
     } else {
-        std::fs::canonicalize(&path).map_err(|e| ("ENOENT", e.to_string()))
+        std::fs::canonicalize(&path).map_err(map_io_err)
     };
     match result {
         Ok(p) => {
@@ -1738,9 +1760,9 @@ fn op_fs_mkdir<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.mkdir(&path, recursive).map_err(|e| (e.code, e.message))
     } else if recursive {
-        std::fs::create_dir_all(&path).map_err(|e| ("EIO", e.to_string()))
+        std::fs::create_dir_all(&path).map_err(map_io_err)
     } else {
-        std::fs::create_dir(&path).map_err(|e| ("EIO", e.to_string()))
+        std::fs::create_dir(&path).map_err(map_io_err)
     };
     if let Err((code, msg)) = result {
         throw_error(scope, &format!("{code}: {msg}"));
@@ -1766,9 +1788,9 @@ fn op_fs_rm<'s>(
             } else {
                 std::fs::remove_dir(p)
             }
-            .map_err(|e| ("EIO", e.to_string()))
+            .map_err(map_io_err)
         } else {
-            std::fs::remove_file(p).map_err(|e| ("EIO", e.to_string()))
+            std::fs::remove_file(p).map_err(map_io_err)
         }
     };
     if let Err((code, msg)) = result {
@@ -1786,9 +1808,7 @@ fn op_fs_copy<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.copy(&src, &dst).map_err(|e| (e.code, e.message))
     } else {
-        std::fs::copy(&src, &dst)
-            .map(|_| ())
-            .map_err(|e| ("EIO", e.to_string()))
+        std::fs::copy(&src, &dst).map(|_| ()).map_err(map_io_err)
     };
     if let Err((code, msg)) = result {
         throw_error(scope, &format!("{code}: {msg}"));
@@ -1804,7 +1824,7 @@ fn op_fs_readlink<'s>(
     let result = if let Some(fs) = fs_handle_for(scope) {
         fs.read_link(&path).map_err(|e| (e.code, e.message))
     } else {
-        std::fs::read_link(&path).map_err(|e| ("ENOENT", e.to_string()))
+        std::fs::read_link(&path).map_err(map_io_err)
     };
     match result {
         Ok(p) => {
