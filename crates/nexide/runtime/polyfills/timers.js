@@ -11,8 +11,17 @@
  *
  * `setImmediate` is a true macrotask: it resolves on the next
  * event-loop tick after the current microtask queue drains. It
- * relies on `op_void_async_deferred`, which Next.js' streaming SSR
- * needs to flush chunks between renders.
+ * uses `op_timer_sleep(0)` so the resume goes through the async-
+ * completion pump (a real macrotask) — same ordering as Node's
+ * libuv "check" phase. This is critical for Next.js streaming SSR:
+ * `createFlightDataInjectionTransformStream` relies on
+ * `atLeastOneTask()` (a Promise wrapping `setImmediate`) to let
+ * the upstream HTML transform fully drain its microtask-queued
+ * chunks BEFORE flight RSC chunks are injected. If `setImmediate`
+ * resolves on a microtask (e.g. via `op_void_async_deferred`),
+ * flight `<script>self.__next_f.push(...)</script>` chunks splice
+ * into the middle of HTML attribute writes (e.g.
+ * `<body class="bg-g<script>...</script>ray-100 ...">`).
  *
  * Cancelled timers are tracked by id in a single `Set`. The
  * implementation is idempotent so the file can safely be evaluated
@@ -121,7 +130,7 @@
       throw new TypeError("setImmediate requires a function");
     }
     const id = nextTimerId();
-    opVoidDeferred().then(() => {
+    opTimerSleep(0).then(() => {
       runOnce(id, cb, args);
     });
     return makeTimeout(id);
