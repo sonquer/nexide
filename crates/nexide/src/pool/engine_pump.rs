@@ -55,7 +55,7 @@ use super::pump_strategy::pump_strategy_from_env;
 use super::worker::{DispatchJob, WorkerError, WorkerHealth};
 use crate::engine::cjs::{FsResolver, ROOT_PARENT};
 use crate::engine::{BootContext, IsolateHandle, V8Engine};
-use crate::ops::{RequestMeta, RequestSlot};
+use crate::ops::{OsEnv, ProcessConfig, RequestMeta, RequestSlot};
 use crate::sandbox_root_for;
 
 /// Boots a fresh [`V8Engine`], starts the JS pump matching the
@@ -85,7 +85,8 @@ pub(super) async fn boot_engine(
             .with_cjs(resolver)
             .with_cjs_root(ROOT_PARENT)
             .with_worker_id(worker_id)
-            .with_fs(crate::ops::FsHandle::real(vec![project_root]));
+            .with_fs(crate::ops::FsHandle::real(vec![project_root]))
+            .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build());
         V8Engine::boot_with(entrypoint, ctx)
             .await
             .map_err(|err| WorkerError::Engine(err.to_string()))?

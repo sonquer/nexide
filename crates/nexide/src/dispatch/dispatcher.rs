@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::errors::DispatchError;
 use crate::engine::cjs::{FsResolver, ROOT_PARENT, default_registry};
 use crate::engine::{BootContext, V8Engine};
-use crate::ops::{HeaderPair, RequestMeta, RequestSlot, ResponsePayload};
+use crate::ops::{HeaderPair, OsEnv, ProcessConfig, RequestMeta, RequestSlot, ResponsePayload};
 use crate::sandbox_root_for;
 
 /// Plain-data view of an HTTP request used to cross thread boundaries.
@@ -171,7 +171,8 @@ async fn run_worker(
     let ctx = BootContext::new()
         .with_cjs(resolver)
         .with_cjs_root(ROOT_PARENT)
-        .with_fs(crate::ops::FsHandle::real(vec![project_root]));
+        .with_fs(crate::ops::FsHandle::real(vec![project_root]))
+        .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build());
 
     let mut engine = match V8Engine::boot_with(&entrypoint, ctx).await {
         Ok(engine) => {

@@ -91,7 +91,17 @@ class IncomingMessage extends Readable {
     this.trailers = Object.create(null);
     this.rawTrailers = [];
     this.complete = false;
-    this.socket = { remoteAddress: undefined, remotePort: undefined };
+    this.socket = {
+      remoteAddress: undefined,
+      remotePort: undefined,
+      setTimeout(_ms, cb) { if (typeof cb === "function") this._timeoutCb = cb; return this; },
+      setNoDelay(_enable) { return this; },
+      setKeepAlive(_enable, _initialDelay) { return this; },
+      ref() { return this; },
+      unref() { return this; },
+      destroy() {},
+      end() {},
+    };
     this.connection = this.socket;
 
     synth.on("data", (chunk) => this.push(chunk));
@@ -466,6 +476,15 @@ class ClientRequest extends Writable {
     const lower = String(name).toLowerCase();
     this._headers = this._headers.filter(([k]) => k.toLowerCase() !== lower);
   }
+
+  setTimeout(_ms, cb) {
+    if (typeof cb === "function") this.once("timeout", cb);
+    return this;
+  }
+
+  setNoDelay(_enable) { return this; }
+
+  setSocketKeepAlive(_enable, _initialDelay) { return this; }
 
   _write(chunk, _encoding, callback) {
     if (chunk === null || chunk === undefined) {

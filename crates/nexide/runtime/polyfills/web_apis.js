@@ -55,10 +55,46 @@
         return new Uint8Array(bytes);
       }
       encodeInto(source, dest) {
-        const enc = this.encode(source);
-        const n = Math.min(enc.length, dest.length);
-        dest.set(enc.subarray(0, n));
-        return { read: source.length, written: n };
+        const s = String(source);
+        const u = dest instanceof Uint8Array ? dest : new Uint8Array(dest.buffer, dest.byteOffset || 0, dest.byteLength);
+        const cap = u.length;
+        let read = 0;
+        let written = 0;
+        for (let i = 0; i < s.length; i++) {
+          let c = s.charCodeAt(i);
+          let advance = 1;
+          if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+            const c2 = s.charCodeAt(i + 1);
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+              c = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+              advance = 2;
+            }
+          }
+          let need;
+          if (c < 0x80) need = 1;
+          else if (c < 0x800) need = 2;
+          else if (c < 0x10000) need = 3;
+          else need = 4;
+          if (written + need > cap) break;
+          if (need === 1) {
+            u[written++] = c;
+          } else if (need === 2) {
+            u[written++] = 0xC0 | (c >> 6);
+            u[written++] = 0x80 | (c & 0x3F);
+          } else if (need === 3) {
+            u[written++] = 0xE0 | (c >> 12);
+            u[written++] = 0x80 | ((c >> 6) & 0x3F);
+            u[written++] = 0x80 | (c & 0x3F);
+          } else {
+            u[written++] = 0xF0 | (c >> 18);
+            u[written++] = 0x80 | ((c >> 12) & 0x3F);
+            u[written++] = 0x80 | ((c >> 6) & 0x3F);
+            u[written++] = 0x80 | (c & 0x3F);
+          }
+          read += advance;
+          if (advance === 2) i++;
+        }
+        return { read: read, written: written };
       }
     }
     globalThis.TextEncoder = TextEncoder;
@@ -85,7 +121,6 @@
         } else {
           u = new Uint8Array(input);
         }
-
         let bytes;
         if (this._pending && this._pending.length > 0) {
           bytes = new Uint8Array(this._pending.length + u.length);
@@ -410,7 +445,15 @@
         this.referrer = init.referrer || "";
         this.bodyUsed = false;
       }
-      get body() { return bodyToReadableStream(this._rawBody); }
+      get body() {
+        if (!this._bodyStream) {
+          Object.defineProperty(this, "_bodyStream", {
+            value: bodyToReadableStream(this._rawBody),
+            writable: true, configurable: true, enumerable: false,
+          });
+        }
+        return this._bodyStream;
+      }
       clone() { return new Request(this.url, this); }
       async arrayBuffer() { return (await consumeBody(this._rawBody)).buffer; }
       async text() { return new TextDecoder().decode(await consumeBody(this._rawBody)); }
@@ -432,7 +475,15 @@
         this.url = "";
         this.bodyUsed = false;
       }
-      get body() { return bodyToReadableStream(this._rawBody); }
+      get body() {
+        if (!this._bodyStream) {
+          Object.defineProperty(this, "_bodyStream", {
+            value: bodyToReadableStream(this._rawBody),
+            writable: true, configurable: true, enumerable: false,
+          });
+        }
+        return this._bodyStream;
+      }
       clone() { return new Response(this._rawBody, { status: this.status, statusText: this.statusText, headers: this.headers }); }
       static error() { const r = new Response(null, { status: 0 }); r.type = "error"; return r; }
       static redirect(url, status = 302) { return new Response(null, { status, headers: { location: url } }); }
@@ -600,7 +651,9 @@
         };
         const controller = {
           enqueue: (chunk) => {
-            if (this._closed || this._cancelled) return;
+            if (this._closed || this._cancelled) {
+              return;
+            }
             this._chunks.push(chunk);
             wakeWaiters();
           },
@@ -653,7 +706,8 @@
             }
             if (stream._error) throw stream._error;
             if (stream._chunks.length > 0) {
-              return { value: stream._chunks.shift(), done: false };
+              const v = stream._chunks.shift();
+              return { value: v, done: false };
             }
             return { value: undefined, done: true };
           },

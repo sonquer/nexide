@@ -42,28 +42,4 @@
       }
     } catch { }
   }
-
-  if (typeof globalThis.JSON === "object" && globalThis.JSON) {
-    const origParse = globalThis.JSON.parse;
-    globalThis.JSON.parse = function parse(text, reviver) {
-      try {
-        return origParse.call(this, text, reviver);
-      } catch (e) {
-        try {
-          const proc = globalThis.process;
-          const enabled = proc && proc.env && proc.env.NEXIDE_DEBUG_JSON === "1";
-          if (enabled) {
-            const s = typeof text === "string" ? text : String(text);
-            const head = s.slice(0, 240).replace(/[\u0000-\u001f\u007f]/g, (c) =>
-              "\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
-            console.error(
-              "[NEXIDE_DEBUG_JSON] JSON.parse failed (len=" + s.length + "): " +
-              e.message + "\n  head=" + head
-            );
-          }
-        } catch { }
-        throw e;
-      }
-    };
-  }
 })();

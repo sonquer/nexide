@@ -88,7 +88,9 @@ impl EnvOverlay {
 /// constructing the visibility whitelist. Kept as constants so the
 /// list is easy to audit and extend.
 const DEFAULT_PREFIXES: &[&str] = &["NEXT_", "NODE_", "NEXT_PUBLIC_", "NEXIDE_"];
-const DEFAULT_KEYS: &[&str] = &["TZ", "LANG", "LC_ALL", "PATH", "HOME", "PWD"];
+const DEFAULT_KEYS: &[&str] = &[
+    "TZ", "LANG", "LC_ALL", "PATH", "HOME", "PWD", "PORT", "HOSTNAME",
+];
 
 /// Read-only view over an environment variable backend.
 ///
