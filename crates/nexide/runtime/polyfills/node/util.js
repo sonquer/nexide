@@ -13,18 +13,40 @@ function format(fmt, ...args) {
     const c = fmt[j];
     if (c === "%" && j + 1 < fmt.length) {
       const next = fmt[++j];
-      if (i >= args.length) { out += "%" + next; continue; }
+      if (i >= args.length) {
+        out += "%" + next;
+        continue;
+      }
       const a = args[i++];
       switch (next) {
-        case "s": out += String(a); break;
+        case "s":
+          out += String(a);
+          break;
         case "d":
-        case "i": out += String(Math.trunc(Number(a))); break;
-        case "f": out += String(Number(a)); break;
-        case "j": try { out += JSON.stringify(a); } catch { out += "[Circular]"; } break;
+        case "i":
+          out += String(Math.trunc(Number(a)));
+          break;
+        case "f":
+          out += String(Number(a));
+          break;
+        case "j":
+          try {
+            out += JSON.stringify(a);
+          } catch {
+            out += "[Circular]";
+          }
+          break;
         case "o":
-        case "O": out += inspect(a); break;
-        case "%": out += "%"; i--; break;
-        default: out += "%" + next; i--;
+        case "O":
+          out += inspect(a);
+          break;
+        case "%":
+          out += "%";
+          i--;
+          break;
+        default:
+          out += "%" + next;
+          i--;
       }
     } else {
       out += c;
@@ -42,7 +64,8 @@ function inspect(value, depth) {
     if (v === undefined) return "undefined";
     const t = typeof v;
     if (t === "string") return JSON.stringify(v);
-    if (t === "number" || t === "boolean" || t === "bigint" || t === "symbol") return String(v);
+    if (t === "number" || t === "boolean" || t === "bigint" || t === "symbol")
+      return String(v);
     if (t === "function") return `[Function: ${v.name || "anonymous"}]`;
     if (v instanceof Date) return v.toISOString();
     if (v instanceof RegExp) return v.toString();
@@ -51,7 +74,8 @@ function inspect(value, depth) {
     if (seen.has(v)) return "[Circular]";
     seen.add(v);
     if (d < 0) return Array.isArray(v) ? "[Array]" : "[Object]";
-    if (Array.isArray(v)) return "[ " + v.map((x) => go(x, d - 1)).join(", ") + " ]";
+    if (Array.isArray(v))
+      return "[ " + v.map((x) => go(x, d - 1)).join(", ") + " ]";
     const keys = Object.keys(v);
     return "{ " + keys.map((k) => `${k}: ${go(v[k], d - 1)}`).join(", ") + " }";
   }
@@ -78,29 +102,41 @@ function callbackify(fn) {
   }
   return function (...args) {
     const cb = args.pop();
-    if (typeof cb !== "function") throw new TypeError("Last argument must be a callback");
+    if (typeof cb !== "function")
+      throw new TypeError("Last argument must be a callback");
     Promise.resolve()
       .then(() => fn.apply(this, args))
-      .then((value) => cb(null, value), (err) => cb(err || new Error("Promise rejected")));
+      .then(
+        (value) => cb(null, value),
+        (err) => cb(err || new Error("Promise rejected")),
+      );
   };
 }
 
 function inherits(ctor, superCtor) {
-  if (ctor === undefined || ctor === null) throw new TypeError("ctor is required");
-  if (superCtor === undefined || superCtor === null) throw new TypeError("superCtor is required");
+  if (ctor === undefined || ctor === null)
+    throw new TypeError("ctor is required");
+  if (superCtor === undefined || superCtor === null)
+    throw new TypeError("superCtor is required");
   Object.defineProperty(ctor, "super_", { value: superCtor });
   Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
 }
 
 function isDeepStrictEqual(a, b) {
   if (a === b) return true;
-  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  ) {
     return Number.isNaN(a) && Number.isNaN(b);
   }
   if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
   if (Array.isArray(a)) {
     if (!Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!isDeepStrictEqual(a[i], b[i])) return false;
+    for (let i = 0; i < a.length; i++)
+      if (!isDeepStrictEqual(a[i], b[i])) return false;
     return true;
   }
   const ka = Object.keys(a);
@@ -120,11 +156,68 @@ const types = {
   isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
   isUint8Array: (v) => v instanceof Uint8Array,
   isNativeError: (v) => v instanceof Error,
-  isAsyncFunction: (v) => typeof v === "function" && v.constructor && v.constructor.name === "AsyncFunction",
+  isAsyncFunction: (v) =>
+    typeof v === "function" &&
+    v.constructor &&
+    v.constructor.name === "AsyncFunction",
 };
+
+function parseDebuglogSections() {
+  const raw =
+    (typeof globalThis.process !== "undefined" &&
+      globalThis.process &&
+      globalThis.process.env &&
+      globalThis.process.env.NODE_DEBUG) ||
+    "";
+  if (!raw) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function debuglogEnabled(section) {
+  const wanted = String(section || "").toLowerCase();
+  if (!wanted) return false;
+  const sections = parseDebuglogSections();
+  for (const s of sections) {
+    if (s === "*" || s === wanted) return true;
+    if (s.endsWith("*") && wanted.startsWith(s.slice(0, -1))) return true;
+  }
+  return false;
+}
+
+function debuglog(section, callback) {
+  let enabled = debuglogEnabled(section);
+  const tag = String(section || "").toUpperCase();
+  const fn = function debuglogFn(...args) {
+    if (!enabled) return;
+    const msg = format(...args);
+    try {
+      console.error(`${tag} ${msg}`);
+    } catch {
+      // Node contract: util.debuglog must never throw, even if the
+      // underlying stderr write fails (closed pipe, sandbox, etc).
+    }
+  };
+  fn.enabled = enabled;
+  if (typeof callback === "function") {
+    // Legacy lazy-init hook (Node >=14): swallow user errors so a
+    // buggy callback in third-party code can't crash the runtime.
+    try {
+      callback(fn);
+    } catch {
+      /* see comment above */
+    }
+  }
+  return fn;
+}
+
+const debug = debuglog;
 
 module.exports = {
   format,
+  formatWithOptions: (_opts, ...args) => format(...args),
   inspect,
   promisify,
   callbackify,
@@ -134,4 +227,10 @@ module.exports = {
   TextEncoder: globalThis.TextEncoder,
   TextDecoder: globalThis.TextDecoder,
   deprecate: (fn) => fn,
+  debuglog,
+  debug,
+  stripVTControlCharacters: (s) =>
+    typeof s === "string" ? s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "") : s,
+  getSystemErrorName: (errno) =>
+    `E${typeof errno === "number" ? errno : "UNKNOWN"}`,
 };

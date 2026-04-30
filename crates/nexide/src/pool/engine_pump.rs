@@ -80,11 +80,12 @@ pub(super) async fn boot_engine(
             .map_err(|err| WorkerError::Engine(err.to_string()))?;
         let registry = Arc::new(registry);
         let project_root = sandbox_root_for(entrypoint);
-        let resolver = Arc::new(FsResolver::new(vec![project_root], registry));
+        let resolver = Arc::new(FsResolver::new(vec![project_root.clone()], registry));
         let ctx = BootContext::new()
             .with_cjs(resolver)
             .with_cjs_root(ROOT_PARENT)
-            .with_worker_id(worker_id);
+            .with_worker_id(worker_id)
+            .with_fs(crate::ops::FsHandle::real(vec![project_root]));
         V8Engine::boot_with(entrypoint, ctx)
             .await
             .map_err(|err| WorkerError::Engine(err.to_string()))?
