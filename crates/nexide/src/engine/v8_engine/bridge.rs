@@ -21,11 +21,13 @@ use crate::ops::{DispatchTable, EnvOverlay, FsHandle, ProcessConfig, RequestQueu
 
 pub(crate) type NapiWorkItem = Box<dyn FnOnce(&mut v8::PinScope<'_, '_>) + Send + 'static>;
 
-/// TCP socket entry: shared, async-locked stream so reads and writes
-/// from JS land on the same FD without racing. `Rc` because each
-/// isolate is single-threaded; `tokio::sync::Mutex` because read /
-/// write futures must be awaited.
-pub(super) type TcpStreamSlot = std::rc::Rc<tokio::sync::Mutex<tokio::net::TcpStream>>;
+/// TCP socket entry: shared TcpStream — `Rc` because each isolate is
+/// single-threaded. No `Mutex` needed: `tokio::net::TcpStream`'s I/O
+/// methods (`readable`/`try_read`/`writable`/`try_write`) take `&self`
+/// and tolerate concurrent read+write from the same task, which is
+/// required so a pending read does not block an outgoing write on the
+/// same FD (Node's net.Socket semantics).
+pub(super) type TcpStreamSlot = std::rc::Rc<tokio::net::TcpStream>;
 
 /// TCP listener entry: shared so multiple `accept` ops can target
 /// the same listener concurrently if the JS code chooses to.

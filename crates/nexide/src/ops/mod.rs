@@ -56,7 +56,7 @@ pub use request::{
 pub use response::{ResponseError, ResponseHead, ResponsePayload, ResponseSink, ResponseSlot};
 pub use tls::{
     connect as tls_connect, read_chunk as tls_read_chunk, shutdown as tls_shutdown,
-    write_all as tls_write_all,
+    upgrade as tls_upgrade, write_all as tls_write_all,
 };
 pub use zlib_stream::{ZlibKind, ZlibStream, parse_kind as parse_zlib_kind};
 

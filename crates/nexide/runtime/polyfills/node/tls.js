@@ -144,11 +144,26 @@ function connect(...args) {
     cb = args.find((a) => typeof a === "function") || null;
     opts = { port, host };
   }
-  const host = opts.host || opts.servername || "127.0.0.1";
-  const port = opts.port;
-  if (typeof port !== "number") throw new TypeError("tls.connect: port required");
+  const host = opts.servername || opts.host || "127.0.0.1";
   const sock = new TLSSocket();
   if (cb) sock.once("secureConnect", cb);
+  if (opts.socket && typeof opts.socket._id === "number" && opts.socket._id > 0) {
+    const inner = opts.socket;
+    const innerId = inner._id;
+    inner._id = 0;
+    inner._readable = false;
+    inner._writable = false;
+    inner._paused = true;
+    inner.destroyed = true;
+    ops.op_tls_upgrade(innerId, String(host)).then(
+      (handle) => sock._adoptHandle(handle),
+      (err) => { sock.destroyed = true; sock.emit("error", err); },
+    );
+    return sock;
+  }
+
+  const port = opts.port;
+  if (typeof port !== "number") throw new TypeError("tls.connect: port required");
   ops.op_tls_connect(String(host), port).then(
     (handle) => sock._adoptHandle(handle),
     (err) => { sock.destroyed = true; sock.emit("error", err); },

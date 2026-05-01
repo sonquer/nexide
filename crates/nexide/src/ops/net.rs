@@ -9,7 +9,6 @@
 use std::io;
 use std::net::SocketAddr;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 /// Node-shaped error: a string code (`ECONNREFUSED`, `ENOTFOUND`,
@@ -122,19 +121,43 @@ pub async fn accept(
 
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on
 /// EOF - JavaScript can detect the half-close by checking `len === 0`.
-pub async fn read_chunk(stream: &mut TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
+///
+/// Uses `readable().await` + `try_read` so reading does not require
+/// exclusive ownership of the stream and concurrent writes can make
+/// progress on the same FD (Node's net.Socket semantics).
+pub async fn read_chunk(stream: &TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
     let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];
-    let n = stream.read(&mut buf).await?;
-    buf.truncate(n);
-    Ok(buf)
+    loop {
+        stream.readable().await?;
+        match stream.try_read(&mut buf) {
+            Ok(n) => {
+                buf.truncate(n);
+                return Ok(buf);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// Writes `data` to `stream`, flushing the kernel send buffer. Node
 /// callers only ever observe a successful write or a definitive
 /// failure; partial writes are masked by the loop.
-pub async fn write_all(stream: &mut TcpStream, data: &[u8]) -> Result<(), NetError> {
-    stream.write_all(data).await?;
+///
+/// Uses `writable().await` + `try_write` so writing does not require
+/// exclusive ownership of the stream and concurrent reads can make
+/// progress on the same FD.
+pub async fn write_all(stream: &TcpStream, data: &[u8]) -> Result<(), NetError> {
+    let mut written = 0usize;
+    while written < data.len() {
+        stream.writable().await?;
+        match stream.try_write(&data[written..]) {
+            Ok(n) => written += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
     Ok(())
 }
 
@@ -147,11 +170,11 @@ mod tests {
         let (listener, addr) = listen("127.0.0.1", 0).await.expect("listen");
         let port = addr.port;
         let server = tokio::spawn(async move {
-            let (mut s, _, _) = accept(&listener).await.expect("accept");
-            write_all(&mut s, b"hello").await.expect("write");
+            let (s, _, _) = accept(&listener).await.expect("accept");
+            write_all(&s, b"hello").await.expect("write");
         });
-        let (mut client, _, _) = connect("127.0.0.1", port).await.expect("connect");
-        let chunk = read_chunk(&mut client, 64).await.expect("read");
+        let (client, _, _) = connect("127.0.0.1", port).await.expect("connect");
+        let chunk = read_chunk(&client, 64).await.expect("read");
         assert_eq!(chunk, b"hello");
         server.await.expect("join");
     }

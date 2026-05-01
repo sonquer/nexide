@@ -48,6 +48,31 @@ fn tls_error(err: &io::Error) -> NetError {
     mapped
 }
 
+/// Upgrades an existing TCP stream to TLS by performing a client
+/// handshake over it. Used for protocols that negotiate TLS over a
+/// plain TCP connection (e.g. PostgreSQL `SSLRequest`, SMTP
+/// `STARTTLS`, IMAP/POP3 `STARTTLS`).
+///
+/// # Errors
+/// Returns `NetError` if the underlying socket address cannot be
+/// queried or the TLS handshake fails (handshake errors are mapped
+/// to canonical Node codes via [`tls_error`]).
+pub async fn upgrade(
+    tcp: TcpStream,
+    host: &str,
+) -> Result<(TlsStream<TcpStream>, AddressInfo, AddressInfo), NetError> {
+    let local = tcp.local_addr().map_err(|e| tls_error(&e))?;
+    let remote = tcp.peer_addr().map_err(|e| tls_error(&e))?;
+    let server_name = ServerName::try_from(host.to_owned())
+        .map_err(|_| NetError::new("ERR_INVALID_HOSTNAME", format!("invalid host {host}")))?;
+    let connector = TlsConnector::from(shared_config());
+    let stream = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| tls_error(&e))?;
+    Ok((stream, local.into(), remote.into()))
+}
+
 /// Performs a TLS client handshake against `host:port` and returns
 /// the live stream plus address info pulled from the underlying TCP
 /// socket.
@@ -64,16 +89,7 @@ pub async fn connect(
     let tcp = TcpStream::connect(&target)
         .await
         .map_err(|e| tls_error(&e))?;
-    let local = tcp.local_addr().map_err(|e| tls_error(&e))?;
-    let remote = tcp.peer_addr().map_err(|e| tls_error(&e))?;
-    let server_name = ServerName::try_from(host.to_owned())
-        .map_err(|_| NetError::new("ERR_INVALID_HOSTNAME", format!("invalid host {host}")))?;
-    let connector = TlsConnector::from(shared_config());
-    let stream = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|e| tls_error(&e))?;
-    Ok((stream, local.into(), remote.into()))
+    upgrade(tcp, host).await
 }
 
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on

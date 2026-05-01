@@ -222,6 +222,7 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_net_set_keepalive", op_net_set_keepalive);
 
     install_fn(scope, ops, "op_tls_connect", op_tls_connect);
+    install_fn(scope, ops, "op_tls_upgrade", op_tls_upgrade);
     install_fn(scope, ops, "op_tls_read", op_tls_read);
     install_fn(scope, ops, "op_tls_write", op_tls_write);
     install_fn(scope, ops, "op_tls_close", op_tls_close);
@@ -2671,7 +2672,7 @@ fn op_net_connect<'s>(
         let result = crate::ops::net_connect(&host, port).await;
         let settler: super::async_ops::Settler = match result {
             Ok((stream, local, remote)) => {
-                let slot = std::rc::Rc::new(tokio::sync::Mutex::new(stream));
+                let slot = std::rc::Rc::new(stream);
                 let id = table.insert(slot);
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
@@ -2760,7 +2761,7 @@ fn op_net_accept<'s>(
     tokio::task::spawn_local(async move {
         let settler: super::async_ops::Settler = match crate::ops::net_accept(&listener).await {
             Ok((stream, local, remote)) => {
-                let slot = std::rc::Rc::new(tokio::sync::Mutex::new(stream));
+                let slot = std::rc::Rc::new(stream);
                 let id = streams.insert(slot);
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
@@ -2808,10 +2809,7 @@ fn op_net_read<'s>(
     };
 
     tokio::task::spawn_local(async move {
-        let result = {
-            let mut guard = slot.lock().await;
-            crate::ops::net_read_chunk(&mut guard, max).await
-        };
+        let result = crate::ops::net_read_chunk(&slot, max).await;
         let settler: super::async_ops::Settler = match result {
             Ok(bytes) => Box::new(move |scope, resolver| {
                 let store = v8::ArrayBuffer::new_backing_store_from_vec(bytes).make_shared();
@@ -2857,10 +2855,7 @@ fn op_net_write<'s>(
     };
 
     tokio::task::spawn_local(async move {
-        let result = {
-            let mut guard = slot.lock().await;
-            crate::ops::net_write_all(&mut guard, &data).await
-        };
+        let result = crate::ops::net_write_all(&slot, &data).await;
         let settler: super::async_ops::Settler = match result {
             Ok(()) => Box::new(move |scope, resolver| {
                 let undef = v8::undefined(scope);
@@ -2907,13 +2902,7 @@ fn op_net_set_nodelay<'s>(
     let handle = from_isolate(scope);
     let streams = handle.0.borrow().net_streams.clone();
     let applied = streams
-        .with(stream_id, |slot| {
-            if let Ok(guard) = slot.try_lock() {
-                guard.set_nodelay(enable).is_ok()
-            } else {
-                false
-            }
-        })
+        .with(stream_id, |slot| slot.set_nodelay(enable).is_ok())
         .unwrap_or(false);
     let result = v8::Boolean::new(scope, applied);
     rv.set(result.into());
@@ -2968,6 +2957,76 @@ fn op_tls_connect<'s>(
         let settler: super::async_ops::Settler = match crate::ops::tls_connect(&host, port).await {
             Ok((stream, local, remote)) => {
                 let id = table.insert(std::rc::Rc::new(tokio::sync::Mutex::new(stream)));
+                Box::new(move |scope, resolver| {
+                    let obj = v8::Object::new(scope);
+                    let id_key = v8::String::new(scope, "id").unwrap();
+                    let id_val = v8::Number::new(scope, f64::from(id));
+                    obj.set(scope, id_key.into(), id_val.into());
+                    let local_obj = make_address_obj(scope, &local);
+                    let local_key = v8::String::new(scope, "local").unwrap();
+                    obj.set(scope, local_key.into(), local_obj.into());
+                    let remote_obj = make_address_obj(scope, &remote);
+                    let remote_key = v8::String::new(scope, "remote").unwrap();
+                    obj.set(scope, remote_key.into(), remote_obj.into());
+                    resolver.resolve(scope, obj.into());
+                })
+            }
+            Err(err) => net_settler_err(err),
+        };
+        let _ = tx.send(super::async_ops::Completion::new(global, settler));
+    });
+    rv.set(promise.into());
+}
+
+/// Upgrades an existing `op_net_connect` socket (identified by its
+/// JS-side handle id) to TLS, performing a client handshake on top
+/// of the live TCP stream. Mirrors `tls.connect({ socket })` semantics
+/// from `node:tls`, which protocols like PostgreSQL `SSLRequest`,
+/// SMTP `STARTTLS` and IMAP/POP3 `STARTTLS` rely on. Removes the
+/// entry from `net_streams` on success; the JS Socket handle becomes
+/// invalid and must not be used afterwards.
+fn op_tls_upgrade<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let net_id = args.get(0).uint32_value(scope).unwrap_or(0);
+    let host = args.get(1).to_rust_string_lossy(scope);
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        rv.set_undefined();
+        return;
+    };
+    let promise = resolver.get_promise(scope);
+    let global = v8::Global::new(scope, resolver);
+    let handle = from_isolate(scope);
+    let tx = handle.0.borrow().async_completions_tx.clone();
+    let net_streams = handle.0.borrow().net_streams.clone();
+    let tls_streams = handle.0.borrow().tls_streams.clone();
+
+    let Some(slot) = net_streams.take(net_id) else {
+        let err = NetError::new("EBADF", "net stream has been closed");
+        reject_net(scope, v8::Local::new(scope, &global), &err);
+        rv.set(promise.into());
+        return;
+    };
+
+    tokio::task::spawn_local(async move {
+        let stream = match std::rc::Rc::try_unwrap(slot) {
+            Ok(s) => s,
+            Err(_rc) => {
+                let err = NetError::new(
+                    "EBUSY",
+                    "net stream still has outstanding I/O; cannot upgrade to TLS",
+                );
+                let settler = net_settler_err(err);
+                let _ = tx.send(super::async_ops::Completion::new(global, settler));
+                return;
+            }
+        };
+        let result = crate::ops::tls_upgrade(stream, &host).await;
+        let settler: super::async_ops::Settler = match result {
+            Ok((tls, local, remote)) => {
+                let id = tls_streams.insert(std::rc::Rc::new(tokio::sync::Mutex::new(tls)));
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
                     let id_key = v8::String::new(scope, "id").unwrap();

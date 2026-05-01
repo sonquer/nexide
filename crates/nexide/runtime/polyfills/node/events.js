@@ -74,6 +74,17 @@ EventEmitter.prototype._addListener = function _addListener(type, listener, prep
     this._events = Object.create(null);
     this._eventsCount = 0;
   }
+  // Node fires `newListener` BEFORE the listener is registered so the
+  // handler observes the pre-add state. We unwrap `once` wrappers so
+  // the user-visible function is reported, matching upstream behavior
+  // (see lib/events.js `emit('newListener', ...)`).
+  if (this._events.newListener !== undefined) {
+    this.emit("newListener", type, listener.listener ? listener.listener : listener);
+    if (!this._events) {
+      this._events = Object.create(null);
+      this._eventsCount = 0;
+    }
+  }
   const existing = this._events[type];
   if (!existing) {
     this._events[type] = listener;
@@ -126,7 +137,9 @@ EventEmitter.prototype.removeListener = function removeListener(type, listener) 
   if (!events) return this;
   const existing = events[type];
   if (!existing) return this;
+  let removed = null;
   if (existing === listener || existing.listener === listener) {
+    removed = existing.listener || existing;
     delete events[type];
     this._eventsCount--;
   } else if (Array.isArray(existing)) {
@@ -138,12 +151,16 @@ EventEmitter.prototype.removeListener = function removeListener(type, listener) 
       }
     }
     if (position < 0) return this;
+    removed = existing[position].listener || existing[position];
     if (existing.length === 1) {
       delete events[type];
       this._eventsCount--;
     } else {
       existing.splice(position, 1);
     }
+  }
+  if (removed && events.removeListener !== undefined) {
+    this.emit("removeListener", type, removed);
   }
   return this;
 };
