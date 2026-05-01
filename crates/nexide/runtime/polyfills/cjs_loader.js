@@ -33,7 +33,15 @@
   }
 
   function compileWrapper(source, specifier) {
-    const fn = ops.op_cjs_compile_function(source, specifier);
+    let fn;
+    try {
+      fn = ops.op_cjs_compile_function(source, specifier);
+    } catch (err) {
+      if (err && typeof err.message === "string") {
+        err.message = err.message + " (compiling " + specifier + ")";
+      }
+      throw err;
+    }
     return function (exports, require, module, __filename, __dirname) {
       moduleStack.push(specifier);
       try {
@@ -129,9 +137,33 @@
     } else {
       parent = ops.op_cjs_root_parent();
     }
-    const exports = loadModule(parent, specifier);
-    return buildNamespace(exports);
+    if (typeof ops.op_esm_dynamic_import === "function") {
+      try {
+        return ops.op_esm_dynamic_import(specifier, parent);
+      } catch (err) {
+        return Promise.reject(tagError(err));
+      }
+    }
+    try {
+      const exports = loadModule(parent, specifier);
+      return Promise.resolve(buildNamespace(exports));
+    } catch (err) {
+      return Promise.reject(tagError(err));
+    }
   }
+
+  Object.defineProperty(globalThis, "__nexideEsm", {
+    value: Object.freeze({
+      chain: function (evalPromise, namespace) {
+        return Promise.resolve(evalPromise).then(function () {
+          return namespace;
+        });
+      },
+    }),
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
 
   Object.defineProperty(globalThis, "__nexideCjs", {
     value: {

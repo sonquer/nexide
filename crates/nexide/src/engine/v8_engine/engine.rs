@@ -473,7 +473,7 @@ fn eval_script<'s>(
     Ok(())
 }
 
-fn load_and_run_entrypoint<'s>(
+pub(super) fn load_and_run_entrypoint<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     entry: &Path,
 ) -> Result<(), EngineError> {
@@ -507,7 +507,7 @@ fn load_and_run_entrypoint<'s>(
     Ok(())
 }
 
-fn compile_module<'s>(
+pub(super) fn compile_module<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     path: &Path,
 ) -> Result<v8::Local<'s, v8::Module>, EngineError> {
@@ -548,12 +548,14 @@ fn compile_module<'s>(
 }
 
 /// Returns `Some(&mut ModuleMap)` from the isolate's slot store.
-fn get_module_map_mut<'s, 'a>(scope: &'a mut v8::PinScope<'s, '_>) -> Option<&'a mut ModuleMap> {
+pub(super) fn get_module_map_mut<'s, 'a>(
+    scope: &'a mut v8::PinScope<'s, '_>,
+) -> Option<&'a mut ModuleMap> {
     scope.get_slot_mut::<ModuleMap>()
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn resolve_module_callback<'s>(
+pub(super) fn resolve_module_callback<'s>(
     context: v8::Local<'s, v8::Context>,
     specifier: v8::Local<'s, v8::String>,
     _import_attributes: v8::Local<'s, v8::FixedArray>,
@@ -563,6 +565,21 @@ fn resolve_module_callback<'s>(
 
     let specifier_str = specifier.to_rust_string_lossy(scope);
     let referrer_hash = referrer.get_identity_hash().get();
+
+    // Fast path: ESM loader pre-resolved this dependency and stored
+    // the absolute key path in the module map.
+    let resolved_key: Option<PathBuf> = scope.get_slot::<ModuleMap>().and_then(|m| {
+        m.lookup_resolution(referrer_hash, &specifier_str)
+            .map(Path::to_path_buf)
+    });
+    if let Some(key) = resolved_key {
+        let cached: Option<v8::Global<v8::Module>> = scope
+            .get_slot::<ModuleMap>()
+            .and_then(|m: &ModuleMap| m.get(&key).cloned());
+        if let Some(g) = cached {
+            return Some(v8::Local::new(scope, &g));
+        }
+    }
 
     let parent_path: Option<PathBuf> = scope
         .get_slot::<ModuleMap>()
@@ -591,20 +608,24 @@ fn resolve_module_callback<'s>(
     }
 }
 
-fn throw_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
+pub(super) fn throw_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
     let msg = v8::String::new(scope, message).unwrap();
     let exc = v8::Exception::error(scope, msg);
     scope.throw_exception(exc);
 }
 
 /// V8 host hook for `import(specifier)` expressions. Bridges to the
-/// CommonJS loader (`globalThis.__nexideCjs.dynamicImport`) so that
-/// dynamic imports of bare specifiers and `node:` builtins resolve
-/// the same way `require()` does, then wraps the resulting CJS
-/// `module.exports` in a synthetic ES-module-namespace-shaped object.
+/// real ESM loader in [`super::esm`] which:
 ///
-/// Failures are returned as a rejected Promise (matching Node.js
-/// behaviour: dynamic import is async even when the loader is sync).
+/// * resolves the specifier with ESM conditions,
+/// * compiles + instantiates real `.mjs` graphs,
+/// * wraps any CJS dependency as a synthetic V8 module (default
+///   export = `module.exports`),
+/// * settles the returned promise with the module namespace once the
+///   evaluate promise (top-level await aware) fulfils.
+///
+/// CJS-only callers fall through to `__nexideCjs.dynamicImport` via
+/// the `op_esm_dynamic_import` op the JS shim invokes.
 fn host_import_module_dynamically<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     _host_defined_options: v8::Local<'s, v8::Data>,
@@ -612,47 +633,13 @@ fn host_import_module_dynamically<'s>(
     specifier: v8::Local<'s, v8::String>,
     _import_attributes: v8::Local<'s, v8::FixedArray>,
 ) -> Option<v8::Local<'s, v8::Promise>> {
-    let resolver = v8::PromiseResolver::new(scope)?;
-    let promise = resolver.get_promise(scope);
-
-    let context = scope.get_current_context();
-    let global = context.global(scope);
-    let cjs_key = v8::String::new(scope, "__nexideCjs")?;
-    let cjs_val = global.get(scope, cjs_key.into())?;
-    let Ok(cjs_obj) = v8::Local::<v8::Object>::try_from(cjs_val) else {
-        let msg = v8::String::new(scope, "dynamic import: CJS loader unavailable")?;
-        let err = v8::Exception::error(scope, msg);
-        resolver.reject(scope, err);
-        return Some(promise);
-    };
-
-    let fn_key = v8::String::new(scope, "dynamicImport")?;
-    let fn_val = cjs_obj.get(scope, fn_key.into())?;
-    let Ok(import_fn) = v8::Local::<v8::Function>::try_from(fn_val) else {
-        let msg = v8::String::new(scope, "dynamic import: __nexideCjs.dynamicImport missing")?;
-        let err = v8::Exception::error(scope, msg);
-        resolver.reject(scope, err);
-        return Some(promise);
-    };
-
-    let referrer: v8::Local<v8::Value> = if resource_name.is_string() {
-        resource_name
+    let specifier_str = specifier.to_rust_string_lossy(scope);
+    let referrer_str = if resource_name.is_string() {
+        Some(resource_name.to_rust_string_lossy(scope))
     } else {
-        v8::undefined(scope).into()
+        None
     };
-
-    v8::tc_scope!(let tc, scope);
-    let recv: v8::Local<v8::Value> = cjs_obj.into();
-    let args = [specifier.into(), referrer];
-    match import_fn.call(tc, recv, &args) {
-        Some(value) => {
-            resolver.resolve(tc, value);
-        }
-        None => {
-            let exception = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-            resolver.reject(tc, exception);
-        }
-    }
+    let promise = super::esm::do_esm_dynamic_import(scope, &specifier_str, referrer_str.as_deref());
     Some(promise)
 }
 

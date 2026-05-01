@@ -94,6 +94,12 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
         op_cjs_compile_function,
     );
     install_fn(scope, ops, "op_napi_load", op_napi_load);
+    install_fn(
+        scope,
+        ops,
+        "op_esm_dynamic_import",
+        super::esm::op_esm_dynamic_import,
+    );
 
     install_fn(scope, ops, "op_os_arch", op_os_arch);
     install_fn(scope, ops, "op_os_platform", op_os_platform);

@@ -14,4 +14,4 @@ mod resolver;
 pub use builtins::{default_registry, register_node_builtins};
 pub use errors::CjsError;
 pub use registry::{BuiltinModule, BuiltinRegistry};
-pub use resolver::{CjsResolver, FsResolver, ROOT_PARENT, Resolved};
+pub use resolver::{CjsResolver, FsResolver, ROOT_PARENT, Resolved, is_esm_path};
