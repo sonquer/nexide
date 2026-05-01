@@ -14,6 +14,7 @@
 
   const ops = Nexide.core.ops;
   const cache = new Map();
+  const moduleStack = [];
 
   function dirnameOf(spec) {
     if (typeof spec !== "string" || spec.length === 0) return "";
@@ -37,7 +38,15 @@
       source +
       "\n})\n//# sourceURL=" +
       specifier;
-    return (0, eval)(wrapper);
+    const fn = (0, eval)(wrapper);
+    return function (exports, require, module, __filename, __dirname) {
+      moduleStack.push(specifier);
+      try {
+        return fn(exports, require, module, __filename, __dirname);
+      } finally {
+        moduleStack.pop();
+      }
+    };
   }
 
   function makeRequire(parent) {
@@ -117,9 +126,14 @@
   }
 
   function dynamicImport(specifier, referrer) {
-    const parent = (typeof referrer === "string" && referrer.length > 0)
-      ? referrer
-      : ops.op_cjs_root_parent();
+    let parent;
+    if (typeof referrer === "string" && referrer.length > 0) {
+      parent = referrer;
+    } else if (moduleStack.length > 0) {
+      parent = moduleStack[moduleStack.length - 1];
+    } else {
+      parent = ops.op_cjs_root_parent();
+    }
     const exports = loadModule(parent, specifier);
     return buildNamespace(exports);
   }

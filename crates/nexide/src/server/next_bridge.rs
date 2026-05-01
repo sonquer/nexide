@@ -58,9 +58,10 @@ where
 {
     async fn handle(&self, req: Request<Body>) -> Result<Response<Body>, HandlerError> {
         let t_accept_start = Instant::now();
+        let request_headers = req.headers().clone();
         let proto = match build_proto_request(req).await {
             Ok(p) => p,
-            Err(err) => return Ok(error_response(&err)),
+            Err(err) => return Ok(error_response(&err, Some(&request_headers))),
         };
         let accept_elapsed = t_accept_start.elapsed();
 
@@ -71,7 +72,7 @@ where
         let t_respond_start = Instant::now();
         let mut response = match outcome {
             Ok(payload) => payload_to_response(payload),
-            Err(err) => error_response(&err),
+            Err(err) => error_response(&err, Some(&request_headers)),
         };
         let respond_elapsed = t_respond_start.elapsed();
 
@@ -173,27 +174,19 @@ fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
         .unwrap_or_else(|_| infallible_502())
 }
 
-fn error_response(err: &DispatchError) -> Response<Body> {
+fn error_response(err: &DispatchError, request_headers: Option<&HeaderMap>) -> Response<Body> {
     tracing::error!(error = %err, "next bridge dispatch failed");
-    let (status, message) = match err {
-        DispatchError::BadRequest(_) => (StatusCode::BAD_REQUEST, err.to_string()),
-        DispatchError::WorkerGone | DispatchError::NoResponse => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "engine worker unavailable".to_owned(),
-        ),
-        _ => (StatusCode::BAD_GATEWAY, err.to_string()),
+    let status = match err {
+        DispatchError::BadRequest(_) => StatusCode::BAD_REQUEST,
+        DispatchError::WorkerGone | DispatchError::NoResponse => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::BAD_GATEWAY,
     };
-    Response::builder()
-        .status(status)
-        .header("content-type", "text/plain; charset=utf-8")
-        .body(Body::from(message))
-        .unwrap_or_else(|_| infallible_502())
+    let detail = err.to_string();
+    super::error_page::render(status, request_headers, Some(&detail))
 }
 
 fn infallible_502() -> Response<Body> {
-    let mut response = Response::new(Body::from("internal error"));
-    *response.status_mut() = StatusCode::BAD_GATEWAY;
-    response
+    super::error_page::render(StatusCode::BAD_GATEWAY, None, None)
 }
 
 #[cfg(test)]

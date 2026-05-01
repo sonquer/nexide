@@ -234,3 +234,28 @@ async fn dynamic_import_of_unknown_specifier_rejects() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn dynamic_import_resolves_relative_to_calling_module() {
+    assert_passes(
+        &[
+            (
+                "nested.cjs",
+                "let captured = null;\n\
+                 import('./addon.cjs').then(ns => { captured = ns; });\n\
+                 module.exports = { getCaptured: () => captured };",
+            ),
+            (
+                "addon.cjs",
+                "module.exports = { name: 'addon-from-sibling' };",
+            ),
+        ],
+        "const m = require('./nested.cjs');\n\
+         queueMicrotask(() => {\n\
+           const c = m.getCaptured();\n\
+           if (!c) throw new Error('sibling import did not resolve');\n\
+           if (c.name !== 'addon-from-sibling') throw new Error('name: ' + c.name);\n\
+         });\n",
+    )
+    .await;
+}

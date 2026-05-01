@@ -5,6 +5,7 @@
 
 pub mod accept_loop;
 pub mod config;
+mod error_page;
 pub mod fallback;
 mod next_bridge;
 mod prerender;
