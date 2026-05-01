@@ -149,6 +149,48 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     );
     install_fn(scope, ops, "op_crypto_sign", op_crypto_sign);
     install_fn(scope, ops, "op_crypto_verify", op_crypto_verify);
+    install_fn(scope, ops, "op_crypto_pem_decode", op_crypto_pem_decode);
+    install_fn(scope, ops, "op_crypto_pem_encode", op_crypto_pem_encode);
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_generate_key_pair",
+        op_crypto_generate_key_pair,
+    );
+    install_fn(scope, ops, "op_crypto_key_inspect", op_crypto_key_inspect);
+    install_fn(scope, ops, "op_crypto_key_convert", op_crypto_key_convert);
+    install_fn(scope, ops, "op_crypto_jwk_to_der", op_crypto_jwk_to_der);
+    install_fn(scope, ops, "op_crypto_der_to_jwk", op_crypto_der_to_jwk);
+    install_fn(scope, ops, "op_crypto_rsa_encrypt", op_crypto_rsa_encrypt);
+    install_fn(scope, ops, "op_crypto_rsa_decrypt", op_crypto_rsa_decrypt);
+    install_fn(scope, ops, "op_crypto_sign_der", op_crypto_sign_der);
+    install_fn(scope, ops, "op_crypto_verify_der", op_crypto_verify_der);
+    install_fn(scope, ops, "op_crypto_ecdh_derive", op_crypto_ecdh_derive);
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_x25519_derive",
+        op_crypto_x25519_derive,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_ecdh_generate",
+        op_crypto_ecdh_generate,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_ecdh_from_raw",
+        op_crypto_ecdh_from_raw,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_crypto_ecdh_compute_raw",
+        op_crypto_ecdh_compute_raw,
+    );
+    install_fn(scope, ops, "op_crypto_hkdf", op_crypto_hkdf);
 
     install_fn(scope, ops, "op_zlib_encode", op_zlib_encode);
     install_fn(scope, ops, "op_zlib_decode", op_zlib_decode);
@@ -4340,6 +4382,2000 @@ fn ed25519_verify(key_pem: &str, data: &[u8], sig: &[u8]) -> Result<bool, String
     sig_arr.copy_from_slice(sig);
     let signature = Signature::from_bytes(&sig_arr);
     Ok(verifying.verify(data, &signature).is_ok())
+}
+
+fn op_crypto_pem_decode<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let pem_str = string_arg(scope, &args, 0);
+    match pem::parse(&pem_str) {
+        Ok(parsed) => {
+            let obj = v8::Object::new(scope);
+            let label_key = v8::String::new(scope, "label").unwrap();
+            let label_val = v8::String::new(scope, parsed.tag()).unwrap();
+            obj.set(scope, label_key.into(), label_val.into());
+            let der_key = v8::String::new(scope, "der").unwrap();
+            let der_arr = bytes_to_uint8array(scope, parsed.contents());
+            obj.set(scope, der_key.into(), der_arr.into());
+            rv.set(obj.into());
+        }
+        Err(e) => throw_error(scope, &format!("pem_decode: {e}")),
+    }
+}
+
+fn op_crypto_pem_encode<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let label = string_arg(scope, &args, 0);
+    let Some(der) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "pem_encode: der must be Uint8Array");
+        return;
+    };
+    let pem_obj = pem::Pem::new(&label, der);
+    let config = pem::EncodeConfig::new().set_line_ending(pem::LineEnding::LF);
+    let encoded = pem::encode_config(&pem_obj, config);
+    let s = v8::String::new(scope, &encoded).unwrap();
+    rv.set(s.into());
+}
+
+fn op_crypto_generate_key_pair<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let key_type = string_arg(scope, &args, 0);
+    let options_json = string_arg(scope, &args, 1);
+    let options: serde_json::Value = serde_json::from_str(&options_json).unwrap_or_default();
+    let result = generate_key_pair_impl(&key_type, &options);
+    match result {
+        Ok((pub_der, priv_der, info_json)) => {
+            let obj = v8::Object::new(scope);
+            let pub_key = v8::String::new(scope, "publicKey").unwrap();
+            let pub_arr = bytes_to_uint8array(scope, &pub_der);
+            obj.set(scope, pub_key.into(), pub_arr.into());
+            let priv_key = v8::String::new(scope, "privateKey").unwrap();
+            let priv_arr = bytes_to_uint8array(scope, &priv_der);
+            obj.set(scope, priv_key.into(), priv_arr.into());
+            let info_key = v8::String::new(scope, "info_json").unwrap();
+            let info_val = v8::String::new(scope, &info_json).unwrap();
+            obj.set(scope, info_key.into(), info_val.into());
+            rv.set(obj.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn generate_key_pair_impl(
+    key_type: &str,
+    options: &serde_json::Value,
+) -> Result<(Vec<u8>, Vec<u8>, String), String> {
+    use pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use rand_core::{OsRng, RngCore};
+    match key_type {
+        "rsa" | "rsa-pss" => {
+            let modulus_length = options["modulusLength"].as_u64().unwrap_or(2048) as usize;
+            let public_exponent = options["publicExponent"].as_u64().unwrap_or(65537);
+            let mut rng = OsRng;
+            let bits = modulus_length;
+            let priv_key = rsa::RsaPrivateKey::new_with_exp(
+                &mut rng,
+                bits,
+                &rsa::BigUint::from(public_exponent),
+            )
+            .map_err(|e| format!("rsa keygen: {e}"))?;
+            let pub_key = priv_key.to_public_key();
+            let priv_der = priv_key
+                .to_pkcs8_der()
+                .map_err(|e| format!("rsa priv pkcs8: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = pub_key
+                .to_public_key_der()
+                .map_err(|e| format!("rsa pub spki: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let info = serde_json::json!({
+                "asymmetricKeyType": key_type,
+                "modulusLength": modulus_length,
+                "publicExponent": public_exponent,
+            });
+            Ok((pub_der, priv_der, info.to_string()))
+        }
+        "ec" => {
+            let curve_name = options["namedCurve"].as_str().unwrap_or("prime256v1");
+            let (pub_der, priv_der) = match curve_name {
+                "prime256v1" | "P-256" => {
+                    let signing = p256::ecdsa::SigningKey::random(&mut OsRng);
+                    let priv_der = signing
+                        .to_pkcs8_der()
+                        .map_err(|e| format!("p256 priv: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    let pub_der = signing
+                        .verifying_key()
+                        .to_public_key_der()
+                        .map_err(|e| format!("p256 pub: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    (pub_der, priv_der)
+                }
+                "secp384r1" | "P-384" => {
+                    let signing = p384::ecdsa::SigningKey::random(&mut OsRng);
+                    let priv_der = signing
+                        .to_pkcs8_der()
+                        .map_err(|e| format!("p384 priv: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    let pub_der = signing
+                        .verifying_key()
+                        .to_public_key_der()
+                        .map_err(|e| format!("p384 pub: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    (pub_der, priv_der)
+                }
+                "secp521r1" | "P-521" => {
+                    let secret = p521::SecretKey::random(&mut OsRng);
+                    let public = secret.public_key();
+                    let priv_der = secret
+                        .to_pkcs8_der()
+                        .map_err(|e| format!("p521 priv: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    let pub_der = public
+                        .to_public_key_der()
+                        .map_err(|e| format!("p521 pub: {e}"))?
+                        .as_bytes()
+                        .to_vec();
+                    (pub_der, priv_der)
+                }
+                other => return Err(format!("unsupported curve: {other}")),
+            };
+            let info = serde_json::json!({
+                "asymmetricKeyType": "ec",
+                "namedCurve": curve_name,
+            });
+            Ok((pub_der, priv_der, info.to_string()))
+        }
+        "ed25519" => {
+            use ed25519_dalek::SigningKey;
+            let mut seed = [0u8; 32];
+            OsRng.fill_bytes(&mut seed);
+            let signing = SigningKey::from_bytes(&seed);
+            let priv_der = signing
+                .to_pkcs8_der()
+                .map_err(|e| format!("ed25519 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = signing
+                .verifying_key()
+                .to_public_key_der()
+                .map_err(|e| format!("ed25519 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let info = serde_json::json!({"asymmetricKeyType": "ed25519"});
+            Ok((pub_der, priv_der, info.to_string()))
+        }
+        "x25519" => {
+            use x25519_dalek::StaticSecret;
+            let secret = StaticSecret::random_from_rng(OsRng);
+            let public = x25519_dalek::PublicKey::from(&secret);
+            let priv_der =
+                x25519_secret_to_pkcs8(&secret).map_err(|e| format!("x25519 priv: {e}"))?;
+            let pub_der = x25519_public_to_spki(&public).map_err(|e| format!("x25519 pub: {e}"))?;
+            let info = serde_json::json!({"asymmetricKeyType": "x25519"});
+            Ok((pub_der, priv_der, info.to_string()))
+        }
+        other => Err(format!(
+            "unsupported key type: {other}. Supported: rsa, rsa-pss, ec, ed25519, x25519"
+        )),
+    }
+}
+
+fn x25519_secret_to_pkcs8(secret: &x25519_dalek::StaticSecret) -> Result<Vec<u8>, String> {
+    use pkcs8::{PrivateKeyInfo, der::Encode};
+    let secret_bytes = secret.to_bytes();
+    let oid = pkcs8::ObjectIdentifier::new_unwrap("1.3.101.110");
+    let alg = pkcs8::AlgorithmIdentifierRef {
+        oid,
+        parameters: None,
+    };
+    let pki = PrivateKeyInfo::new(alg, &secret_bytes);
+    pki.to_der()
+        .map_err(|e| format!("x25519 pkcs8 encode: {e}"))
+}
+
+fn x25519_public_to_spki(public: &x25519_dalek::PublicKey) -> Result<Vec<u8>, String> {
+    use spki::{SubjectPublicKeyInfoOwned, der::Encode};
+    let oid = spki::ObjectIdentifier::new_unwrap("1.3.101.110");
+    let alg = spki::AlgorithmIdentifierOwned {
+        oid,
+        parameters: None,
+    };
+    let spki = SubjectPublicKeyInfoOwned {
+        algorithm: alg,
+        subject_public_key: spki::der::asn1::BitString::from_bytes(public.as_bytes())
+            .map_err(|e| format!("x25519 bitstring: {e}"))?,
+    };
+    spki.to_der()
+        .map_err(|e| format!("x25519 spki encode: {e}"))
+}
+
+fn biguint_to_u64(n: &rsa::BigUint) -> u64 {
+    if n.bits() <= 64 {
+        let bytes = n.to_bytes_be();
+        let mut arr = [0u8; 8];
+        let start = 8usize.saturating_sub(bytes.len());
+        arr[start..].copy_from_slice(&bytes[..bytes.len().min(8)]);
+        u64::from_be_bytes(arr)
+    } else {
+        65537
+    }
+}
+
+fn op_crypto_key_inspect<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let Some(der) = bytes_arg(scope, &args, 0) else {
+        throw_error(scope, "key_inspect: der must be Uint8Array");
+        return;
+    };
+    let kind = string_arg(scope, &args, 1);
+    let result = key_inspect_impl(&der, &kind);
+    match result {
+        Ok(json_str) => {
+            let s = v8::String::new(scope, &json_str).unwrap();
+            rv.set(s.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn key_inspect_impl(der: &[u8], kind: &str) -> Result<String, String> {
+    use pkcs8::{DecodePrivateKey, DecodePublicKey};
+    use rsa::traits::PublicKeyParts;
+    match kind {
+        "private-pkcs8" => {
+            if let Ok(rsa_key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+                let mod_bits = rsa_key.n().bits();
+                let exp_u64 = if rsa_key.e().bits() <= 64 {
+                    let bytes = rsa_key.e().to_bytes_be();
+                    let mut arr = [0u8; 8];
+                    let start = 8usize.saturating_sub(bytes.len());
+                    arr[start..].copy_from_slice(&bytes[..bytes.len().min(8)]);
+                    u64::from_be_bytes(arr)
+                } else {
+                    65537
+                };
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "rsa",
+                    "modulusLength": mod_bits,
+                    "publicExponent": exp_u64,
+                });
+                return Ok(info.to_string());
+            }
+            if p256::SecretKey::from_pkcs8_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "prime256v1",
+                });
+                return Ok(info.to_string());
+            }
+            if p384::SecretKey::from_pkcs8_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp384r1",
+                });
+                return Ok(info.to_string());
+            }
+            if p521::SecretKey::from_pkcs8_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp521r1",
+                });
+                return Ok(info.to_string());
+            }
+            if ed25519_dalek::SigningKey::from_pkcs8_der(der).is_ok() {
+                let info = serde_json::json!({"asymmetricKeyType": "ed25519"});
+                return Ok(info.to_string());
+            }
+            if x25519_pkcs8_to_secret(der).is_ok() {
+                let info = serde_json::json!({"asymmetricKeyType": "x25519"});
+                return Ok(info.to_string());
+            }
+            Err("private-pkcs8: unsupported key type".to_string())
+        }
+        "public-spki" => {
+            if let Ok(rsa_key) = rsa::RsaPublicKey::from_public_key_der(der) {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "rsa",
+                    "modulusLength": rsa_key.n().bits(),
+                    "publicExponent": biguint_to_u64(rsa_key.e()),
+                });
+                return Ok(info.to_string());
+            }
+            if p256::PublicKey::from_public_key_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "prime256v1",
+                });
+                return Ok(info.to_string());
+            }
+            if p384::PublicKey::from_public_key_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp384r1",
+                });
+                return Ok(info.to_string());
+            }
+            if p521::PublicKey::from_public_key_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp521r1",
+                });
+                return Ok(info.to_string());
+            }
+            if ed25519_dalek::VerifyingKey::from_public_key_der(der).is_ok() {
+                let info = serde_json::json!({"asymmetricKeyType": "ed25519"});
+                return Ok(info.to_string());
+            }
+            if x25519_spki_to_public(der).is_ok() {
+                let info = serde_json::json!({"asymmetricKeyType": "x25519"});
+                return Ok(info.to_string());
+            }
+            Err("public-spki: unsupported key type".to_string())
+        }
+        "rsa-pkcs1-priv" => {
+            use pkcs1::DecodeRsaPrivateKey;
+            let rsa_key = rsa::RsaPrivateKey::from_pkcs1_der(der)
+                .map_err(|e| format!("rsa-pkcs1-priv parse: {e}"))?;
+            let info = serde_json::json!({
+                "asymmetricKeyType": "rsa",
+                "modulusLength": rsa_key.n().bits(),
+                "publicExponent": biguint_to_u64(rsa_key.e()),
+            });
+            Ok(info.to_string())
+        }
+        "rsa-pkcs1-pub" => {
+            use pkcs1::DecodeRsaPublicKey;
+            let rsa_key = rsa::RsaPublicKey::from_pkcs1_der(der)
+                .map_err(|e| format!("rsa-pkcs1-pub parse: {e}"))?;
+            let info = serde_json::json!({
+                "asymmetricKeyType": "rsa",
+                "modulusLength": rsa_key.n().bits(),
+                "publicExponent": biguint_to_u64(rsa_key.e()),
+            });
+            Ok(info.to_string())
+        }
+        "ec-sec1" => {
+            if p256::SecretKey::from_sec1_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "prime256v1",
+                });
+                return Ok(info.to_string());
+            }
+            if p384::SecretKey::from_sec1_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp384r1",
+                });
+                return Ok(info.to_string());
+            }
+            if p521::SecretKey::from_sec1_der(der).is_ok() {
+                let info = serde_json::json!({
+                    "asymmetricKeyType": "ec",
+                    "namedCurve": "secp521r1",
+                });
+                return Ok(info.to_string());
+            }
+            Err("ec-sec1: unsupported curve".to_string())
+        }
+        other => Err(format!("unsupported kind: {other}")),
+    }
+}
+
+fn x25519_pkcs8_to_secret(der: &[u8]) -> Result<x25519_dalek::StaticSecret, String> {
+    use pkcs8::{PrivateKeyInfo, der::Decode};
+    let pki = PrivateKeyInfo::from_der(der).map_err(|e| format!("pkcs8 decode: {e}"))?;
+    if pki.private_key.len() != 32 {
+        return Err(format!(
+            "x25519 secret must be 32 bytes, got {}",
+            pki.private_key.len()
+        ));
+    }
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(pki.private_key);
+    Ok(x25519_dalek::StaticSecret::from(bytes))
+}
+
+fn x25519_spki_to_public(der: &[u8]) -> Result<x25519_dalek::PublicKey, String> {
+    use spki::{SubjectPublicKeyInfoRef, der::Decode};
+    let spki = SubjectPublicKeyInfoRef::from_der(der).map_err(|e| format!("spki decode: {e}"))?;
+    let key_bytes = spki.subject_public_key.raw_bytes();
+    if key_bytes.len() != 32 {
+        return Err(format!(
+            "x25519 public must be 32 bytes, got {}",
+            key_bytes.len()
+        ));
+    }
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(key_bytes);
+    Ok(x25519_dalek::PublicKey::from(bytes))
+}
+
+fn op_crypto_key_convert<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let input_kind = string_arg(scope, &args, 0);
+    let output_kind = string_arg(scope, &args, 1);
+    let Some(der) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "key_convert: der must be Uint8Array");
+        return;
+    };
+    let curve_hint = if args.length() >= 4 {
+        Some(string_arg(scope, &args, 3))
+    } else {
+        None
+    };
+    let result = key_convert_impl(&input_kind, &output_kind, &der, curve_hint.as_deref());
+    match result {
+        Ok(out_der) => {
+            let arr = bytes_to_uint8array(scope, &out_der);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn key_convert_impl(
+    input_kind: &str,
+    output_kind: &str,
+    der: &[u8],
+    curve_hint: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    use pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
+    use pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
+    match (input_kind, output_kind) {
+        ("pkcs1-priv", "private-pkcs8") => {
+            let rsa_key = rsa::RsaPrivateKey::from_pkcs1_der(der)
+                .map_err(|e| format!("pkcs1-priv parse: {e}"))?;
+            rsa_key
+                .to_pkcs8_der()
+                .map(|d| d.as_bytes().to_vec())
+                .map_err(|e| format!("pkcs8 encode: {e}"))
+        }
+        ("private-pkcs8", "pkcs1-priv") => {
+            let rsa_key =
+                rsa::RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("pkcs8 parse: {e}"))?;
+            rsa_key
+                .to_pkcs1_der()
+                .map(|d| d.as_bytes().to_vec())
+                .map_err(|e| format!("pkcs1 encode: {e}"))
+        }
+        ("pkcs1-pub", "public-spki") => {
+            let rsa_key = rsa::RsaPublicKey::from_pkcs1_der(der)
+                .map_err(|e| format!("pkcs1-pub parse: {e}"))?;
+            rsa_key
+                .to_public_key_der()
+                .map(|d| d.as_bytes().to_vec())
+                .map_err(|e| format!("spki encode: {e}"))
+        }
+        ("public-spki", "pkcs1-pub") => {
+            let rsa_key = rsa::RsaPublicKey::from_public_key_der(der)
+                .map_err(|e| format!("spki parse: {e}"))?;
+            rsa_key
+                .to_pkcs1_der()
+                .map(|d| d.as_bytes().to_vec())
+                .map_err(|e| format!("pkcs1 encode: {e}"))
+        }
+        ("ec-sec1", "private-pkcs8") => {
+            let curve = curve_hint.unwrap_or("prime256v1");
+            match curve {
+                "prime256v1" | "P-256" => {
+                    let sk = p256::SecretKey::from_sec1_der(der)
+                        .map_err(|e| format!("p256 sec1: {e}"))?;
+                    sk.to_pkcs8_der()
+                        .map(|d| d.as_bytes().to_vec())
+                        .map_err(|e| format!("p256 pkcs8: {e}"))
+                }
+                "secp384r1" | "P-384" => {
+                    let sk = p384::SecretKey::from_sec1_der(der)
+                        .map_err(|e| format!("p384 sec1: {e}"))?;
+                    sk.to_pkcs8_der()
+                        .map(|d| d.as_bytes().to_vec())
+                        .map_err(|e| format!("p384 pkcs8: {e}"))
+                }
+                "secp521r1" | "P-521" => {
+                    let sk = p521::SecretKey::from_sec1_der(der)
+                        .map_err(|e| format!("p521 sec1: {e}"))?;
+                    sk.to_pkcs8_der()
+                        .map(|d| d.as_bytes().to_vec())
+                        .map_err(|e| format!("p521 pkcs8: {e}"))
+                }
+                other => Err(format!("unsupported curve for sec1: {other}")),
+            }
+        }
+        ("private-pkcs8", "ec-sec1") => {
+            if let Ok(sk) = p256::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .to_sec1_der()
+                    .map(|d| (*d).clone())
+                    .map_err(|e| format!("p256 sec1: {e}"));
+            }
+            if let Ok(sk) = p384::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .to_sec1_der()
+                    .map(|d| (*d).clone())
+                    .map_err(|e| format!("p384 sec1: {e}"));
+            }
+            if let Ok(sk) = p521::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .to_sec1_der()
+                    .map(|d| (*d).clone())
+                    .map_err(|e| format!("p521 sec1: {e}"));
+            }
+            Err("private-pkcs8 -> ec-sec1: not an EC key".to_string())
+        }
+        ("private-pkcs8", "public-spki") => {
+            if let Ok(rsa_key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+                return rsa_key
+                    .to_public_key()
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("rsa pub: {e}"));
+            }
+            if let Ok(sk) = p256::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .public_key()
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("p256 pub: {e}"));
+            }
+            if let Ok(sk) = p384::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .public_key()
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("p384 pub: {e}"));
+            }
+            if let Ok(sk) = p521::SecretKey::from_pkcs8_der(der) {
+                return sk
+                    .public_key()
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("p521 pub: {e}"));
+            }
+            if let Ok(signing) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
+                return signing
+                    .verifying_key()
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("ed25519 pub: {e}"));
+            }
+            if let Ok(secret) = x25519_pkcs8_to_secret(der) {
+                let public = x25519_dalek::PublicKey::from(&secret);
+                return x25519_public_to_spki(&public);
+            }
+            Err("private-pkcs8 -> public-spki: unsupported key type".to_string())
+        }
+        _ => Err(format!(
+            "unsupported conversion: {input_kind} -> {output_kind}"
+        )),
+    }
+}
+
+fn op_crypto_jwk_to_der<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let jwk_json = string_arg(scope, &args, 0);
+    let want_kind = string_arg(scope, &args, 1);
+    let jwk: serde_json::Value = match serde_json::from_str(&jwk_json) {
+        Ok(j) => j,
+        Err(e) => {
+            throw_error(scope, &format!("jwk parse: {e}"));
+            return;
+        }
+    };
+    let result = jwk_to_der_impl(&jwk, &want_kind);
+    match result {
+        Ok(der) => {
+            let arr = bytes_to_uint8array(scope, &der);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn jwk_to_der_impl(jwk: &serde_json::Value, want_kind: &str) -> Result<Vec<u8>, String> {
+    use pkcs8::{EncodePrivateKey, EncodePublicKey};
+    let kty = jwk["kty"]
+        .as_str()
+        .ok_or_else(|| "jwk missing kty".to_string())?;
+    match kty {
+        "RSA" => {
+            let n_b64 = jwk["n"]
+                .as_str()
+                .ok_or_else(|| "RSA jwk missing n".to_string())?;
+            let e_b64 = jwk["e"]
+                .as_str()
+                .ok_or_else(|| "RSA jwk missing e".to_string())?;
+            let n_bytes = base64_url_decode(n_b64)?;
+            let e_bytes = base64_url_decode(e_b64)?;
+            let n = rsa::BigUint::from_bytes_be(&n_bytes);
+            let e = rsa::BigUint::from_bytes_be(&e_bytes);
+            if want_kind == "private-pkcs8" {
+                let d_b64 = jwk["d"]
+                    .as_str()
+                    .ok_or_else(|| "RSA private jwk missing d".to_string())?;
+                let d_bytes = base64_url_decode(d_b64)?;
+                let d = rsa::BigUint::from_bytes_be(&d_bytes);
+                let p_b64 = jwk["p"].as_str();
+                let q_b64 = jwk["q"].as_str();
+                let primes = if let (Some(p_str), Some(q_str)) = (p_b64, q_b64) {
+                    let p_bytes = base64_url_decode(p_str)?;
+                    let q_bytes = base64_url_decode(q_str)?;
+                    let p = rsa::BigUint::from_bytes_be(&p_bytes);
+                    let q = rsa::BigUint::from_bytes_be(&q_bytes);
+                    vec![p, q]
+                } else {
+                    Vec::new()
+                };
+                let priv_key = if primes.is_empty() {
+                    rsa::RsaPrivateKey::from_components(n, e, d, primes)
+                        .map_err(|e| format!("RSA from components: {e}"))?
+                } else {
+                    rsa::RsaPrivateKey::from_components(n, e, d, primes)
+                        .map_err(|e| format!("RSA from components: {e}"))?
+                };
+                priv_key
+                    .to_pkcs8_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("RSA pkcs8: {e}"))
+            } else {
+                let pub_key = rsa::RsaPublicKey::new(n, e).map_err(|e| format!("RSA pub: {e}"))?;
+                pub_key
+                    .to_public_key_der()
+                    .map(|d| d.as_bytes().to_vec())
+                    .map_err(|e| format!("RSA spki: {e}"))
+            }
+        }
+        "EC" => {
+            let crv = jwk["crv"]
+                .as_str()
+                .ok_or_else(|| "EC jwk missing crv".to_string())?;
+            let x_b64 = jwk["x"]
+                .as_str()
+                .ok_or_else(|| "EC jwk missing x".to_string())?;
+            let y_b64 = jwk["y"]
+                .as_str()
+                .ok_or_else(|| "EC jwk missing y".to_string())?;
+            let x_bytes = base64_url_decode(x_b64)?;
+            let y_bytes = base64_url_decode(y_b64)?;
+            match crv {
+                "P-256" => {
+                    if want_kind == "private-pkcs8" {
+                        let d_b64 = jwk["d"]
+                            .as_str()
+                            .ok_or_else(|| "EC private jwk missing d".to_string())?;
+                        let d_bytes = base64_url_decode(d_b64)?;
+                        let sk = p256::SecretKey::from_slice(&d_bytes)
+                            .map_err(|e| format!("P-256 secret: {e}"))?;
+                        sk.to_pkcs8_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-256 pkcs8: {e}"))
+                    } else {
+                        let mut pt = vec![0x04u8];
+                        pt.extend_from_slice(&x_bytes);
+                        pt.extend_from_slice(&y_bytes);
+                        let pk = p256::PublicKey::from_sec1_bytes(&pt)
+                            .map_err(|e| format!("P-256 public: {e}"))?;
+                        pk.to_public_key_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-256 spki: {e}"))
+                    }
+                }
+                "P-384" => {
+                    if want_kind == "private-pkcs8" {
+                        let d_b64 = jwk["d"]
+                            .as_str()
+                            .ok_or_else(|| "EC private jwk missing d".to_string())?;
+                        let d_bytes = base64_url_decode(d_b64)?;
+                        let sk = p384::SecretKey::from_slice(&d_bytes)
+                            .map_err(|e| format!("P-384 secret: {e}"))?;
+                        sk.to_pkcs8_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-384 pkcs8: {e}"))
+                    } else {
+                        let mut pt = vec![0x04u8];
+                        pt.extend_from_slice(&x_bytes);
+                        pt.extend_from_slice(&y_bytes);
+                        let pk = p384::PublicKey::from_sec1_bytes(&pt)
+                            .map_err(|e| format!("P-384 public: {e}"))?;
+                        pk.to_public_key_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-384 spki: {e}"))
+                    }
+                }
+                "P-521" => {
+                    if want_kind == "private-pkcs8" {
+                        let d_b64 = jwk["d"]
+                            .as_str()
+                            .ok_or_else(|| "EC private jwk missing d".to_string())?;
+                        let d_bytes = base64_url_decode(d_b64)?;
+                        let sk = p521::SecretKey::from_slice(&d_bytes)
+                            .map_err(|e| format!("P-521 secret: {e}"))?;
+                        sk.to_pkcs8_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-521 pkcs8: {e}"))
+                    } else {
+                        let mut pt = vec![0x04u8];
+                        pt.extend_from_slice(&x_bytes);
+                        pt.extend_from_slice(&y_bytes);
+                        let pk = p521::PublicKey::from_sec1_bytes(&pt)
+                            .map_err(|e| format!("P-521 public: {e}"))?;
+                        pk.to_public_key_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("P-521 spki: {e}"))
+                    }
+                }
+                other => Err(format!("unsupported EC curve: {other}")),
+            }
+        }
+        "OKP" => {
+            let crv = jwk["crv"]
+                .as_str()
+                .ok_or_else(|| "OKP jwk missing crv".to_string())?;
+            let x_b64 = jwk["x"]
+                .as_str()
+                .ok_or_else(|| "OKP jwk missing x".to_string())?;
+            let x_bytes = base64_url_decode(x_b64)?;
+            match crv {
+                "Ed25519" => {
+                    if want_kind == "private-pkcs8" {
+                        let d_b64 = jwk["d"]
+                            .as_str()
+                            .ok_or_else(|| "OKP private jwk missing d".to_string())?;
+                        let d_bytes = base64_url_decode(d_b64)?;
+                        if d_bytes.len() != 32 {
+                            return Err(format!(
+                                "Ed25519 d must be 32 bytes, got {}",
+                                d_bytes.len()
+                            ));
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&d_bytes);
+                        let signing = ed25519_dalek::SigningKey::from_bytes(&arr);
+                        signing
+                            .to_pkcs8_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("Ed25519 pkcs8: {e}"))
+                    } else {
+                        if x_bytes.len() != 32 {
+                            return Err(format!(
+                                "Ed25519 x must be 32 bytes, got {}",
+                                x_bytes.len()
+                            ));
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&x_bytes);
+                        let verifying = ed25519_dalek::VerifyingKey::from_bytes(&arr)
+                            .map_err(|e| format!("Ed25519 verifying: {e}"))?;
+                        verifying
+                            .to_public_key_der()
+                            .map(|d| d.as_bytes().to_vec())
+                            .map_err(|e| format!("Ed25519 spki: {e}"))
+                    }
+                }
+                "X25519" => {
+                    if want_kind == "private-pkcs8" {
+                        let d_b64 = jwk["d"]
+                            .as_str()
+                            .ok_or_else(|| "OKP private jwk missing d".to_string())?;
+                        let d_bytes = base64_url_decode(d_b64)?;
+                        if d_bytes.len() != 32 {
+                            return Err(format!(
+                                "X25519 d must be 32 bytes, got {}",
+                                d_bytes.len()
+                            ));
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&d_bytes);
+                        let secret = x25519_dalek::StaticSecret::from(arr);
+                        x25519_secret_to_pkcs8(&secret)
+                    } else {
+                        if x_bytes.len() != 32 {
+                            return Err(format!(
+                                "X25519 x must be 32 bytes, got {}",
+                                x_bytes.len()
+                            ));
+                        }
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&x_bytes);
+                        let public = x25519_dalek::PublicKey::from(arr);
+                        x25519_public_to_spki(&public)
+                    }
+                }
+                other => Err(format!("unsupported OKP curve: {other}")),
+            }
+        }
+        other => Err(format!("unsupported JWK kty: {other}")),
+    }
+}
+
+fn base64_url_decode(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|e| format!("base64url decode: {e}"))
+}
+
+fn base64_url_encode(b: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+fn op_crypto_der_to_jwk<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let Some(der) = bytes_arg(scope, &args, 0) else {
+        throw_error(scope, "der_to_jwk: der must be Uint8Array");
+        return;
+    };
+    let kind = string_arg(scope, &args, 1);
+    let result = der_to_jwk_impl(&der, &kind);
+    match result {
+        Ok(json_str) => {
+            let s = v8::String::new(scope, &json_str).unwrap();
+            rv.set(s.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn der_to_jwk_impl(der: &[u8], kind: &str) -> Result<String, String> {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use pkcs8::{DecodePrivateKey, DecodePublicKey};
+    use rsa::traits::{PrivateKeyParts, PublicKeyParts};
+    match kind {
+        "private-pkcs8" => {
+            if let Ok(rsa_key) = rsa::RsaPrivateKey::from_pkcs8_der(der) {
+                let n = base64_url_encode(&rsa_key.n().to_bytes_be());
+                let e = base64_url_encode(&rsa_key.e().to_bytes_be());
+                let d = base64_url_encode(&rsa_key.d().to_bytes_be());
+                let primes = rsa_key.primes();
+                let (p, q, dp, dq, qi) = if primes.len() >= 2 {
+                    let p = base64_url_encode(&primes[0].to_bytes_be());
+                    let q = base64_url_encode(&primes[1].to_bytes_be());
+                    let dp_val = rsa_key.dp().ok_or("missing dp")?.to_bytes_be();
+                    let dq_val = rsa_key.dq().ok_or("missing dq")?.to_bytes_be();
+                    let qi_val = rsa_key.qinv().ok_or("missing qinv")?.to_bytes_be().1;
+                    let dp = base64_url_encode(&dp_val);
+                    let dq = base64_url_encode(&dq_val);
+                    let qi = base64_url_encode(&qi_val);
+                    (Some(p), Some(q), Some(dp), Some(dq), Some(qi))
+                } else {
+                    (None, None, None, None, None)
+                };
+                let mut jwk = serde_json::json!({
+                    "kty": "RSA",
+                    "n": n,
+                    "e": e,
+                    "d": d,
+                });
+                if let Some(p_val) = p {
+                    jwk["p"] = serde_json::Value::String(p_val);
+                    jwk["q"] = serde_json::Value::String(q.unwrap());
+                    jwk["dp"] = serde_json::Value::String(dp.unwrap());
+                    jwk["dq"] = serde_json::Value::String(dq.unwrap());
+                    jwk["qi"] = serde_json::Value::String(qi.unwrap());
+                }
+                return Ok(jwk.to_string());
+            }
+            if let Ok(sk) = p256::SecretKey::from_pkcs8_der(der) {
+                let d = base64_url_encode(&sk.to_bytes());
+                let pk = sk.public_key();
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": x,
+                    "y": y,
+                    "d": d,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(sk) = p384::SecretKey::from_pkcs8_der(der) {
+                let d = base64_url_encode(&sk.to_bytes());
+                let pk = sk.public_key();
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-384",
+                    "x": x,
+                    "y": y,
+                    "d": d,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(sk) = p521::SecretKey::from_pkcs8_der(der) {
+                let d = base64_url_encode(&sk.to_bytes());
+                let pk = sk.public_key();
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-521",
+                    "x": x,
+                    "y": y,
+                    "d": d,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(signing) = ed25519_dalek::SigningKey::from_pkcs8_der(der) {
+                let d = base64_url_encode(&signing.to_bytes());
+                let x = base64_url_encode(signing.verifying_key().as_bytes());
+                let jwk = serde_json::json!({
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": x,
+                    "d": d,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(secret) = x25519_pkcs8_to_secret(der) {
+                let d = base64_url_encode(&secret.to_bytes());
+                let public = x25519_dalek::PublicKey::from(&secret);
+                let x = base64_url_encode(public.as_bytes());
+                let jwk = serde_json::json!({
+                    "kty": "OKP",
+                    "crv": "X25519",
+                    "x": x,
+                    "d": d,
+                });
+                return Ok(jwk.to_string());
+            }
+            Err("private-pkcs8: unsupported key type for JWK".to_string())
+        }
+        "public-spki" => {
+            if let Ok(rsa_key) = rsa::RsaPublicKey::from_public_key_der(der) {
+                let n = base64_url_encode(&rsa_key.n().to_bytes_be());
+                let e = base64_url_encode(&rsa_key.e().to_bytes_be());
+                let jwk = serde_json::json!({
+                    "kty": "RSA",
+                    "n": n,
+                    "e": e,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(pk) = p256::PublicKey::from_public_key_der(der) {
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": x,
+                    "y": y,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(pk) = p384::PublicKey::from_public_key_der(der) {
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-384",
+                    "x": x,
+                    "y": y,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(pk) = p521::PublicKey::from_public_key_der(der) {
+                let pt = pk.to_encoded_point(false);
+                let x = base64_url_encode(pt.x().ok_or("missing x")?);
+                let y = base64_url_encode(pt.y().ok_or("missing y")?);
+                let jwk = serde_json::json!({
+                    "kty": "EC",
+                    "crv": "P-521",
+                    "x": x,
+                    "y": y,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(verifying) = ed25519_dalek::VerifyingKey::from_public_key_der(der) {
+                let x = base64_url_encode(verifying.as_bytes());
+                let jwk = serde_json::json!({
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": x,
+                });
+                return Ok(jwk.to_string());
+            }
+            if let Ok(public) = x25519_spki_to_public(der) {
+                let x = base64_url_encode(public.as_bytes());
+                let jwk = serde_json::json!({
+                    "kty": "OKP",
+                    "crv": "X25519",
+                    "x": x,
+                });
+                return Ok(jwk.to_string());
+            }
+            Err("public-spki: unsupported key type for JWK".to_string())
+        }
+        other => Err(format!("unsupported kind for JWK: {other}")),
+    }
+}
+
+fn op_crypto_rsa_encrypt<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let Some(spki_der) = bytes_arg(scope, &args, 0) else {
+        throw_error(scope, "rsa_encrypt: spki_der must be Uint8Array");
+        return;
+    };
+    let Some(plaintext) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "rsa_encrypt: plaintext must be Uint8Array");
+        return;
+    };
+    let padding = string_arg(scope, &args, 2);
+    let oaep_hash = string_arg(scope, &args, 3);
+    let oaep_label = bytes_arg(scope, &args, 4);
+    let result = rsa_encrypt_impl(
+        &spki_der,
+        &plaintext,
+        &padding,
+        &oaep_hash,
+        oaep_label.as_deref(),
+    );
+    match result {
+        Ok(ct) => {
+            let arr = bytes_to_uint8array(scope, &ct);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn rsa_encrypt_impl(
+    spki_der: &[u8],
+    plaintext: &[u8],
+    padding: &str,
+    oaep_hash: &str,
+    oaep_label: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    use pkcs8::DecodePublicKey;
+    use rsa::{Oaep, Pkcs1v15Encrypt};
+    let pub_key =
+        rsa::RsaPublicKey::from_public_key_der(spki_der).map_err(|e| format!("rsa pub: {e}"))?;
+    let mut rng = rand_core::OsRng;
+    match padding {
+        "oaep" => {
+            let label_bytes = oaep_label.unwrap_or(&[]);
+            let label_str = if label_bytes.is_empty() {
+                String::new()
+            } else {
+                std::str::from_utf8(label_bytes)
+                    .map_err(|_| "rsa oaep: label must be valid UTF-8".to_string())?
+                    .to_string()
+            };
+            let label = label_str.as_str();
+            match oaep_hash {
+                "sha1" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha1::Sha1>()
+                    } else {
+                        Oaep::new_with_label::<sha1::Sha1, _>(label)
+                    };
+                    pub_key
+                        .encrypt(&mut rng, padding, plaintext)
+                        .map_err(|e| format!("rsa oaep encrypt: {e}"))
+                }
+                "sha256" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha256>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha256, _>(label)
+                    };
+                    pub_key
+                        .encrypt(&mut rng, padding, plaintext)
+                        .map_err(|e| format!("rsa oaep encrypt: {e}"))
+                }
+                "sha384" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha384>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha384, _>(label)
+                    };
+                    pub_key
+                        .encrypt(&mut rng, padding, plaintext)
+                        .map_err(|e| format!("rsa oaep encrypt: {e}"))
+                }
+                "sha512" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha512>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha512, _>(label)
+                    };
+                    pub_key
+                        .encrypt(&mut rng, padding, plaintext)
+                        .map_err(|e| format!("rsa oaep encrypt: {e}"))
+                }
+                other => Err(format!("unsupported oaep hash: {other}")),
+            }
+        }
+        "pkcs1" => {
+            let padding = Pkcs1v15Encrypt;
+            pub_key
+                .encrypt(&mut rng, padding, plaintext)
+                .map_err(|e| format!("rsa pkcs1 encrypt: {e}"))
+        }
+        other => Err(format!("unsupported rsa padding: {other}")),
+    }
+}
+
+fn op_crypto_rsa_decrypt<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let Some(pkcs8_der) = bytes_arg(scope, &args, 0) else {
+        throw_error(scope, "rsa_decrypt: pkcs8_der must be Uint8Array");
+        return;
+    };
+    let Some(ciphertext) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "rsa_decrypt: ciphertext must be Uint8Array");
+        return;
+    };
+    let padding = string_arg(scope, &args, 2);
+    let oaep_hash = string_arg(scope, &args, 3);
+    let oaep_label = bytes_arg(scope, &args, 4);
+    let result = rsa_decrypt_impl(
+        &pkcs8_der,
+        &ciphertext,
+        &padding,
+        &oaep_hash,
+        oaep_label.as_deref(),
+    );
+    match result {
+        Ok(pt) => {
+            let arr = bytes_to_uint8array(scope, &pt);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn rsa_decrypt_impl(
+    pkcs8_der: &[u8],
+    ciphertext: &[u8],
+    padding: &str,
+    oaep_hash: &str,
+    oaep_label: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    use pkcs8::DecodePrivateKey;
+    use rsa::{Oaep, Pkcs1v15Encrypt};
+    let priv_key =
+        rsa::RsaPrivateKey::from_pkcs8_der(pkcs8_der).map_err(|e| format!("rsa priv: {e}"))?;
+    match padding {
+        "oaep" => {
+            let label_bytes = oaep_label.unwrap_or(&[]);
+            let label_str = if label_bytes.is_empty() {
+                String::new()
+            } else {
+                std::str::from_utf8(label_bytes)
+                    .map_err(|_| "rsa oaep: label must be valid UTF-8".to_string())?
+                    .to_string()
+            };
+            let label = label_str.as_str();
+            match oaep_hash {
+                "sha1" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha1::Sha1>()
+                    } else {
+                        Oaep::new_with_label::<sha1::Sha1, _>(label)
+                    };
+                    priv_key
+                        .decrypt(padding, ciphertext)
+                        .map_err(|e| format!("rsa oaep decrypt: {e}"))
+                }
+                "sha256" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha256>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha256, _>(label)
+                    };
+                    priv_key
+                        .decrypt(padding, ciphertext)
+                        .map_err(|e| format!("rsa oaep decrypt: {e}"))
+                }
+                "sha384" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha384>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha384, _>(label)
+                    };
+                    priv_key
+                        .decrypt(padding, ciphertext)
+                        .map_err(|e| format!("rsa oaep decrypt: {e}"))
+                }
+                "sha512" => {
+                    let padding = if label.is_empty() {
+                        Oaep::new::<sha2::Sha512>()
+                    } else {
+                        Oaep::new_with_label::<sha2::Sha512, _>(label)
+                    };
+                    priv_key
+                        .decrypt(padding, ciphertext)
+                        .map_err(|e| format!("rsa oaep decrypt: {e}"))
+                }
+                other => Err(format!("unsupported oaep hash: {other}")),
+            }
+        }
+        "pkcs1" => {
+            let padding = Pkcs1v15Encrypt;
+            priv_key
+                .decrypt(padding, ciphertext)
+                .map_err(|e| format!("rsa pkcs1 decrypt: {e}"))
+        }
+        other => Err(format!("unsupported rsa padding: {other}")),
+    }
+}
+
+fn op_crypto_sign_der<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let algo = string_arg(scope, &args, 0);
+    let kind = string_arg(scope, &args, 1);
+    let Some(der) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "sign_der: der must be Uint8Array");
+        return;
+    };
+    let Some(data) = bytes_arg(scope, &args, 3) else {
+        throw_error(scope, "sign_der: data must be Uint8Array");
+        return;
+    };
+    let format = if args.length() >= 5 {
+        string_arg(scope, &args, 4)
+    } else {
+        "der".to_string()
+    };
+    let result = sign_der_impl(&algo, &kind, &der, &data, &format);
+    match result {
+        Ok(sig) => {
+            let arr = bytes_to_uint8array(scope, &sig);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn sign_der_impl(
+    algo: &str,
+    kind: &str,
+    der: &[u8],
+    data: &[u8],
+    format: &str,
+) -> Result<Vec<u8>, String> {
+    if kind != "private-pkcs8" {
+        return Err(format!("sign_der: unsupported kind {kind}"));
+    }
+    match algo {
+        "rsa-sha256" => rsa_sign_der::<sha2::Sha256>(der, data),
+        "rsa-sha384" => rsa_sign_der::<sha2::Sha384>(der, data),
+        "rsa-sha512" => rsa_sign_der::<sha2::Sha512>(der, data),
+        "rsa-pss-sha256" => rsa_pss_sign_der::<sha2::Sha256>(der, data),
+        "rsa-pss-sha384" => rsa_pss_sign_der::<sha2::Sha384>(der, data),
+        "rsa-pss-sha512" => rsa_pss_sign_der::<sha2::Sha512>(der, data),
+        "ecdsa-p256-sha256" => ecdsa_sign_der_p256(der, data, format),
+        "ecdsa-p384-sha384" => ecdsa_sign_der_p384(der, data, format),
+        "ecdsa-p521-sha512" => ecdsa_sign_der_p521(der, data, format),
+        "ed25519" => ed25519_sign_der(der, data),
+        other => Err(format!("unsupported sign_der algorithm: {other}")),
+    }
+}
+
+fn rsa_sign_der<D>(der: &[u8], data: &[u8]) -> Result<Vec<u8>, String>
+where
+    D: digest::Digest + digest::const_oid::AssociatedOid,
+{
+    use pkcs8::DecodePrivateKey;
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::signature::{SignatureEncoding, Signer};
+    let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("rsa priv: {e}"))?;
+    let signing_key = SigningKey::<D>::new(priv_key);
+    let sig = signing_key.sign(data);
+    Ok(sig.to_bytes().into_vec())
+}
+
+fn rsa_pss_sign_der<D>(der: &[u8], data: &[u8]) -> Result<Vec<u8>, String>
+where
+    D: digest::Digest + digest::const_oid::AssociatedOid + digest::FixedOutputReset,
+{
+    use pkcs8::DecodePrivateKey;
+    use rsa::pss::SigningKey;
+    use rsa::signature::{RandomizedSigner, SignatureEncoding};
+    let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("rsa priv: {e}"))?;
+    let signing_key = SigningKey::<D>::new(priv_key);
+    let mut rng = rand_core::OsRng;
+    let sig = signing_key.sign_with_rng(&mut rng, data);
+    Ok(sig.to_bytes().into_vec())
+}
+
+fn ecdsa_sign_der_p256(der: &[u8], data: &[u8], format: &str) -> Result<Vec<u8>, String> {
+    use p256::ecdsa::signature::Signer;
+    use p256::ecdsa::{Signature, SigningKey};
+    use pkcs8::DecodePrivateKey;
+    let signing = SigningKey::from_pkcs8_der(der).map_err(|e| format!("p256 priv: {e}"))?;
+    let sig: Signature = signing.sign(data);
+    match format {
+        "der" => Ok(sig.to_der().as_bytes().to_vec()),
+        "ieee-p1363" => Ok(sig.to_bytes().to_vec()),
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ecdsa_sign_der_p384(der: &[u8], data: &[u8], format: &str) -> Result<Vec<u8>, String> {
+    use p384::ecdsa::signature::Signer;
+    use p384::ecdsa::{Signature, SigningKey};
+    use pkcs8::DecodePrivateKey;
+    let signing = SigningKey::from_pkcs8_der(der).map_err(|e| format!("p384 priv: {e}"))?;
+    let sig: Signature = signing.sign(data);
+    match format {
+        "der" => Ok(sig.to_der().as_bytes().to_vec()),
+        "ieee-p1363" => Ok(sig.to_bytes().to_vec()),
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ecdsa_sign_der_p521(der: &[u8], data: &[u8], format: &str) -> Result<Vec<u8>, String> {
+    use p521::ecdsa::signature::Signer;
+    use p521::ecdsa::{Signature, SigningKey};
+    use pkcs8::DecodePrivateKey;
+    let secret = p521::SecretKey::from_pkcs8_der(der).map_err(|e| format!("p521 priv: {e}"))?;
+    let signing =
+        SigningKey::from_slice(&secret.to_bytes()).map_err(|e| format!("p521 signing key: {e}"))?;
+    let sig: Signature = signing.sign(data);
+    match format {
+        "der" => Ok(sig.to_der().as_bytes().to_vec()),
+        "ieee-p1363" => Ok(sig.to_bytes().to_vec()),
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ed25519_sign_der(der: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    use ed25519_dalek::Signer;
+    use pkcs8::DecodePrivateKey;
+    let signing =
+        ed25519_dalek::SigningKey::from_pkcs8_der(der).map_err(|e| format!("ed25519 priv: {e}"))?;
+    let sig = signing.sign(data);
+    Ok(sig.to_bytes().to_vec())
+}
+
+fn op_crypto_verify_der<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let algo = string_arg(scope, &args, 0);
+    let kind = string_arg(scope, &args, 1);
+    let Some(der) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "verify_der: der must be Uint8Array");
+        return;
+    };
+    let Some(data) = bytes_arg(scope, &args, 3) else {
+        throw_error(scope, "verify_der: data must be Uint8Array");
+        return;
+    };
+    let Some(sig) = bytes_arg(scope, &args, 4) else {
+        throw_error(scope, "verify_der: signature must be Uint8Array");
+        return;
+    };
+    let format = if args.length() >= 6 {
+        string_arg(scope, &args, 5)
+    } else {
+        "auto".to_string()
+    };
+    let result = verify_der_impl(&algo, &kind, &der, &data, &sig, &format);
+    match result {
+        Ok(ok) => rv.set(v8::Boolean::new(scope, ok).into()),
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn verify_der_impl(
+    algo: &str,
+    kind: &str,
+    der: &[u8],
+    data: &[u8],
+    sig: &[u8],
+    format: &str,
+) -> Result<bool, String> {
+    if kind != "public-spki" {
+        return Err(format!("verify_der: unsupported kind {kind}"));
+    }
+    match algo {
+        "rsa-sha256" => rsa_verify_der::<sha2::Sha256>(der, data, sig),
+        "rsa-sha384" => rsa_verify_der::<sha2::Sha384>(der, data, sig),
+        "rsa-sha512" => rsa_verify_der::<sha2::Sha512>(der, data, sig),
+        "rsa-pss-sha256" => rsa_pss_verify_der::<sha2::Sha256>(der, data, sig),
+        "rsa-pss-sha384" => rsa_pss_verify_der::<sha2::Sha384>(der, data, sig),
+        "rsa-pss-sha512" => rsa_pss_verify_der::<sha2::Sha512>(der, data, sig),
+        "ecdsa-p256-sha256" => ecdsa_verify_der_p256(der, data, sig, format),
+        "ecdsa-p384-sha384" => ecdsa_verify_der_p384(der, data, sig, format),
+        "ecdsa-p521-sha512" => ecdsa_verify_der_p521(der, data, sig, format),
+        "ed25519" => ed25519_verify_der(der, data, sig),
+        other => Err(format!("unsupported verify_der algorithm: {other}")),
+    }
+}
+
+fn rsa_verify_der<D>(der: &[u8], data: &[u8], sig: &[u8]) -> Result<bool, String>
+where
+    D: digest::Digest + digest::const_oid::AssociatedOid,
+{
+    use pkcs8::DecodePublicKey;
+    use rsa::pkcs1v15::{Signature, VerifyingKey};
+    use rsa::signature::Verifier;
+    let pub_key =
+        rsa::RsaPublicKey::from_public_key_der(der).map_err(|e| format!("rsa pub: {e}"))?;
+    let verifying = VerifyingKey::<D>::new(pub_key);
+    let signature = Signature::try_from(sig).map_err(|e| format!("rsa sig: {e}"))?;
+    Ok(verifying.verify(data, &signature).is_ok())
+}
+
+fn rsa_pss_verify_der<D>(der: &[u8], data: &[u8], sig: &[u8]) -> Result<bool, String>
+where
+    D: digest::Digest + digest::const_oid::AssociatedOid + digest::FixedOutputReset,
+{
+    use pkcs8::DecodePublicKey;
+    use rsa::pss::{Signature, VerifyingKey};
+    use rsa::signature::Verifier;
+    let pub_key =
+        rsa::RsaPublicKey::from_public_key_der(der).map_err(|e| format!("rsa pub: {e}"))?;
+    let verifying = VerifyingKey::<D>::new(pub_key);
+    let signature = Signature::try_from(sig).map_err(|e| format!("rsa sig: {e}"))?;
+    Ok(verifying.verify(data, &signature).is_ok())
+}
+
+fn ecdsa_verify_der_p256(
+    der: &[u8],
+    data: &[u8],
+    sig: &[u8],
+    format: &str,
+) -> Result<bool, String> {
+    use p256::ecdsa::signature::Verifier;
+    use p256::ecdsa::{Signature, VerifyingKey};
+    use pkcs8::DecodePublicKey;
+    let verifying = VerifyingKey::from_public_key_der(der).map_err(|e| format!("p256 pub: {e}"))?;
+    match format {
+        "auto" => {
+            if let Ok(signature) = Signature::from_der(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            if let Ok(signature) = Signature::try_from(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        "der" => {
+            let signature = Signature::from_der(sig).map_err(|e| format!("p256 sig der: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        "ieee-p1363" => {
+            let signature = Signature::try_from(sig).map_err(|e| format!("p256 sig ieee: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ecdsa_verify_der_p384(
+    der: &[u8],
+    data: &[u8],
+    sig: &[u8],
+    format: &str,
+) -> Result<bool, String> {
+    use p384::ecdsa::signature::Verifier;
+    use p384::ecdsa::{Signature, VerifyingKey};
+    use pkcs8::DecodePublicKey;
+    let verifying = VerifyingKey::from_public_key_der(der).map_err(|e| format!("p384 pub: {e}"))?;
+    match format {
+        "auto" => {
+            if let Ok(signature) = Signature::from_der(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            if let Ok(signature) = Signature::try_from(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        "der" => {
+            let signature = Signature::from_der(sig).map_err(|e| format!("p384 sig der: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        "ieee-p1363" => {
+            let signature = Signature::try_from(sig).map_err(|e| format!("p384 sig ieee: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ecdsa_verify_der_p521(
+    der: &[u8],
+    data: &[u8],
+    sig: &[u8],
+    format: &str,
+) -> Result<bool, String> {
+    use p521::ecdsa::signature::Verifier;
+    use p521::ecdsa::{Signature, VerifyingKey};
+    use pkcs8::DecodePublicKey;
+    let public = p521::PublicKey::from_public_key_der(der).map_err(|e| format!("p521 pub: {e}"))?;
+    let verifying = VerifyingKey::from_sec1_bytes(&public.to_sec1_bytes())
+        .map_err(|e| format!("p521 verifying key: {e}"))?;
+    match format {
+        "auto" => {
+            if let Ok(signature) = Signature::from_der(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            if let Ok(signature) = Signature::try_from(sig)
+                && verifying.verify(data, &signature).is_ok()
+            {
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        "der" => {
+            let signature = Signature::from_der(sig).map_err(|e| format!("p521 sig der: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        "ieee-p1363" => {
+            let signature = Signature::try_from(sig).map_err(|e| format!("p521 sig ieee: {e}"))?;
+            Ok(verifying.verify(data, &signature).is_ok())
+        }
+        other => Err(format!("unsupported ecdsa format: {other}")),
+    }
+}
+
+fn ed25519_verify_der(der: &[u8], data: &[u8], sig: &[u8]) -> Result<bool, String> {
+    use ed25519_dalek::{Signature, Verifier};
+    use pkcs8::DecodePublicKey;
+    let verifying = ed25519_dalek::VerifyingKey::from_public_key_der(der)
+        .map_err(|e| format!("ed25519 pub: {e}"))?;
+    if sig.len() != 64 {
+        return Err(format!("ed25519 sig must be 64 bytes, got {}", sig.len()));
+    }
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(sig);
+    let signature = Signature::from_bytes(&sig_arr);
+    Ok(verifying.verify(data, &signature).is_ok())
+}
+
+fn op_crypto_ecdh_derive<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let curve = string_arg(scope, &args, 0);
+    let Some(priv_der) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "ecdh_derive: priv_der must be Uint8Array");
+        return;
+    };
+    let Some(pub_der) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "ecdh_derive: pub_der must be Uint8Array");
+        return;
+    };
+    let result = ecdh_derive_impl(&curve, &priv_der, &pub_der);
+    match result {
+        Ok(secret) => {
+            let arr = bytes_to_uint8array(scope, &secret);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn ecdh_derive_impl(curve: &str, priv_der: &[u8], pub_der: &[u8]) -> Result<Vec<u8>, String> {
+    use p256::elliptic_curve::ecdh::diffie_hellman;
+    use pkcs8::{DecodePrivateKey, DecodePublicKey};
+    match curve {
+        "P-256" | "prime256v1" => {
+            let priv_key =
+                p256::SecretKey::from_pkcs8_der(priv_der).map_err(|e| format!("p256 priv: {e}"))?;
+            let pub_key = p256::PublicKey::from_public_key_der(pub_der)
+                .map_err(|e| format!("p256 pub: {e}"))?;
+            let shared = diffie_hellman(priv_key.to_nonzero_scalar(), pub_key.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        "P-384" | "secp384r1" => {
+            let priv_key =
+                p384::SecretKey::from_pkcs8_der(priv_der).map_err(|e| format!("p384 priv: {e}"))?;
+            let pub_key = p384::PublicKey::from_public_key_der(pub_der)
+                .map_err(|e| format!("p384 pub: {e}"))?;
+            let shared = diffie_hellman(priv_key.to_nonzero_scalar(), pub_key.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        "P-521" | "secp521r1" => {
+            let priv_key =
+                p521::SecretKey::from_pkcs8_der(priv_der).map_err(|e| format!("p521 priv: {e}"))?;
+            let pub_key = p521::PublicKey::from_public_key_der(pub_der)
+                .map_err(|e| format!("p521 pub: {e}"))?;
+            let shared = diffie_hellman(priv_key.to_nonzero_scalar(), pub_key.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        other => Err(format!("unsupported ecdh curve: {other}")),
+    }
+}
+
+fn op_crypto_x25519_derive<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let Some(priv_der) = bytes_arg(scope, &args, 0) else {
+        throw_error(scope, "x25519_derive: priv_der must be Uint8Array");
+        return;
+    };
+    let Some(pub_der) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "x25519_derive: pub_der must be Uint8Array");
+        return;
+    };
+    let result = x25519_derive_impl(&priv_der, &pub_der);
+    match result {
+        Ok(secret) => {
+            let arr = bytes_to_uint8array(scope, &secret);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn x25519_derive_impl(priv_der: &[u8], pub_der: &[u8]) -> Result<Vec<u8>, String> {
+    let secret = x25519_pkcs8_to_secret(priv_der)?;
+    let public = x25519_spki_to_public(pub_der)?;
+    let shared = secret.diffie_hellman(&public);
+    Ok(shared.as_bytes().to_vec())
+}
+
+fn op_crypto_ecdh_generate<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let curve = string_arg(scope, &args, 0);
+    let result = ecdh_generate_impl(&curve);
+    match result {
+        Ok((pub_der, priv_der, pub_raw, priv_raw)) => {
+            let obj = v8::Object::new(scope);
+            let pub_key = v8::String::new(scope, "publicKey").unwrap();
+            let pub_arr = bytes_to_uint8array(scope, &pub_der);
+            obj.set(scope, pub_key.into(), pub_arr.into());
+            let priv_key = v8::String::new(scope, "privateKey").unwrap();
+            let priv_arr = bytes_to_uint8array(scope, &priv_der);
+            obj.set(scope, priv_key.into(), priv_arr.into());
+            let pub_raw_key = v8::String::new(scope, "publicRaw").unwrap();
+            let pub_raw_arr = bytes_to_uint8array(scope, &pub_raw);
+            obj.set(scope, pub_raw_key.into(), pub_raw_arr.into());
+            let priv_raw_key = v8::String::new(scope, "privateRaw").unwrap();
+            let priv_raw_arr = bytes_to_uint8array(scope, &priv_raw);
+            obj.set(scope, priv_raw_key.into(), priv_raw_arr.into());
+            rv.set(obj.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+type EcdhKeyPair = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+fn ecdh_generate_impl(curve: &str) -> Result<EcdhKeyPair, String> {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use rand_core::OsRng;
+    match curve {
+        "P-256" | "prime256v1" => {
+            let secret = p256::SecretKey::random(&mut OsRng);
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p256 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p256 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw))
+        }
+        "P-384" | "secp384r1" => {
+            let secret = p384::SecretKey::random(&mut OsRng);
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p384 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p384 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw))
+        }
+        "P-521" | "secp521r1" => {
+            let secret = p521::SecretKey::random(&mut OsRng);
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p521 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p521 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw))
+        }
+        other => Err(format!("unsupported ecdh curve: {other}")),
+    }
+}
+
+fn op_crypto_ecdh_from_raw<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let curve = string_arg(scope, &args, 0);
+    let Some(priv_raw) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "ecdh_from_raw: priv_raw must be Uint8Array");
+        return;
+    };
+    let result = ecdh_from_raw_impl(&curve, &priv_raw);
+    match result {
+        Ok((pub_der, priv_der, pub_raw, priv_raw)) => {
+            let obj = v8::Object::new(scope);
+            let pub_key = v8::String::new(scope, "publicKey").unwrap();
+            let pub_arr = bytes_to_uint8array(scope, &pub_der);
+            obj.set(scope, pub_key.into(), pub_arr.into());
+            let priv_key = v8::String::new(scope, "privateKey").unwrap();
+            let priv_arr = bytes_to_uint8array(scope, &priv_der);
+            obj.set(scope, priv_key.into(), priv_arr.into());
+            let pub_raw_key = v8::String::new(scope, "publicRaw").unwrap();
+            let pub_raw_arr = bytes_to_uint8array(scope, &pub_raw);
+            obj.set(scope, pub_raw_key.into(), pub_raw_arr.into());
+            let priv_raw_key = v8::String::new(scope, "privateRaw").unwrap();
+            let priv_raw_arr = bytes_to_uint8array(scope, &priv_raw);
+            obj.set(scope, priv_raw_key.into(), priv_raw_arr.into());
+            rv.set(obj.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn ecdh_from_raw_impl(curve: &str, priv_raw: &[u8]) -> Result<EcdhKeyPair, String> {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use pkcs8::{EncodePrivateKey, EncodePublicKey};
+    match curve {
+        "P-256" | "prime256v1" => {
+            let secret =
+                p256::SecretKey::from_slice(priv_raw).map_err(|e| format!("p256 from raw: {e}"))?;
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p256 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p256 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw_out = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw_out))
+        }
+        "P-384" | "secp384r1" => {
+            let secret =
+                p384::SecretKey::from_slice(priv_raw).map_err(|e| format!("p384 from raw: {e}"))?;
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p384 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p384 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw_out = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw_out))
+        }
+        "P-521" | "secp521r1" => {
+            let secret =
+                p521::SecretKey::from_slice(priv_raw).map_err(|e| format!("p521 from raw: {e}"))?;
+            let public = secret.public_key();
+            let priv_der = secret
+                .to_pkcs8_der()
+                .map_err(|e| format!("p521 priv: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let pub_der = public
+                .to_public_key_der()
+                .map_err(|e| format!("p521 pub: {e}"))?
+                .as_bytes()
+                .to_vec();
+            let priv_raw_out = secret.to_bytes().to_vec();
+            let pub_raw = public.to_encoded_point(false).as_bytes().to_vec();
+            Ok((pub_der, priv_der, pub_raw, priv_raw_out))
+        }
+        other => Err(format!("unsupported ecdh curve: {other}")),
+    }
+}
+
+fn op_crypto_ecdh_compute_raw<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let curve = string_arg(scope, &args, 0);
+    let Some(priv_raw) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "ecdh_compute_raw: priv_raw must be Uint8Array");
+        return;
+    };
+    let Some(pub_raw) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "ecdh_compute_raw: pub_raw must be Uint8Array");
+        return;
+    };
+    let result = ecdh_compute_raw_impl(&curve, &priv_raw, &pub_raw);
+    match result {
+        Ok(secret) => {
+            let arr = bytes_to_uint8array(scope, &secret);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn ecdh_compute_raw_impl(curve: &str, priv_raw: &[u8], pub_raw: &[u8]) -> Result<Vec<u8>, String> {
+    use p256::elliptic_curve::ecdh::diffie_hellman;
+    match curve {
+        "P-256" | "prime256v1" => {
+            let secret =
+                p256::SecretKey::from_slice(priv_raw).map_err(|e| format!("p256 priv: {e}"))?;
+            let public =
+                p256::PublicKey::from_sec1_bytes(pub_raw).map_err(|e| format!("p256 pub: {e}"))?;
+            let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        "P-384" | "secp384r1" => {
+            let secret =
+                p384::SecretKey::from_slice(priv_raw).map_err(|e| format!("p384 priv: {e}"))?;
+            let public =
+                p384::PublicKey::from_sec1_bytes(pub_raw).map_err(|e| format!("p384 pub: {e}"))?;
+            let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        "P-521" | "secp521r1" => {
+            let secret =
+                p521::SecretKey::from_slice(priv_raw).map_err(|e| format!("p521 priv: {e}"))?;
+            let public =
+                p521::PublicKey::from_sec1_bytes(pub_raw).map_err(|e| format!("p521 pub: {e}"))?;
+            let shared = diffie_hellman(secret.to_nonzero_scalar(), public.as_affine());
+            Ok(shared.raw_secret_bytes().to_vec())
+        }
+        other => Err(format!("unsupported ecdh curve: {other}")),
+    }
+}
+
+fn op_crypto_hkdf<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let digest = string_arg(scope, &args, 0);
+    let Some(ikm) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "hkdf: ikm must be Uint8Array");
+        return;
+    };
+    let Some(salt) = bytes_arg(scope, &args, 2) else {
+        throw_error(scope, "hkdf: salt must be Uint8Array");
+        return;
+    };
+    let Some(info) = bytes_arg(scope, &args, 3) else {
+        throw_error(scope, "hkdf: info must be Uint8Array");
+        return;
+    };
+    let keylen = string_arg(scope, &args, 4).parse::<usize>().unwrap_or(32);
+    let result = hkdf_impl(&digest, &ikm, &salt, &info, keylen);
+    match result {
+        Ok(okm) => {
+            let arr = bytes_to_uint8array(scope, &okm);
+            rv.set(arr.into());
+        }
+        Err(e) => throw_error(scope, &e),
+    }
+}
+
+fn hkdf_impl(
+    digest: &str,
+    ikm: &[u8],
+    salt: &[u8],
+    info: &[u8],
+    keylen: usize,
+) -> Result<Vec<u8>, String> {
+    use hkdf::Hkdf;
+    match digest {
+        "sha1" => {
+            let h = Hkdf::<sha1::Sha1>::new(Some(salt), ikm);
+            let mut okm = vec![0u8; keylen];
+            h.expand(info, &mut okm)
+                .map_err(|e| format!("hkdf sha1: {e}"))?;
+            Ok(okm)
+        }
+        "sha256" => {
+            let h = Hkdf::<sha2::Sha256>::new(Some(salt), ikm);
+            let mut okm = vec![0u8; keylen];
+            h.expand(info, &mut okm)
+                .map_err(|e| format!("hkdf sha256: {e}"))?;
+            Ok(okm)
+        }
+        "sha384" => {
+            let h = Hkdf::<sha2::Sha384>::new(Some(salt), ikm);
+            let mut okm = vec![0u8; keylen];
+            h.expand(info, &mut okm)
+                .map_err(|e| format!("hkdf sha384: {e}"))?;
+            Ok(okm)
+        }
+        "sha512" => {
+            let h = Hkdf::<sha2::Sha512>::new(Some(salt), ikm);
+            let mut okm = vec![0u8; keylen];
+            h.expand(info, &mut okm)
+                .map_err(|e| format!("hkdf sha512: {e}"))?;
+            Ok(okm)
+        }
+        other => Err(format!("unsupported hkdf digest: {other}")),
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────
