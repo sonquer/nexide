@@ -1,6 +1,6 @@
 //! Trait + concrete implementation of the cross-thread dispatcher.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -167,7 +167,14 @@ async fn run_worker(
         }
     };
     let project_root = sandbox_root_for(&entrypoint);
-    let resolver = Arc::new(FsResolver::new(vec![project_root.clone()], registry));
+    let entrypoint_dir = entrypoint
+        .parent()
+        .map_or_else(|| project_root.clone(), Path::to_path_buf);
+    let mut resolver_roots: Vec<PathBuf> = vec![entrypoint_dir.clone()];
+    if entrypoint_dir != project_root {
+        resolver_roots.push(project_root.clone());
+    }
+    let resolver = Arc::new(FsResolver::new(resolver_roots, registry));
     let ctx = BootContext::new()
         .with_cjs(resolver)
         .with_cjs_root(ROOT_PARENT)

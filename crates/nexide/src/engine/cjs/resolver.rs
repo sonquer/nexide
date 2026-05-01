@@ -590,6 +590,21 @@ mod tests {
     }
 
     #[test]
+    fn root_resolves_relative_to_first_root_when_node_modules_live_in_subdir() {
+        let sandbox = tmp_root();
+        let app = sandbox.path().join("web-ui");
+        let pkg = app.join("node_modules").join("firebase-admin");
+        fs::create_dir_all(&pkg).expect("mkdirs");
+        fs::write(pkg.join("index.js"), "module.exports = 'fb';").expect("entry");
+        let resolver = FsResolver::new(
+            vec![app.clone(), sandbox.path().to_path_buf()],
+            registry_with(&[]),
+        );
+        let r = resolver.resolve(ROOT_PARENT, "firebase-admin").expect("ok");
+        assert!(matches!(r, Resolved::File(p) if p.ends_with("index.js")));
+    }
+
+    #[test]
     fn resolves_subpath_imports_with_conditions() {
         let dir = tmp_root();
         let pkg = dir.path().join("node_modules").join("inner");
