@@ -631,11 +631,7 @@ async fn resolve_source(
     fetch_internal(ctx, &params.url, accept).await
 }
 
-async fn fetch_internal(
-    ctx: &Arc<Ctx>,
-    href: &str,
-    accept: &str,
-) -> Result<Source, HandlerError> {
+async fn fetch_internal(ctx: &Arc<Ctx>, href: &str, accept: &str) -> Result<Source, HandlerError> {
     let host = match ctx.bind_addr {
         std::net::SocketAddr::V4(v4) => {
             let ip = v4.ip();

@@ -272,15 +272,13 @@ impl AppLayout {
         if let Some(cwd) = cwd_root {
             push_unique(&mut roots, cwd);
         }
-        let alt = |rel: &str| -> Vec<PathBuf> {
-            roots.iter().map(|r| r.join(rel)).collect()
-        };
+        let alt = |rel: &str| -> Vec<PathBuf> { roots.iter().map(|r| r.join(rel)).collect() };
         let app_dir = pick_existing_dir(&alt(".next/server/app"), &["page.js", "_not-found"])
             .ok_or_else(|| RuntimeError::MissingDir(app_root.join(".next/server/app")))?;
         let next_static_dir = pick_existing_dir(&alt(".next/static"), &["chunks"])
             .ok_or_else(|| RuntimeError::MissingDir(app_root.join(".next/static")))?;
-        let public_dir = pick_existing_dir(&alt("public"), &[])
-            .unwrap_or_else(|| app_root.join("public"));
+        let public_dir =
+            pick_existing_dir(&alt("public"), &[]).unwrap_or_else(|| app_root.join("public"));
         let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
         Ok(Self {
             config,
@@ -302,13 +300,12 @@ impl AppLayout {
 /// copies build outputs to different layouts (`/app/<app>/.next/static`
 /// vs `/app/.next/static`).
 fn pick_existing_dir(candidates: &[PathBuf], markers: &[&str]) -> Option<PathBuf> {
-    if !markers.is_empty() {
-        if let Some(p) = candidates
+    if !markers.is_empty()
+        && let Some(p) = candidates
             .iter()
             .find(|p| p.is_dir() && markers.iter().all(|m| p.join(m).exists()))
-        {
-            return Some(p.clone());
-        }
+    {
+        return Some(p.clone());
     }
     candidates.iter().find(|p| p.is_dir()).cloned()
 }
