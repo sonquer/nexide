@@ -75,6 +75,8 @@ pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Rou
     let next_image = crate::image::next_image_service(
         cfg.app_dir().to_path_buf(),
         cfg.public_dir().to_path_buf(),
+        cfg.next_static_dir().to_path_buf(),
+        cfg.bind(),
     );
     let immutable_cache = ServiceBuilder::new().layer(SetResponseHeaderLayer::overriding(
         CACHE_CONTROL,

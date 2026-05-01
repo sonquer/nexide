@@ -170,13 +170,28 @@ impl Default for ImageConfig {
 }
 
 impl ImageConfig {
-    /// Loads `images` from `<app>/.next/required-server-files.json`.
+    /// Loads `images` from the standalone bundle's
+    /// `required-server-files.json`. The file is emitted at the
+    /// **workspace root** of the bundle (`<workspace>/.next/required-server-files.json`),
+    /// not under `.next/server/app`. Callers pass the resolved
+    /// `app_dir` (`.next/server/app`); we walk up two parents to get
+    /// to `.next/`.
+    ///
     /// Returns [`Self::default`] when the file is absent or malformed -
     /// the optimizer should never block server startup.
     #[must_use]
     pub fn from_app_dir(app_dir: &Path) -> Self {
-        let path = app_dir.join(".next").join("required-server-files.json");
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let dot_next = app_dir
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| app_dir.join(".next"));
+        let mut candidates = vec![dot_next.join("required-server-files.json")];
+        candidates.push(app_dir.join(".next").join("required-server-files.json"));
+        let text = candidates
+            .iter()
+            .find_map(|p| std::fs::read_to_string(p).ok());
+        let Some(text) = text else {
             return Self::default();
         };
         let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) else {

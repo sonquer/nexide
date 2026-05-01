@@ -243,25 +243,44 @@ impl AppLayout {
         // app subdirectory: `.next/static` is copied as a sibling of
         // `node_modules/` by every conventional Dockerfile, and a
         // shared `public/` may live at either level depending on the
-        // operator's preference. Try the app dir first, then fall back
-        // to the sandbox root so both layouts work without flags.
-        let sandbox_root = std::env::var(SANDBOX_ROOT_ENV)
+        // operator's preference.
+        //
+        // Resolution order: explicit `NEXIDE_SANDBOX_ROOT` env var,
+        // then process CWD, then app_root. We probe every candidate
+        // and pick the most "complete" one for each role - e.g. a
+        // `.next/static/chunks/` populated tree wins over an empty
+        // sibling. This handles the common Dockerfile that copies
+        // `<build>/.next/standalone/` to `/app/` and
+        // `<build>/.next/static/` to `/app/.next/static/`,
+        // leaving an empty `/app/<app>/.next/static/` next to
+        // `server.js`.
+        let env_root = std::env::var(SANDBOX_ROOT_ENV)
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.is_absolute() && p.is_dir());
-        let alt = |rel: &str| -> Vec<PathBuf> {
-            let mut v = vec![app_root.join(rel)];
-            if let Some(root) = sandbox_root.as_ref() {
-                let candidate = root.join(rel);
-                if candidate != v[0] {
-                    v.push(candidate);
-                }
+        let cwd_root = std::env::current_dir().ok();
+        let mut roots: Vec<PathBuf> = Vec::with_capacity(3);
+        let push_unique = |v: &mut Vec<PathBuf>, p: PathBuf| {
+            if !v.iter().any(|existing| existing == &p) {
+                v.push(p);
             }
-            v
         };
-        let app_dir = first_existing_or_err(&alt(".next/server/app"))?;
-        let next_static_dir = first_existing_or_err(&alt(".next/static"))?;
-        let public_dir = first_existing_or_default(&alt("public"));
+        push_unique(&mut roots, app_root.clone());
+        if let Some(env) = env_root {
+            push_unique(&mut roots, env);
+        }
+        if let Some(cwd) = cwd_root {
+            push_unique(&mut roots, cwd);
+        }
+        let alt = |rel: &str| -> Vec<PathBuf> {
+            roots.iter().map(|r| r.join(rel)).collect()
+        };
+        let app_dir = pick_existing_dir(&alt(".next/server/app"), &["page.js", "_not-found"])
+            .ok_or_else(|| RuntimeError::MissingDir(app_root.join(".next/server/app")))?;
+        let next_static_dir = pick_existing_dir(&alt(".next/static"), &["chunks"])
+            .ok_or_else(|| RuntimeError::MissingDir(app_root.join(".next/static")))?;
+        let public_dir = pick_existing_dir(&alt("public"), &[])
+            .unwrap_or_else(|| app_root.join("public"));
         let config = ServerConfig::try_new(bind, public_dir, next_static_dir, app_dir)?;
         Ok(Self {
             config,
@@ -271,6 +290,27 @@ impl AppLayout {
             },
         })
     }
+}
+
+/// Picks the candidate directory that contains every `marker` (file
+/// or directory name). When no candidate satisfies the markers, falls
+/// back to the first existing directory. Returns `None` only when
+/// every candidate is missing on disk.
+///
+/// Used by [`AppLayout::from_entrypoint`] to disambiguate between
+/// multiple plausible roots in standalone deploys where the operator
+/// copies build outputs to different layouts (`/app/<app>/.next/static`
+/// vs `/app/.next/static`).
+fn pick_existing_dir(candidates: &[PathBuf], markers: &[&str]) -> Option<PathBuf> {
+    if !markers.is_empty() {
+        if let Some(p) = candidates
+            .iter()
+            .find(|p| p.is_dir() && markers.iter().all(|m| p.join(m).exists()))
+        {
+            return Some(p.clone());
+        }
+    }
+    candidates.iter().find(|p| p.is_dir()).cloned()
 }
 
 /// Three on-disk shapes a Next.js `output: "standalone"` deploy can
