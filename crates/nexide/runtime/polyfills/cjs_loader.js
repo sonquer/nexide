@@ -33,12 +33,7 @@
   }
 
   function compileWrapper(source, specifier) {
-    const wrapper =
-      "(function (exports, require, module, __filename, __dirname) {\n" +
-      source +
-      "\n})\n//# sourceURL=" +
-      specifier;
-    const fn = (0, eval)(wrapper);
+    const fn = ops.op_cjs_compile_function(source, specifier);
     return function (exports, require, module, __filename, __dirname) {
       moduleStack.push(specifier);
       try {

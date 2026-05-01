@@ -87,6 +87,12 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_cjs_root_parent", op_cjs_root_parent);
     install_fn(scope, ops, "op_cjs_resolve", op_cjs_resolve);
     install_fn(scope, ops, "op_cjs_read_source", op_cjs_read_source);
+    install_fn(
+        scope,
+        ops,
+        "op_cjs_compile_function",
+        op_cjs_compile_function,
+    );
     install_fn(scope, ops, "op_napi_load", op_napi_load);
 
     install_fn(scope, ops, "op_os_arch", op_os_arch);
@@ -1329,6 +1335,68 @@ fn op_cjs_read_source<'s>(
     arr.set_index(scope, 0, src_str.into());
     arr.set_index(scope, 1, kind_num.into());
     rv.set(arr.into());
+}
+
+fn op_cjs_compile_function<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let source = args.get(0).to_rust_string_lossy(scope);
+    let specifier = args.get(1).to_rust_string_lossy(scope);
+    if specifier.is_empty()
+        || specifier
+            .chars()
+            .any(|c| c == '\n' || c == '\r' || c == '\0')
+    {
+        throw_error(scope, "EINVAL: invalid module specifier");
+        return;
+    }
+    let Some(code_str) = v8::String::new(scope, &source) else {
+        throw_error(scope, "op_cjs_compile_function: failed to allocate source");
+        return;
+    };
+    let Some(resource) = v8::String::new(scope, &specifier) else {
+        throw_error(
+            scope,
+            "op_cjs_compile_function: failed to allocate specifier",
+        );
+        return;
+    };
+    let undefined = v8::undefined(scope).into();
+    let origin = v8::ScriptOrigin::new(
+        scope,
+        resource.into(),
+        0,
+        0,
+        false,
+        0,
+        Some(undefined),
+        false,
+        false,
+        false,
+        None,
+    );
+    let mut src_obj = v8::script_compiler::Source::new(code_str, Some(&origin));
+    let arg_names = [
+        v8::String::new(scope, "exports").unwrap(),
+        v8::String::new(scope, "require").unwrap(),
+        v8::String::new(scope, "module").unwrap(),
+        v8::String::new(scope, "__filename").unwrap(),
+        v8::String::new(scope, "__dirname").unwrap(),
+    ];
+    let func = match v8::script_compiler::compile_function(
+        scope,
+        &mut src_obj,
+        &arg_names,
+        &[],
+        v8::script_compiler::CompileOptions::NoCompileOptions,
+        v8::script_compiler::NoCacheReason::NoReason,
+    ) {
+        Some(f) => f,
+        None => return,
+    };
+    rv.set(func.into());
 }
 
 fn op_napi_load<'s>(
