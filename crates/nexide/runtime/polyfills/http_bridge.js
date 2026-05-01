@@ -256,8 +256,7 @@
             ops.op_nexide_send_response(
               idx,
               gen,
-              pendingHead.status,
-              pendingHead.headers,
+              { status: pendingHead.status, headers: pendingHead.headers },
               body,
             );
             headSent = true;

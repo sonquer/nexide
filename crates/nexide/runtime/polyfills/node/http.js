@@ -350,17 +350,24 @@ class Server extends EventEmitter {
     this._address = { port, family: "IPv4", address: host };
     this._listening = true;
 
-    const adapter = async (synthReq, synthRes) => {
+    const adapter = (synthReq, synthRes) => {
       const req = new IncomingMessage(synthReq);
       const res = new ServerResponse(synthRes);
       res.req = req;
       const listeners = this.listeners("request");
+      const pending = [];
       for (const fn of listeners) {
         const ret = fn(req, res);
-        if (ret && typeof ret.then === "function") {
-          await ret;
-        }
+        if (ret && typeof ret.then === "function") pending.push(ret);
       }
+      return Promise.all(pending).then(
+        () => new Promise((resolve) => {
+          if (res._ended || res._destroyed) { resolve(); return; }
+          const done = () => resolve();
+          res.once("finish", done);
+          res.once("close", done);
+        }),
+      );
     };
     this._token = globalThis.__nexide.pushHandler(adapter);
 
@@ -486,21 +493,39 @@ class ClientRequest extends Writable {
 
   setSocketKeepAlive(_enable, _initialDelay) { return this; }
 
-  _write(chunk, _encoding, callback) {
-    if (chunk === null || chunk === undefined) {
-      callback();
-      return;
+  write(chunk, encoding, callback) {
+    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    if (chunk == null) { if (callback) callback(); return true; }
+    let buf;
+    if (chunk instanceof Uint8Array) {
+      buf = chunk;
+    } else if (chunk instanceof ArrayBuffer) {
+      buf = new Uint8Array(chunk);
+    } else if (ArrayBuffer.isView(chunk)) {
+      buf = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    } else if (typeof chunk === "string") {
+      buf = new TextEncoder().encode(chunk);
+    } else {
+      buf = new TextEncoder().encode(String(chunk));
     }
-    const buf = chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk));
     this._chunks.push(buf);
+    if (callback) callback();
+    return true;
+  }
+
+  _write(chunk, _encoding, callback) {
+    this.write(chunk);
     callback();
   }
 
   end(chunk, encoding, callback) {
+    if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
+    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     if (chunk !== undefined && chunk !== null) {
       this.write(chunk, encoding);
     }
-    super.end(undefined, undefined, callback);
+    this._ended = true;
+    if (callback) callback();
     this._sent = true;
     this._dispatchIfReady();
   }
