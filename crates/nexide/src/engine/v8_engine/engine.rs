@@ -204,6 +204,7 @@ impl V8Engine {
         };
         isolate.set_slot(BridgeStateHandle::new(bridge));
         isolate.set_slot(ModuleMap::new());
+        isolate.set_host_import_module_dynamically_callback(host_import_module_dynamically);
 
         let context_global = {
             v8::scope!(let scope, &mut isolate);
@@ -594,6 +595,65 @@ fn throw_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
     let msg = v8::String::new(scope, message).unwrap();
     let exc = v8::Exception::error(scope, msg);
     scope.throw_exception(exc);
+}
+
+/// V8 host hook for `import(specifier)` expressions. Bridges to the
+/// CommonJS loader (`globalThis.__nexideCjs.dynamicImport`) so that
+/// dynamic imports of bare specifiers and `node:` builtins resolve
+/// the same way `require()` does, then wraps the resulting CJS
+/// `module.exports` in a synthetic ES-module-namespace-shaped object.
+///
+/// Failures are returned as a rejected Promise (matching Node.js
+/// behaviour: dynamic import is async even when the loader is sync).
+fn host_import_module_dynamically<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _host_defined_options: v8::Local<'s, v8::Data>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let resolver = v8::PromiseResolver::new(scope)?;
+    let promise = resolver.get_promise(scope);
+
+    let context = scope.get_current_context();
+    let global = context.global(scope);
+    let cjs_key = v8::String::new(scope, "__nexideCjs")?;
+    let cjs_val = global.get(scope, cjs_key.into())?;
+    let Ok(cjs_obj) = v8::Local::<v8::Object>::try_from(cjs_val) else {
+        let msg = v8::String::new(scope, "dynamic import: CJS loader unavailable")?;
+        let err = v8::Exception::error(scope, msg);
+        resolver.reject(scope, err);
+        return Some(promise);
+    };
+
+    let fn_key = v8::String::new(scope, "dynamicImport")?;
+    let fn_val = cjs_obj.get(scope, fn_key.into())?;
+    let Ok(import_fn) = v8::Local::<v8::Function>::try_from(fn_val) else {
+        let msg = v8::String::new(scope, "dynamic import: __nexideCjs.dynamicImport missing")?;
+        let err = v8::Exception::error(scope, msg);
+        resolver.reject(scope, err);
+        return Some(promise);
+    };
+
+    let referrer: v8::Local<v8::Value> = if resource_name.is_string() {
+        resource_name
+    } else {
+        v8::undefined(scope).into()
+    };
+
+    v8::tc_scope!(let tc, scope);
+    let recv: v8::Local<v8::Value> = cjs_obj.into();
+    let args = [specifier.into(), referrer];
+    match import_fn.call(tc, recv, &args) {
+        Some(value) => {
+            resolver.resolve(tc, value);
+        }
+        None => {
+            let exception = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+            resolver.reject(tc, exception);
+        }
+    }
+    Some(promise)
 }
 
 #[cfg(test)]

@@ -100,6 +100,30 @@
     }
   }
 
+  function buildNamespace(exports) {
+    if (exports && typeof exports === "object" && exports.__esModule) {
+      return exports;
+    }
+    const ns = Object.create(null);
+    if (exports !== null && exports !== undefined) {
+      if (typeof exports === "object" || typeof exports === "function") {
+        for (const k of Object.keys(exports)) {
+          try { ns[k] = exports[k]; } catch (_) {}
+        }
+      }
+    }
+    ns.default = exports;
+    return ns;
+  }
+
+  function dynamicImport(specifier, referrer) {
+    const parent = (typeof referrer === "string" && referrer.length > 0)
+      ? referrer
+      : ops.op_cjs_root_parent();
+    const exports = loadModule(parent, specifier);
+    return buildNamespace(exports);
+  }
+
   Object.defineProperty(globalThis, "__nexideCjs", {
     value: {
       load: loadModule,
@@ -107,6 +131,7 @@
       makeRequire,
       dirnameOf,
       basenameOf,
+      dynamicImport,
     },
     enumerable: false,
     writable: false,
