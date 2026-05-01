@@ -335,15 +335,57 @@
     globalThis.AbortController = AbortController;
   }
 
-  function readBody(input) {
-    if (input == null) return new Uint8Array(0);
-    if (input instanceof Uint8Array) return input;
+  function extractBody(input) {
+    if (input == null) return { bytes: new Uint8Array(0), contentType: null };
+    if (input instanceof Uint8Array) return { bytes: input, contentType: null };
     if (typeof input === "string") {
-      const enc = new TextEncoder();
-      return enc.encode(input);
+      return {
+        bytes: new TextEncoder().encode(input),
+        contentType: "text/plain;charset=UTF-8",
+      };
     }
-    if (input.buffer instanceof ArrayBuffer) return new Uint8Array(input.buffer);
-    return new Uint8Array(0);
+    if (typeof globalThis.URLSearchParams !== "undefined" && input instanceof globalThis.URLSearchParams) {
+      return {
+        bytes: new TextEncoder().encode(input.toString()),
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+      };
+    }
+    if (typeof globalThis.Blob !== "undefined" && input instanceof globalThis.Blob) {
+      return { bytes: null, blob: input, contentType: input.type || null };
+    }
+    if (input instanceof ArrayBuffer) return { bytes: new Uint8Array(input), contentType: null };
+    if (ArrayBuffer.isView(input)) {
+      return {
+        bytes: new Uint8Array(input.buffer, input.byteOffset, input.byteLength),
+        contentType: null,
+      };
+    }
+    if (typeof globalThis.FormData !== "undefined" && input instanceof globalThis.FormData) {
+      const boundary = "----nexide" + Math.random().toString(16).slice(2);
+      const enc = new TextEncoder();
+      const parts = [];
+      for (const [name, value] of input.entries()) {
+        parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n`));
+        parts.push(enc.encode(typeof value === "string" ? value : String(value)));
+        parts.push(enc.encode("\r\n"));
+      }
+      parts.push(enc.encode(`--${boundary}--\r\n`));
+      let total = 0;
+      for (const p of parts) total += p.byteLength;
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const p of parts) { out.set(p, off); off += p.byteLength; }
+      return {
+        bytes: out,
+        contentType: `multipart/form-data; boundary=${boundary}`,
+      };
+    }
+    return { bytes: new Uint8Array(0), contentType: null };
+  }
+
+  function readBody(input) {
+    const { bytes } = extractBody(input);
+    return bytes || new Uint8Array(0);
   }
 
   function isNodeReadable(value) {
@@ -557,7 +599,28 @@
         for (const [name, value] of Object.entries(headersIn)) headers.push([String(name), String(value)]);
       }
       const rawBody = init.body ?? (input && input._rawBody) ?? null;
-      const body = await collectBody(rawBody);
+      let body = null;
+      let derivedContentType = null;
+      if (rawBody != null) {
+        if (rawBody instanceof globalThis.ReadableStream || isNodeReadable(rawBody)) {
+          body = await collectBody(rawBody);
+        } else {
+          const extracted = extractBody(rawBody);
+          if (extracted.blob) {
+            body = new Uint8Array(await extracted.blob.arrayBuffer());
+          } else {
+            body = extracted.bytes && extracted.bytes.byteLength > 0 ? extracted.bytes : null;
+          }
+          derivedContentType = extracted.contentType;
+        }
+      }
+      if (derivedContentType) {
+        let hasCt = false;
+        for (const [n] of headers) {
+          if (n.toLowerCase() === "content-type") { hasCt = true; break; }
+        }
+        if (!hasCt) headers.push(["content-type", derivedContentType]);
+      }
 
       const resp = await httpOps.op_http_request({ method, url, headers, body });
 

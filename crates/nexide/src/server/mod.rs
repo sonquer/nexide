@@ -70,14 +70,15 @@ pub enum ServerError {
 /// from the historical handler implementation; tests inject [`NotImplementedHandler`] or a recording
 /// double.
 pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Router {
-    let dynamic = static_assets::dynamic_service(handler);
+    let dynamic = static_assets::dynamic_service(handler.clone());
     let prerender = prerender::prerender_with_fallback(cfg.app_dir().to_path_buf(), dynamic);
     let public = static_assets::public_with_fallback_service(cfg.public_dir(), prerender);
-    let next_image = crate::image::next_image_service(
+    let next_image = crate::image::next_image_service_with_dynamic(
         cfg.app_dir().to_path_buf(),
         cfg.public_dir().to_path_buf(),
         cfg.next_static_dir().to_path_buf(),
         cfg.bind(),
+        Some(handler),
     );
     let immutable_cache = ServiceBuilder::new().layer(SetResponseHeaderLayer::overriding(
         CACHE_CONTROL,

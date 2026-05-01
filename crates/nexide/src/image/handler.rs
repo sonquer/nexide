@@ -42,6 +42,7 @@ struct Ctx {
     config: ImageConfig,
     http: reqwest::Client,
     mem: super::memory::MemCache,
+    dynamic: Option<Arc<dyn crate::server::fallback::DynamicHandler>>,
 }
 
 /// Builds the `/_next/image` handler service.
@@ -51,6 +52,22 @@ pub fn next_image_service(
     public_dir: PathBuf,
     next_static_dir: PathBuf,
     bind_addr: std::net::SocketAddr,
+) -> NextImageService {
+    next_image_service_with_dynamic(app_dir, public_dir, next_static_dir, bind_addr, None)
+}
+
+/// Same as [`next_image_service`] but also receives the dynamic
+/// (Next.js bridge) handler so internal `/_next/image?url=/api/...`
+/// fetches resolve in-process instead of looping through TCP. Avoids
+/// connection-pool deadlocks and the 7-second timeout penalty when
+/// the Next bridge is busy.
+#[must_use]
+pub fn next_image_service_with_dynamic(
+    app_dir: PathBuf,
+    public_dir: PathBuf,
+    next_static_dir: PathBuf,
+    bind_addr: std::net::SocketAddr,
+    dynamic: Option<Arc<dyn crate::server::fallback::DynamicHandler>>,
 ) -> NextImageService {
     let config = ImageConfig::from_app_dir(&app_dir);
     let http = reqwest::Client::builder()
@@ -66,6 +83,7 @@ pub fn next_image_service(
         config,
         http,
         mem: super::memory::MemCache::new(),
+        dynamic,
     });
     let svc = service_fn(move |req: Request<Body>| {
         let ctx = ctx.clone();
@@ -632,6 +650,93 @@ async fn resolve_source(
 }
 
 async fn fetch_internal(ctx: &Arc<Ctx>, href: &str, accept: &str) -> Result<Source, HandlerError> {
+    if let Some(handler) = ctx.dynamic.as_ref() {
+        return fetch_via_handler(ctx, handler.as_ref(), href, accept).await;
+    }
+    fetch_via_loopback(ctx, href, accept).await
+}
+
+async fn fetch_via_handler(
+    ctx: &Arc<Ctx>,
+    handler: &dyn crate::server::fallback::DynamicHandler,
+    href: &str,
+    accept: &str,
+) -> Result<Source, HandlerError> {
+    let mut builder = Request::builder().method(Method::GET).uri(href).header(
+        axum::http::header::USER_AGENT,
+        "nexide-image-optimizer/1 (internal)",
+    );
+    if !accept.is_empty() {
+        builder = builder.header(ACCEPT, accept);
+    }
+    let req = builder.body(Body::empty()).map_err(|err| {
+        warn!(target: "nexide::image", url = %href, error = %err, "internal request build failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    let resp = handler.handle(req).await.map_err(|err| {
+        warn!(target: "nexide::image", url = %href, error = %err, "internal handler failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        let mapped = if status == StatusCode::NOT_FOUND {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::from_u16(508).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        };
+        return Err(HandlerError::new(
+            mapped,
+            "\"url\" parameter is valid but upstream response is invalid",
+        ));
+    }
+    let upstream_etag = resp
+        .headers()
+        .get(ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    let upstream_max_age = resp
+        .headers()
+        .get(CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(parse_cache_control_max_age)
+        .unwrap_or(0);
+    let limit = ctx.config.maximum_response_body;
+    let bytes_full = match axum::body::to_bytes(resp.into_body(), limit as usize).await {
+        Ok(b) => b,
+        Err(err) => {
+            warn!(target: "nexide::image", error = %err, "internal handler body read failed");
+            return Err(HandlerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "\"url\" parameter is valid but upstream response is invalid",
+            ));
+        }
+    };
+    if (bytes_full.len() as u64) > limit {
+        return Err(HandlerError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "\"url\" parameter is valid but upstream response is too large",
+        ));
+    }
+    Ok(Source {
+        bytes: bytes_full.to_vec(),
+        upstream_etag,
+        upstream_max_age,
+        config_snapshot: ctx.config.clone(),
+    })
+}
+
+async fn fetch_via_loopback(
+    ctx: &Arc<Ctx>,
+    href: &str,
+    accept: &str,
+) -> Result<Source, HandlerError> {
     let host = match ctx.bind_addr {
         std::net::SocketAddr::V4(v4) => {
             let ip = v4.ip();

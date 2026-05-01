@@ -13,4 +13,4 @@ mod memory;
 mod pipeline;
 
 pub use config::ImageConfig;
-pub use handler::next_image_service;
+pub use handler::{next_image_service, next_image_service_with_dynamic};
