@@ -312,6 +312,21 @@
     }
   };
 
+  function readTimeoutMs() {
+    try {
+      const env = (typeof process === "object" && process && process.env) || {};
+      const raw = env.NEXIDE_HANDLER_TIMEOUT_MS;
+      if (raw === undefined || raw === null || raw === "") return 60_000;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return 60_000;
+      return n | 0;
+    } catch (_e) {
+      return 60_000;
+    }
+  }
+
+  const HANDLER_TIMEOUT_MS = readTimeoutMs();
+
   nexide.__dispatch = function (idx, gen) {
     const top = stack[stack.length - 1];
     if (!top) {
@@ -347,7 +362,42 @@
       handlerPromise = Promise.resolve(ret);
     }
 
-    return handlerPromise.then(
+    let timeoutHandle = null;
+    let timedOut = false;
+    const guarded = HANDLER_TIMEOUT_MS > 0
+      ? new Promise((resolve, reject) => {
+          timeoutHandle = setTimeout(() => {
+            if (res.__isEnded()) {
+              resolve(undefined);
+              return;
+            }
+            timedOut = true;
+            const url = (req && typeof req.url === "string") ? req.url : "?";
+            const method = (req && typeof req.method === "string") ? req.method : "?";
+            try {
+              ops.op_nexide_log(
+                4,
+                `nexide handler watchdog: ${method} ${url} did not settle within ${HANDLER_TIMEOUT_MS}ms; closing slot`,
+              );
+            } catch (_e) { /* logging op may be gone during shutdown */ }
+            try {
+              if (typeof res.statusCode === "number") res.statusCode = 504;
+              res.end("Gateway Timeout");
+            } catch (_e) { /* res may be in inconsistent state */ }
+            const err = new Error(
+              `nexide handler watchdog: ${method} ${url} timed out after ${HANDLER_TIMEOUT_MS}ms`,
+            );
+            err.code = "ERR_HANDLER_TIMEOUT";
+            reject(err);
+          }, HANDLER_TIMEOUT_MS);
+          handlerPromise.then(
+            (v) => { if (timeoutHandle) clearTimeout(timeoutHandle); resolve(v); },
+            (e) => { if (timeoutHandle) clearTimeout(timeoutHandle); reject(e); },
+          );
+        })
+      : handlerPromise;
+
+    return guarded.then(
       () => {
         if (!res.__isEnded()) {
           try { res.end(); } catch { }
@@ -356,6 +406,9 @@
       (err) => {
         if (!res.__isEnded()) {
           try { res.end(); } catch { }
+        }
+        if (timedOut) {
+          return;
         }
         throw err;
       },
