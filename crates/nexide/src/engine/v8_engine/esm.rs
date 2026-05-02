@@ -37,6 +37,8 @@ use super::modules::{ModuleMap, resolve_relative};
 use crate::engine::EngineError;
 use crate::engine::cjs::{self, Resolved, is_esm_path};
 
+const LOG_TARGET: &str = "nexide::engine::esm";
+
 /// Public entry point used from the V8 host hook and from
 /// `op_esm_dynamic_import`. Always returns a promise; failures are
 /// rejected, never thrown.
@@ -47,11 +49,30 @@ pub(super) fn do_esm_dynamic_import<'s>(
 ) -> v8::Local<'s, v8::Promise> {
     let outer = v8::PromiseResolver::new(scope).expect("PromiseResolver::new");
     let outer_promise = outer.get_promise(scope);
+    tracing::trace!(
+        target: LOG_TARGET,
+        specifier,
+        referrer = referrer.unwrap_or("<root>"),
+        "dynamic import requested",
+    );
     match try_dynamic_import(scope, specifier, referrer) {
         Ok(value) => {
+            tracing::debug!(
+                target: LOG_TARGET,
+                specifier,
+                referrer = referrer.unwrap_or("<root>"),
+                "dynamic import resolved",
+            );
             outer.resolve(scope, value);
         }
         Err(err) => {
+            tracing::warn!(
+                target: LOG_TARGET,
+                specifier,
+                referrer = referrer.unwrap_or("<root>"),
+                error = %err,
+                "dynamic import failed",
+            );
             let msg = format!("dynamic import: {err} (specifier '{specifier}')");
             let s = v8::String::new(scope, &msg).unwrap();
             let exc = v8::Exception::error(scope, s);
@@ -192,9 +213,27 @@ pub(super) fn load_esm_graph<'s>(
     abs_path: &Path,
 ) -> Result<v8::Local<'s, v8::Module>, EngineError> {
     if let Some(cached) = get_module_map_mut(scope).and_then(|m| m.get(abs_path).cloned()) {
+        tracing::trace!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            "esm graph cache hit",
+        );
         return Ok(v8::Local::new(scope, &cached));
     }
-    let module = compile_module(scope, abs_path)?;
+    tracing::debug!(
+        target: LOG_TARGET,
+        path = %abs_path.display(),
+        "compiling esm module",
+    );
+    let module = compile_module(scope, abs_path).map_err(|e| {
+        tracing::warn!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            error = %e,
+            "esm module compile failed",
+        );
+        e
+    })?;
     process_module_requests(scope, module, abs_path)?;
     Ok(module)
 }

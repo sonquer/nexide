@@ -13,6 +13,7 @@
 //! `ESERVFAIL`, …) so caller code can pattern-match on `err.code`
 //! exactly the way it would on Node.
 
+use std::fmt;
 use std::io;
 use std::net::IpAddr;
 use std::sync::OnceLock;
@@ -20,6 +21,8 @@ use std::sync::OnceLock;
 use hickory_resolver::TokioAsyncResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::error::ResolveError;
+
+const LOG_TARGET: &str = "nexide::ops::dns";
 
 /// Hickory's API is fully `Send + Sync` and internally backed by an
 /// `Arc`, so a single resolver shared across all worker isolates is
@@ -76,6 +79,14 @@ impl DnsError {
     }
 }
 
+impl fmt::Display for DnsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for DnsError {}
+
 /// Result of [`lookup`].
 #[derive(Debug, Clone)]
 pub struct LookupResult {
@@ -118,6 +129,14 @@ impl LookupFamily {
 /// hickory-backed [`resolve4`] / [`resolve6`] because Node's
 /// `dns.lookup` is documented to honour `nsswitch.conf`, hostfile
 /// and mDNS - none of which hickory consults.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_lookup",
+    skip_all,
+    fields(host = %host, family = ?family, max),
+    err(level = "warn", Display),
+)]
 pub async fn lookup(
     host: &str,
     family: LookupFamily,
@@ -152,27 +171,48 @@ pub async fn lookup(
             message: format!("getaddrinfo ENOTFOUND {host}"),
         });
     }
+    tracing::debug!(target: LOG_TARGET, count = out.len(), "lookup resolved");
     Ok(out)
 }
 
 /// Returns the IPv4 addresses for `host` (`A` records only).
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve4",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve4(host: &str) -> Result<Vec<IpAddr>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
         .ipv4_lookup(host)
         .await
         .map_err(DnsError::from_resolve)?;
-    Ok(lookup.iter().map(|a| IpAddr::V4(a.0)).collect())
+    let out: Vec<IpAddr> = lookup.iter().map(|a| IpAddr::V4(a.0)).collect();
+    tracing::debug!(target: LOG_TARGET, count = out.len(), "A records resolved");
+    Ok(out)
 }
 
 /// Returns the IPv6 addresses for `host` (`AAAA` records only).
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve6",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve6(host: &str) -> Result<Vec<IpAddr>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
         .ipv6_lookup(host)
         .await
         .map_err(DnsError::from_resolve)?;
-    Ok(lookup.iter().map(|a| IpAddr::V6(a.0)).collect())
+    let out: Vec<IpAddr> = lookup.iter().map(|a| IpAddr::V6(a.0)).collect();
+    tracing::debug!(target: LOG_TARGET, count = out.len(), "AAAA records resolved");
+    Ok(out)
 }
 
 /// One mail-exchange record, mapping a priority to a target host.
@@ -185,6 +225,14 @@ pub struct MxRecord {
 }
 
 /// Returns the MX records for `host`.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve_mx",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve_mx(host: &str) -> Result<Vec<MxRecord>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -205,6 +253,14 @@ pub async fn resolve_mx(host: &str) -> Result<Vec<MxRecord>, DnsError> {
 /// Node's `dns.resolveTxt` shape - a `string[]` per record, but we
 /// flatten to one `string` per record because that is how the
 /// polyfill exposes them).
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve_txt",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve_txt(host: &str) -> Result<Vec<Vec<String>>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -222,6 +278,14 @@ pub async fn resolve_txt(host: &str) -> Result<Vec<Vec<String>>, DnsError> {
 }
 
 /// Returns the canonical-name records for `host`.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve_cname",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve_cname(host: &str) -> Result<Vec<String>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -235,6 +299,14 @@ pub async fn resolve_cname(host: &str) -> Result<Vec<String>, DnsError> {
 }
 
 /// Returns the authoritative name servers for `host`.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve_ns",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve_ns(host: &str) -> Result<Vec<String>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -258,6 +330,14 @@ pub struct SrvRecord {
 }
 
 /// Returns the SRV records for `host`.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_resolve_srv",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
 pub async fn resolve_srv(host: &str) -> Result<Vec<SrvRecord>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver
@@ -276,6 +356,14 @@ pub async fn resolve_srv(host: &str) -> Result<Vec<SrvRecord>, DnsError> {
 }
 
 /// Reverse DNS lookup - returns the PTR names for `ip`.
+#[tracing::instrument(
+    target = "nexide::ops::dns",
+    level = "debug",
+    name = "dns_reverse",
+    skip_all,
+    fields(ip = %ip),
+    err(level = "warn", Display),
+)]
 pub async fn reverse(ip: IpAddr) -> Result<Vec<String>, DnsError> {
     let resolver = shared_resolver();
     let lookup = resolver

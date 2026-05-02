@@ -16,6 +16,8 @@ use flate2::write::{
 
 use super::net::NetError;
 
+const LOG_TARGET: &str = "nexide::ops::zlib";
+
 /// Kind of stream to instantiate. Mirrors the Node `zlib` factory
 /// surface (`createDeflate`, `createGzip`, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,14 +77,30 @@ impl ZlibStream {
     /// Returns a [`NetError`] tagged with `Z_DATA_ERROR` when the
     /// encoder/decoder reports a fatal transition.
     pub fn feed(&mut self, input: &[u8]) -> Result<Vec<u8>, NetError> {
-        match self {
+        let result = match self {
             Self::Deflate(e) => write_and_drain(e, input, |e| e.get_mut()),
             Self::DeflateRaw(e) => write_and_drain(e, input, |e| e.get_mut()),
             Self::Gzip(e) => write_and_drain(e, input, |e| e.get_mut()),
             Self::Inflate(d) => write_and_drain(d, input, |d| d.get_mut()),
             Self::InflateRaw(d) => write_and_drain(d, input, |d| d.get_mut()),
             Self::Gunzip(d) => write_and_drain(d, input, |d| d.get_mut()),
+        };
+        match &result {
+            Ok(out) => tracing::trace!(
+                target: LOG_TARGET,
+                in_bytes = input.len(),
+                out_bytes = out.len(),
+                "zlib feed",
+            ),
+            Err(err) => tracing::warn!(
+                target: LOG_TARGET,
+                in_bytes = input.len(),
+                code = err.code,
+                message = %err.message,
+                "zlib feed failed",
+            ),
         }
+        result
     }
 
     /// Flushes any internal buffer, signalling end-of-input.
@@ -91,14 +109,28 @@ impl ZlibStream {
     /// # Errors
     /// Returns a [`NetError`] when finalisation fails.
     pub fn finish(self) -> Result<Vec<u8>, NetError> {
-        match self {
+        let result = match self {
             Self::Deflate(e) => e.finish().map_err(io_to_net),
             Self::DeflateRaw(e) => e.finish().map_err(io_to_net),
             Self::Gzip(e) => e.finish().map_err(io_to_net),
             Self::Inflate(d) => d.finish().map_err(io_to_net),
             Self::InflateRaw(d) => d.finish().map_err(io_to_net),
             Self::Gunzip(d) => d.finish().map_err(io_to_net),
+        };
+        match &result {
+            Ok(out) => tracing::debug!(
+                target: LOG_TARGET,
+                tail_bytes = out.len(),
+                "zlib stream finished",
+            ),
+            Err(err) => tracing::warn!(
+                target: LOG_TARGET,
+                code = err.code,
+                message = %err.message,
+                "zlib finish failed",
+            ),
         }
+        result
     }
 }
 

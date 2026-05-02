@@ -2618,6 +2618,8 @@ fn op_timer_sleep<'s>(
 
 use crate::ops::{AddressInfo, NetError};
 
+const NET_BRIDGE_TARGET: &str = "nexide::engine::bridge::net";
+
 fn make_address_obj<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     info: &AddressInfo,
@@ -2674,6 +2676,13 @@ fn op_net_connect<'s>(
             Ok((stream, local, remote)) => {
                 let slot = std::rc::Rc::new(stream);
                 let id = table.insert(slot);
+                tracing::debug!(
+                    target: NET_BRIDGE_TARGET,
+                    stream_id = id,
+                    local = %local,
+                    remote = %remote,
+                    "net stream slot allocated",
+                );
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
                     let id_key = v8::String::new(scope, "id").unwrap();
@@ -2802,6 +2811,12 @@ fn op_net_read<'s>(
     let streams = handle.0.borrow().net_streams.clone();
 
     let Some(slot) = streams.with(stream_id, std::rc::Rc::clone) else {
+        tracing::warn!(
+            target: NET_BRIDGE_TARGET,
+            stream_id,
+            op = "read",
+            "EBADF: read on closed slot",
+        );
         let err = NetError::new("EBADF", "socket has been closed");
         reject_net(scope, v8::Local::new(scope, &global), &err);
         rv.set(promise.into());
@@ -2848,6 +2863,13 @@ fn op_net_write<'s>(
     let streams = handle.0.borrow().net_streams.clone();
 
     let Some(slot) = streams.with(stream_id, std::rc::Rc::clone) else {
+        tracing::warn!(
+            target: NET_BRIDGE_TARGET,
+            stream_id,
+            op = "write",
+            len = data.len(),
+            "EBADF: write on closed slot",
+        );
         let err = NetError::new("EBADF", "socket has been closed");
         reject_net(scope, v8::Local::new(scope, &global), &err);
         rv.set(promise.into());
@@ -2876,6 +2898,15 @@ fn op_net_close_stream<'s>(
     let stream_id = args.get(0).uint32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     let removed = handle.0.borrow().net_streams.remove(stream_id);
+    if removed {
+        tracing::debug!(target: NET_BRIDGE_TARGET, stream_id, "net stream slot released");
+    } else {
+        tracing::trace!(
+            target: NET_BRIDGE_TARGET,
+            stream_id,
+            "net stream close on already-closed slot",
+        );
+    }
     let result = v8::Boolean::new(scope, removed);
     rv.set(result.into());
 }
@@ -2888,6 +2919,13 @@ fn op_net_close_listener<'s>(
     let listener_id = args.get(0).uint32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     let removed = handle.0.borrow().net_listeners.remove(listener_id);
+    if removed {
+        tracing::debug!(
+            target: NET_BRIDGE_TARGET,
+            listener_id,
+            "net listener slot released",
+        );
+    }
     let result = v8::Boolean::new(scope, removed);
     rv.set(result.into());
 }
@@ -3004,6 +3042,12 @@ fn op_tls_upgrade<'s>(
     let tls_streams = handle.0.borrow().tls_streams.clone();
 
     let Some(slot) = net_streams.take(net_id) else {
+        tracing::warn!(
+            target: NET_BRIDGE_TARGET,
+            stream_id = net_id,
+            op = "tls_upgrade",
+            "EBADF: tls_upgrade on closed net slot",
+        );
         let err = NetError::new("EBADF", "net stream has been closed");
         reject_net(scope, v8::Local::new(scope, &global), &err);
         rv.set(promise.into());
@@ -3014,6 +3058,12 @@ fn op_tls_upgrade<'s>(
         let stream = match std::rc::Rc::try_unwrap(slot) {
             Ok(s) => s,
             Err(_rc) => {
+                tracing::warn!(
+                    target: NET_BRIDGE_TARGET,
+                    stream_id = net_id,
+                    op = "tls_upgrade",
+                    "EBUSY: outstanding I/O on net slot; cannot upgrade",
+                );
                 let err = NetError::new(
                     "EBUSY",
                     "net stream still has outstanding I/O; cannot upgrade to TLS",
@@ -3027,6 +3077,14 @@ fn op_tls_upgrade<'s>(
         let settler: super::async_ops::Settler = match result {
             Ok((tls, local, remote)) => {
                 let id = tls_streams.insert(std::rc::Rc::new(tokio::sync::Mutex::new(tls)));
+                tracing::debug!(
+                    target: NET_BRIDGE_TARGET,
+                    tls_id = id,
+                    from_net_id = net_id,
+                    local = %local,
+                    remote = %remote,
+                    "tls stream slot allocated from upgraded net stream",
+                );
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
                     let id_key = v8::String::new(scope, "id").unwrap();
