@@ -150,6 +150,14 @@ pub async fn read_chunk(
             }
             Ok(buf)
         }
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            tracing::debug!(
+                target: LOG_TARGET,
+                error = %e,
+                "tls peer closed without close_notify; treating as clean eof",
+            );
+            Ok(Vec::new())
+        }
         Err(e) => {
             let mapped = tls_error(&e);
             tracing::warn!(

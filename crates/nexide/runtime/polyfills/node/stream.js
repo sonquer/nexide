@@ -56,6 +56,28 @@ class Readable extends EventEmitter {
     if (this._buffer.length === 0) return null;
     return this._buffer.shift();
   }
+  resume() {
+    if (this._destroyed) return this;
+    this._paused = false;
+    if (this._buffer.length) {
+      const replay = this._buffer.slice();
+      this._buffer = [];
+      queueMicrotask(() => {
+        for (const chunk of replay) this.emit("data", chunk);
+        if (this._ended) this.emit("end");
+      });
+    } else if (this._ended) {
+      queueMicrotask(() => this.emit("end"));
+    }
+    return this;
+  }
+  pause() {
+    this._paused = true;
+    return this;
+  }
+  isPaused() {
+    return this._paused === true;
+  }
   pipe(dest) {
     if (this._buffer.length) {
       const replay = this._buffer.slice();

@@ -114,7 +114,15 @@ fn load_and_evaluate_esm<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     abs_path: &Path,
 ) -> Result<v8::Local<'s, v8::Value>, String> {
-    let module = load_esm_graph(scope, abs_path).map_err(|e| e.to_string())?;
+    let module = load_esm_graph(scope, abs_path).map_err(|e| {
+        tracing::warn!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            error = %e,
+            "esm graph load failed",
+        );
+        e.to_string()
+    })?;
     let namespace_after_eval = |scope: &mut v8::PinScope<'s, '_>,
                                 module: v8::Local<'s, v8::Module>| {
         if matches!(module.get_status(), v8::ModuleStatus::Errored) {
@@ -128,10 +136,20 @@ fn load_and_evaluate_esm<'s>(
         module.get_status(),
         v8::ModuleStatus::Evaluated | v8::ModuleStatus::Errored
     ) {
+        tracing::trace!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            "esm module already evaluated, returning namespace",
+        );
         return namespace_after_eval(scope, module);
     }
 
     if matches!(module.get_status(), v8::ModuleStatus::Uninstantiated) {
+        tracing::debug!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            "instantiating esm module",
+        );
         v8::tc_scope!(let tc, scope);
         let ok = module
             .instantiate_module(tc, resolve_module_callback)
@@ -141,10 +159,21 @@ fn load_and_evaluate_esm<'s>(
                 .exception()
                 .map(|e| value_to_string(tc, e))
                 .unwrap_or_else(|| format!("instantiate failed for {}", abs_path.display()));
+            tracing::warn!(
+                target: LOG_TARGET,
+                path = %abs_path.display(),
+                error = %exc,
+                "esm module instantiate failed",
+            );
             return Err(exc);
         }
     }
 
+    tracing::debug!(
+        target: LOG_TARGET,
+        path = %abs_path.display(),
+        "evaluating esm module",
+    );
     let eval_value = {
         v8::tc_scope!(let tc, scope);
         match module.evaluate(tc) {
@@ -156,6 +185,12 @@ fn load_and_evaluate_esm<'s>(
                     .unwrap_or_else(|| {
                         format!("evaluate returned none for {}", abs_path.display())
                     });
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    path = %abs_path.display(),
+                    error = %exc,
+                    "esm module evaluate threw synchronously",
+                );
                 return Err(exc);
             }
         }
@@ -163,11 +198,26 @@ fn load_and_evaluate_esm<'s>(
 
     if matches!(module.get_status(), v8::ModuleStatus::Errored) {
         let exc = module.get_exception();
-        return Err(value_to_string(scope, exc));
+        let msg = value_to_string(scope, exc);
+        tracing::warn!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            error = %msg,
+            "esm module entered errored state after evaluate",
+        );
+        return Err(msg);
     }
 
     let namespace = module.get_module_namespace();
-    chain_namespace_after(scope, eval_value, namespace).map_err(|e| e.to_string())
+    chain_namespace_after(scope, eval_value, namespace).map_err(|e| {
+        tracing::warn!(
+            target: LOG_TARGET,
+            path = %abs_path.display(),
+            error = %e,
+            "esm namespace chaining failed",
+        );
+        e.to_string()
+    })
 }
 
 /// Calls `globalThis.__nexideEsm.chain(evalPromise, namespace)` to

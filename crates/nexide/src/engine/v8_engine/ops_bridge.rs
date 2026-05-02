@@ -3222,6 +3222,8 @@ fn op_tls_close<'s>(
 
 use crate::ops::{HttpHeader, HttpRequest, http_request};
 
+const HTTP_BRIDGE_TARGET: &str = "nexide::engine::bridge::http";
+
 /// Reads `{ method, url, headers: [[name, value], ...], body: Uint8Array? }`
 /// from the JS argument, fires the request asynchronously, and resolves
 /// with `{ status, statusText, headers: [[name, value], ...], bodyId }`.
@@ -3259,6 +3261,13 @@ fn op_http_request<'s>(
                 let status = response.status;
                 let status_text = response.status_text;
                 let headers = response.headers;
+                tracing::debug!(
+                    target: HTTP_BRIDGE_TARGET,
+                    body_id = id,
+                    status,
+                    headers = headers.len(),
+                    "http response slot allocated",
+                );
                 Box::new(move |scope, resolver| {
                     let obj = v8::Object::new(scope);
                     let status_key = v8::String::new(scope, "status").unwrap();
@@ -3335,6 +3344,13 @@ fn op_http_response_close<'s>(
     let body_id = args.get(0).uint32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     let removed = handle.0.borrow().http_responses.remove(body_id);
+    if removed {
+        tracing::debug!(
+            target: HTTP_BRIDGE_TARGET,
+            body_id,
+            "http response slot released",
+        );
+    }
     let result = v8::Boolean::new(scope, removed);
     rv.set(result.into());
 }
@@ -3462,6 +3478,8 @@ fn bytes_to_uint8_array<'s>(
 // ──────────────────────────────────────────────────────────────────────
 
 use super::bridge::ChildSlot;
+
+const PROC_BRIDGE_TARGET: &str = "nexide::engine::bridge::process";
 use crate::ops::{
     ExitInfo, SpawnRequest, StdioMode, proc_kill, proc_read_pipe, proc_spawn, proc_wait,
     proc_write_pipe,
@@ -3513,6 +3531,15 @@ fn op_proc_spawn<'s>(
             let has_stdout = slot.stdout.try_lock().is_ok_and(|g| g.is_some());
             let has_stderr = slot.stderr.try_lock().is_ok_and(|g| g.is_some());
             let id = table.insert(slot);
+            tracing::debug!(
+                target: PROC_BRIDGE_TARGET,
+                child_id = id,
+                pid = child_handle.pid,
+                stdin = has_stdin,
+                stdout = has_stdout,
+                stderr = has_stderr,
+                "child process slot allocated",
+            );
             let obj = v8::Object::new(scope);
             let id_key = v8::String::new(scope, "id").unwrap();
             let id_val = v8::Number::new(scope, f64::from(id));
@@ -3745,6 +3772,13 @@ fn op_proc_close<'s>(
     let id = args.get(0).uint32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     let removed = handle.0.borrow().child_processes.remove(id);
+    if removed {
+        tracing::debug!(
+            target: PROC_BRIDGE_TARGET,
+            child_id = id,
+            "child process slot released",
+        );
+    }
     rv.set(v8::Boolean::new(scope, removed).into());
 }
 
@@ -3924,6 +3958,8 @@ fn set_bool_field<'s>(
 
 use crate::ops::{ZlibStream, parse_zlib_kind};
 
+const ZLIB_BRIDGE_TARGET: &str = "nexide::engine::bridge::zlib";
+
 /// Creates a streaming zlib state machine. `kind` is the kebab-case
 /// identifier (`"deflate"`, `"gunzip"`, …) and `level` is the zlib
 /// compression level (0..=9, ignored for decoders).
@@ -3940,9 +3976,22 @@ fn op_zlib_create<'s>(
             let handle = from_isolate(scope);
             let table = handle.0.borrow().zlib_streams.clone();
             let id = table.insert(std::rc::Rc::new(std::cell::RefCell::new(Some(stream))));
+            tracing::debug!(
+                target: ZLIB_BRIDGE_TARGET,
+                stream_id = id,
+                kind = %kind_str,
+                level,
+                "zlib stream slot allocated",
+            );
             rv.set(v8::Number::new(scope, f64::from(id)).into());
         }
         Err(err) => {
+            tracing::warn!(
+                target: ZLIB_BRIDGE_TARGET,
+                kind = %kind_str,
+                code = err.code,
+                "zlib stream create rejected",
+            );
             let exc = make_node_error(scope, &err);
             scope.throw_exception(exc);
         }
@@ -4030,6 +4079,13 @@ fn op_zlib_close<'s>(
     let id = args.get(0).uint32_value(scope).unwrap_or(0);
     let handle = from_isolate(scope);
     let removed = handle.0.borrow().zlib_streams.remove(id);
+    if removed {
+        tracing::debug!(
+            target: ZLIB_BRIDGE_TARGET,
+            stream_id = id,
+            "zlib stream slot released",
+        );
+    }
     rv.set(v8::Boolean::new(scope, removed).into());
 }
 
