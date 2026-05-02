@@ -13,7 +13,7 @@
 # Build context: workspace root (only `e2e/next-fixture/` is needed).
 
 FROM node:24-bookworm-slim AS next-builder
-WORKDIR /build/next-fixture
+WORKDIR /build/e2e/next-fixture
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1
 COPY e2e/next-fixture/package.json e2e/next-fixture/package-lock.json ./

@@ -21,7 +21,7 @@ RUN cargo build --release -p nexide && \
     strip target/release/nexide
 
 FROM node:24-bookworm-slim AS next-builder
-WORKDIR /build/next-fixture
+WORKDIR /build/e2e/next-fixture
 ENV NEXT_TELEMETRY_DISABLED=1 \
     CI=1
 COPY e2e/next-fixture/package.json e2e/next-fixture/package-lock.json ./
@@ -35,9 +35,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY e2e/next-fixture/package.json e2e/next-fixture/package-lock.json ./
 RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=rust-builder   /build/target/release/nexide      /usr/local/bin/nexide
-COPY --from=next-builder   /build/e2e/next-fixture/public             /app/e2e/next-fixture/public
-COPY --from=next-builder   /build/e2e/next-fixture/.next/static       /app/e2e/next-fixture/.next/static
-COPY --from=next-builder   /build/e2e/next-fixture/.next/standalone   /app/e2e/next-fixture/.next/standalone
+COPY --from=next-builder   /build/e2e/next-fixture/public             /app/next-fixture/public
+COPY --from=next-builder   /build/e2e/next-fixture/.next/static       /app/next-fixture/.next/static
+COPY --from=next-builder   /build/e2e/next-fixture/.next/standalone   /app/next-fixture/.next/standalone
 WORKDIR /app
 ENV HOSTNAME=0.0.0.0 \
     PORT=3000 \

@@ -42,6 +42,9 @@ fn absolute_table(results: &[BenchResult]) -> Table {
             "threads",
             "RPS/CPU%",
             "errors",
+            "transport",
+            "http5xx",
+            "timeout",
         ]);
     for r in results {
         let rps_per_cpu = if r.sample.cpu_avg > 0.0 {
@@ -63,6 +66,9 @@ fn absolute_table(results: &[BenchResult]) -> Table {
             Cell::new(r.sample.threads_max),
             Cell::new(format!("{rps_per_cpu:>8.1}")),
             Cell::new(r.load.errors),
+            Cell::new(r.load.transport_errors),
+            Cell::new(r.load.http_errors),
+            Cell::new(r.load.timeout_errors),
         ]);
     }
     table

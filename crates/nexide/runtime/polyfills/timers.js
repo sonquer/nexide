@@ -23,9 +23,12 @@
  * into the middle of HTML attribute writes (e.g.
  * `<body class="bg-g<script>...</script>ray-100 ...">`).
  *
- * Cancelled timers are tracked by id in a single `Set`. The
- * implementation is idempotent so the file can safely be evaluated
- * once per isolate.
+ * Pending timers are tracked by id in a single `Map<id, {cb,args}>`.
+ * Capturing only the numeric `id` in the host-Promise `.then` keeps
+ * cancelled callbacks from being retained for the full delay (the
+ * Rust `tokio::time::sleep` Promise pins its `.then` body until the
+ * delay elapses, even after `clearTimeout`). The implementation is
+ * idempotent so the file can safely be evaluated once per isolate.
  */
 
 ((globalThis) => {
@@ -43,7 +46,25 @@
   }
 
   let nextId = 1;
-  const cancelled = new Set();
+  // `pending` maps live timer ids to their `{ cb, args }` payload.
+  //
+  // The Rust-side `op_timer_sleep` Promise keeps the `.then` body
+  // alive until the requested delay has elapsed - even when the
+  // user calls `clearTimeout` shortly after scheduling. If we close
+  // over `cb` and `args` directly inside that `.then`, every
+  // *cancelled* timer leaks its callback closure (and everything
+  // it transitively captures - `req`, `res`, response builders for
+  // the Next.js handler watchdog, etc.) until the underlying timer
+  // fires. Under load (e.g. 400+ RPS with a 60s watchdog) that
+  // amounts to tens of thousands of retained closures and tens to
+  // hundreds of MB of live JS heap before V8 can collect.
+  //
+  // Storing payloads in a side-map and only capturing the small
+  // numeric `id` in the `.then` lets `clearTimeout` evict the heavy
+  // payload immediately. The Rust timer still resolves at its
+  // scheduled time, but at that point the map lookup misses and we
+  // exit without retaining anything.
+  const pending = new Map();
 
   function nextTimerId() {
     const id = nextId++;
@@ -57,9 +78,11 @@
     return Math.floor(n);
   }
 
-  function runOnce(id, cb, args) {
-    if (cancelled.delete(id)) return;
-    cb(...args);
+  function runOnce(id) {
+    const slot = pending.get(id);
+    if (slot === undefined) return;
+    pending.delete(id);
+    slot.cb(...slot.args);
   }
 
   function makeTimeout(id) {
@@ -77,7 +100,7 @@
     unref() { return this; },
     hasRef() { return true; },
     refresh() { return this; },
-    [Symbol.dispose]() { cancelled.add(this._id); },
+    [Symbol.dispose]() { pending.delete(this._id); },
   };
 
   function idOf(t) {
@@ -92,13 +115,14 @@
       throw new TypeError("setTimeout requires a function");
     }
     const id = nextTimerId();
-    opTimerSleep(coerceDelay(ms)).then(() => runOnce(id, cb, args));
+    pending.set(id, { cb, args });
+    opTimerSleep(coerceDelay(ms)).then(() => runOnce(id));
     return makeTimeout(id);
   };
 
   globalThis.clearTimeout = function clearTimeout(t) {
     const id = idOf(t);
-    if (id >= 0) cancelled.add(id);
+    if (id >= 0) pending.delete(id);
   };
 
   globalThis.setInterval = function setInterval(cb, ms, ...args) {
@@ -107,13 +131,14 @@
     }
     const id = nextTimerId();
     const delay = coerceDelay(ms);
+    pending.set(id, { cb, args });
     const tick = () => {
-      if (cancelled.delete(id)) return;
-      try { cb(...args); } catch (err) { reportTimerError(err); }
-      if (cancelled.has(id)) {
-        cancelled.delete(id);
-        return;
-      }
+      const slot = pending.get(id);
+      if (slot === undefined) return;
+      try { slot.cb(...slot.args); } catch (err) { reportTimerError(err); }
+      // Re-check: the user-provided callback may have called
+      // `clearInterval` synchronously, which would have evicted us.
+      if (!pending.has(id)) return;
       opTimerSleep(delay).then(tick);
     };
     opTimerSleep(delay).then(tick);
@@ -122,7 +147,7 @@
 
   globalThis.clearInterval = function clearInterval(t) {
     const id = idOf(t);
-    if (id >= 0) cancelled.add(id);
+    if (id >= 0) pending.delete(id);
   };
 
   globalThis.setImmediate = function setImmediate(cb, ...args) {
@@ -130,15 +155,14 @@
       throw new TypeError("setImmediate requires a function");
     }
     const id = nextTimerId();
-    opTimerSleep(0).then(() => {
-      runOnce(id, cb, args);
-    });
+    pending.set(id, { cb, args });
+    opTimerSleep(0).then(() => runOnce(id));
     return makeTimeout(id);
   };
 
   globalThis.clearImmediate = function clearImmediate(t) {
     const id = idOf(t);
-    if (id >= 0) cancelled.add(id);
+    if (id >= 0) pending.delete(id);
   };
 
   if (typeof globalThis.queueMicrotask !== "function") {

@@ -430,7 +430,16 @@ async fn run_worker_local(
 
     tracing::debug!(worker = idx, "nexide worker ready");
 
-    let handler: Arc<dyn super::DynamicHandler> = Arc::new(NextBridgeHandler::new(Arc::new(pool)));
+    let inflight_cap = crate::effective_max_inflight_per_isolate();
+    tracing::info!(
+        worker = idx,
+        inflight_cap,
+        "nexide worker inflight cap configured"
+    );
+    let handler: Arc<dyn super::DynamicHandler> = Arc::new(NextBridgeHandler::with_inflight_limit(
+        Arc::new(pool),
+        Some(inflight_cap as usize),
+    ));
     let router = build_router(&cfg, handler);
 
     let shutdown = async move {

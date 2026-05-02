@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::{HeaderMap, Request, Response, StatusCode};
 use http_body_util::BodyExt;
+use tokio::sync::Semaphore;
 
 use super::fallback::{DynamicHandler, HandlerError};
 use crate::dispatch::{DispatchError, EngineDispatcher, ProtoRequest};
@@ -29,18 +30,57 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Generic over the dispatcher to keep the production wiring testable;
 /// the `next_bridge.rs` integration test substitutes an in-memory
 /// [`EngineDispatcher`] double.
+///
+/// Concurrency: when constructed via [`Self::with_inflight_limit`],
+/// the handler gates the JS dispatch path behind a [`Semaphore`].
+/// This is the *only* memory-bounded backpressure between the kernel
+/// accept queue and the per-isolate JS heap; without it every
+/// concurrent connection materialises a `DispatchJob` plus a Next.js
+/// render context (~2-3 MiB live heap each), and a tight container
+/// (e.g. `1 CPU / 256 MiB`) hits `Fatal JavaScript out of memory:
+/// Ineffective mark-compacts near heap limit` long before V8's
+/// `--max-old-space-size` cap is reached, because the GC death-spiral
+/// triggers when reclamation cannot catch up with allocation. With a
+/// permit cap of `N`, the steady-state working set is bounded at
+/// roughly `N * per_render_mb`, regardless of how many TCP
+/// connections hyper accepts.
 pub struct NextBridgeHandler<D> {
     dispatcher: Arc<D>,
+    inflight_limit: Option<Arc<Semaphore>>,
 }
 
 impl<D> NextBridgeHandler<D>
 where
     D: EngineDispatcher,
 {
-    /// Wraps `dispatcher` in an Axum-compatible handler.
+    /// Wraps `dispatcher` in an Axum-compatible handler with no
+    /// inflight cap.
+    ///
+    /// Prefer [`Self::with_inflight_limit`] in production to keep the
+    /// JS heap bounded under bursty traffic; this constructor exists
+    /// for unit tests where the dispatcher itself is a synchronous
+    /// double and concurrency is bounded by the test harness.
     #[must_use]
     pub const fn new(dispatcher: Arc<D>) -> Self {
-        Self { dispatcher }
+        Self {
+            dispatcher,
+            inflight_limit: None,
+        }
+    }
+
+    /// Wraps `dispatcher` and gates JS dispatch behind a
+    /// [`Semaphore`] capped at `permits`.
+    ///
+    /// `permits == 0` is silently clamped to `1` so the runtime
+    /// always remains live (operators sometimes mis-key the env
+    /// var). Pass `None` for unlimited concurrency.
+    #[must_use]
+    pub fn with_inflight_limit(dispatcher: Arc<D>, permits: Option<usize>) -> Self {
+        let inflight_limit = permits.map(|n| Arc::new(Semaphore::new(n.max(1))));
+        Self {
+            dispatcher,
+            inflight_limit,
+        }
     }
 
     /// Returns the underlying dispatcher (Query - used by tests for
@@ -64,6 +104,23 @@ where
             Err(err) => return Ok(error_response(&err, Some(&request_headers))),
         };
         let accept_elapsed = t_accept_start.elapsed();
+
+        // Acquire the inflight permit BEFORE entering the dispatch
+        // path so we never materialise a JS render context beyond
+        // the configured cap. The permit is dropped after the
+        // response is built, which releases backpressure for the
+        // next waiter. `acquire_owned` is cheap when the semaphore
+        // is uncontended and never panics on a live semaphore (we
+        // never close it).
+        let _permit = match &self.inflight_limit {
+            Some(sem) => Some(
+                Arc::clone(sem)
+                    .acquire_owned()
+                    .await
+                    .expect("semaphore live"),
+            ),
+            None => None,
+        };
 
         let t_dispatch_start = Instant::now();
         let outcome = self.dispatcher.dispatch(proto).await;
@@ -297,5 +354,98 @@ mod tests {
             .expect("request");
         let response = handler.handle(req).await.expect("infallible");
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn inflight_semaphore_caps_concurrent_dispatches() {
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+
+        // Dispatcher that parks every call on a shared release
+        // counter, lets us observe how many handler tasks are in
+        // `dispatch()` simultaneously. With permits=2, never more
+        // than 2 should be parked at once even when we fire 8
+        // concurrent requests.
+        struct ParkDispatcher {
+            parked: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+            release: Arc<tokio::sync::Semaphore>,
+        }
+        #[async_trait]
+        impl EngineDispatcher for ParkDispatcher {
+            async fn dispatch(
+                &self,
+                _request: ProtoRequest,
+            ) -> Result<ResponsePayload, DispatchError> {
+                let now = self.parked.fetch_add(1, Ordering::SeqCst) + 1;
+                let prev = self.peak.load(Ordering::SeqCst);
+                if now > prev {
+                    self.peak.store(now, Ordering::SeqCst);
+                }
+                let _ = self.release.acquire().await.expect("live").forget();
+                self.parked.fetch_sub(1, Ordering::SeqCst);
+                Ok(ResponsePayload {
+                    head: ResponseHead {
+                        status: 200,
+                        headers: vec![],
+                    },
+                    body: Vec::new().into(),
+                })
+            }
+            fn dispatch_count(&self) -> usize {
+                0
+            }
+        }
+
+        let parked = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let dispatcher = Arc::new(ParkDispatcher {
+            parked: Arc::clone(&parked),
+            peak: Arc::clone(&peak),
+            release: Arc::clone(&release),
+        });
+        let handler = Arc::new(NextBridgeHandler::with_inflight_limit(dispatcher, Some(2)));
+        let mut joins = Vec::new();
+        for _ in 0..8 {
+            let h = Arc::clone(&handler);
+            joins.push(tokio::spawn(async move {
+                let req = Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request");
+                h.handle(req).await.expect("infallible")
+            }));
+        }
+        // Let tasks attempt to enter dispatch.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            peak.load(Ordering::SeqCst) <= 2,
+            "peak concurrent dispatches must not exceed permit cap"
+        );
+        // Drain all 8 by releasing 8 permits to the dispatcher gate.
+        release.add_permits(8);
+        for j in joins {
+            j.await.expect("task");
+        }
+        assert!(
+            peak.load(Ordering::SeqCst) <= 2,
+            "peak after drain must still respect the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn inflight_semaphore_clamps_zero_to_one() {
+        let dispatcher = Arc::new(EchoDispatcher {
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+        let handler = NextBridgeHandler::with_inflight_limit(Arc::clone(&dispatcher), Some(0));
+        let req = Request::builder()
+            .uri("/")
+            .body(Body::from("ok"))
+            .expect("request");
+        let response = handler.handle(req).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(dispatcher.dispatch_count(), 1);
     }
 }
