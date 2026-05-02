@@ -24,6 +24,8 @@ use crate::ops::{
     ResponsePayload, WorkerId,
 };
 
+const LOG_TARGET: &str = "nexide::engine::v8";
+
 static V8_INIT: Once = Once::new();
 
 #[repr(C, align(16))]
@@ -168,6 +170,15 @@ impl V8Engine {
                 path: entrypoint.to_path_buf(),
             })?;
 
+        let worker_id = ctx.worker_id.unwrap_or_else(|| WorkerId::new(0, true));
+        tracing::debug!(
+            target: LOG_TARGET,
+            worker = worker_id.id,
+            primary = worker_id.is_primary,
+            entry = %entry_path.display(),
+            "v8 isolate boot starting",
+        );
+
         let heap_limit = ctx.heap_limit.unwrap_or_default();
         let create_params = heap_limit.to_create_params();
         let mut isolate = v8::Isolate::new(create_params);
@@ -178,7 +189,7 @@ impl V8Engine {
         let bridge = BridgeState {
             queue: Rc::new(RequestQueue::new()),
             dispatch_table: DispatchTable::default(),
-            worker_id: ctx.worker_id.unwrap_or_else(|| WorkerId::new(0, true)),
+            worker_id,
             process: ctx.process,
             env_overlay: crate::ops::EnvOverlay::default(),
             fs: ctx.fs,
@@ -238,6 +249,15 @@ impl V8Engine {
         };
 
         let stats = capture_heap_stats(&mut isolate);
+
+        tracing::debug!(
+            target: LOG_TARGET,
+            worker = worker_id.id,
+            entry = %entry_path.display(),
+            heap_used = stats.used_heap_size,
+            heap_total = stats.total_heap_size,
+            "v8 isolate boot complete",
+        );
 
         Ok(Self {
             isolate,
@@ -321,11 +341,25 @@ impl V8Engine {
 
     /// Evaluates a classic script in the engine's main realm.
     pub fn execute(&mut self, name: &str, source: &str) -> Result<(), EngineError> {
+        tracing::trace!(
+            target: LOG_TARGET,
+            script = name,
+            bytes = source.len(),
+            "execute classic script",
+        );
         let context = self.context.clone();
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context);
         let scope_cs = &mut v8::ContextScope::new(scope, context);
-        eval_script(scope_cs, name, source)
+        eval_script(scope_cs, name, source).map_err(|e| {
+            tracing::warn!(
+                target: LOG_TARGET,
+                script = name,
+                error = %e,
+                "classic script failed",
+            );
+            e
+        })
     }
 
     /// Returns `true` when no requests are queued and there are no
@@ -639,6 +673,12 @@ fn host_import_module_dynamically<'s>(
     } else {
         None
     };
+    tracing::trace!(
+        target: LOG_TARGET,
+        specifier = %specifier_str,
+        referrer = ?referrer_str,
+        "host_import_module_dynamically",
+    );
     let promise = super::esm::do_esm_dynamic_import(scope, &specifier_str, referrer_str.as_deref());
     Some(promise)
 }

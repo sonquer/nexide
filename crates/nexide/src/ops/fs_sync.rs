@@ -19,6 +19,19 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 
+const LOG_TARGET: &str = "nexide::ops::fs";
+
+fn log_err(op: &'static str, path: &str, err: &FsError) {
+    tracing::trace!(
+        target: LOG_TARGET,
+        op,
+        path,
+        code = err.code,
+        message = %err.message,
+        "fs op error",
+    );
+}
+
 /// Recoverable filesystem error converted to a Node-style code/message
 /// pair on the JS boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -342,8 +355,10 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FsError> {
-        let p = self.check(path)?;
-        self.backend.read(&p)
+        let p = self.check(path).inspect_err(|e| log_err("read", path, e))?;
+        self.backend
+            .read(&p)
+            .inspect_err(|e| log_err("read", path, e))
     }
 
     /// Sandbox-checked file write.
@@ -352,8 +367,12 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
-        let p = self.check(path)?;
-        self.backend.write(&p, data)
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("write", path, e))?;
+        self.backend
+            .write(&p, data)
+            .inspect_err(|e| log_err("write", path, e))
     }
 
     /// Sandbox-checked metadata lookup.
@@ -362,8 +381,10 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn stat(&self, path: &str, follow: bool) -> Result<FsStat, FsError> {
-        let p = self.check(path)?;
-        self.backend.stat(&p, follow)
+        let p = self.check(path).inspect_err(|e| log_err("stat", path, e))?;
+        self.backend
+            .stat(&p, follow)
+            .inspect_err(|e| log_err("stat", path, e))
     }
 
     /// Sandbox-checked existence probe - returns `false` when the path
@@ -381,8 +402,12 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
-        let p = self.check(path)?;
-        self.backend.read_dir(&p)
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("read_dir", path, e))?;
+        self.backend
+            .read_dir(&p)
+            .inspect_err(|e| log_err("read_dir", path, e))
     }
 
     /// Sandbox-checked directory creation.
@@ -391,8 +416,12 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn mkdir(&self, path: &str, recursive: bool) -> Result<(), FsError> {
-        let p = self.check(path)?;
-        self.backend.mkdir(&p, recursive)
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("mkdir", path, e))?;
+        self.backend
+            .mkdir(&p, recursive)
+            .inspect_err(|e| log_err("mkdir", path, e))
     }
 
     /// Sandbox-checked file or directory removal. Missing paths are a
@@ -402,11 +431,15 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn remove(&self, path: &str, recursive: bool) -> Result<(), FsError> {
-        let p = self.check(path)?;
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("remove", path, e))?;
         if !self.backend.exists(&p) {
             return Ok(());
         }
-        self.backend.remove(&p, recursive)
+        self.backend
+            .remove(&p, recursive)
+            .inspect_err(|e| log_err("remove", path, e))
     }
 
     /// Sandbox-checked copy - both endpoints must be admissible.
@@ -415,9 +448,13 @@ impl FsHandle {
     /// `EACCES` when either endpoint escapes the sandbox; otherwise
     /// propagates backend I/O failures.
     pub fn copy(&self, from: &str, to: &str) -> Result<(), FsError> {
-        let src = self.check(from)?;
-        let dst = self.check(to)?;
-        self.backend.copy(&src, &dst)
+        let src = self
+            .check(from)
+            .inspect_err(|e| log_err("copy_src", from, e))?;
+        let dst = self.check(to).inspect_err(|e| log_err("copy_dst", to, e))?;
+        self.backend
+            .copy(&src, &dst)
+            .inspect_err(|e| log_err("copy", from, e))
     }
 
     /// Sandbox-checked symlink target read.
@@ -426,8 +463,12 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn read_link(&self, path: &str) -> Result<PathBuf, FsError> {
-        let p = self.check(path)?;
-        self.backend.read_link(&p)
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("read_link", path, e))?;
+        self.backend
+            .read_link(&p)
+            .inspect_err(|e| log_err("read_link", path, e))
     }
 
     /// Sandbox-checked canonical path lookup.
@@ -436,8 +477,12 @@ impl FsHandle {
     /// `EACCES` when `path` escapes the sandbox; otherwise propagates
     /// backend I/O failures.
     pub fn realpath(&self, path: &str) -> Result<PathBuf, FsError> {
-        let p = self.check(path)?;
-        self.backend.realpath(&p)
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("realpath", path, e))?;
+        self.backend
+            .realpath(&p)
+            .inspect_err(|e| log_err("realpath", path, e))
     }
 }
 

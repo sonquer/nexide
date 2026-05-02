@@ -14,6 +14,8 @@ use std::sync::Arc;
 use super::errors::CjsError;
 use super::registry::BuiltinRegistry;
 
+const LOG_TARGET: &str = "nexide::engine::cjs";
+
 /// Sentinel parent value used by the JS loader for top-level
 /// `require` calls. The resolver treats it as the project root.
 pub const ROOT_PARENT: &str = "<root>";
@@ -527,11 +529,19 @@ impl FsResolver {
 
 impl CjsResolver for FsResolver {
     fn resolve(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
-        self.resolve_with(parent, request, CJS_CONDITIONS)
+        let result = self.resolve_with(parent, request, CJS_CONDITIONS);
+        if tracing::enabled!(target: LOG_TARGET, tracing::Level::DEBUG) {
+            log_resolution(parent, request, "cjs", &result);
+        }
+        result
     }
 
     fn resolve_esm(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
-        self.resolve_with(parent, request, ESM_CONDITIONS)
+        let result = self.resolve_with(parent, request, ESM_CONDITIONS);
+        if tracing::enabled!(target: LOG_TARGET, tracing::Level::DEBUG) {
+            log_resolution(parent, request, "esm", &result);
+        }
+        result
     }
 
     fn builtin_source(&self, name: &str) -> Option<&'static str> {
@@ -540,6 +550,60 @@ impl CjsResolver for FsResolver {
 
     fn is_path_admitted(&self, path: &Path) -> bool {
         self.within_roots_pub(path)
+    }
+}
+
+fn log_resolution(
+    parent: &str,
+    request: &str,
+    mode: &'static str,
+    result: &Result<Resolved, CjsError>,
+) {
+    match result {
+        Ok(Resolved::Builtin(name)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "builtin",
+            name = %name,
+            "resolved",
+        ),
+        Ok(Resolved::File(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "file",
+            path = %path.display(),
+            "resolved",
+        ),
+        Ok(Resolved::Json(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "json",
+            path = %path.display(),
+            "resolved",
+        ),
+        Ok(Resolved::Native(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "native",
+            path = %path.display(),
+            "resolved",
+        ),
+        Err(err) => tracing::debug!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            error = %err,
+            "resolution failed",
+        ),
     }
 }
 
