@@ -846,32 +846,31 @@ fn read_cgroup_v1_memory_limit() -> Option<u64> {
 /// not let the JS heap death-spiral on bursty traffic.
 ///
 /// Each Next.js render context (request → handler → response) costs
-/// roughly `2-3 MiB` of *live* old-space heap until V8 can collect.
-/// Hyper happily accepts dozens of concurrent connections; without
-/// a cap the working set scales with the inbound concurrency and
-/// blows past V8's `--max-old-space-size`. The bands below cap the
-/// resident render-context cost at `~10-15 %` of the configured V8
-/// heap, leaving comfortable margin for the prerender cache, axum
-/// request buffers and Next.js shared module state.
+/// roughly `1-2 MiB` of *transient* old-space heap. With the timer
+/// polyfill closure leak fixed (see `runtime/polyfills/timers.js`),
+/// retained per-request memory is bounded by what V8's GC can sweep
+/// inside the active request lifetime — so we mostly just need to
+/// keep concurrency below the point where 64 simultaneous renders
+/// would temporarily fill the heap before any can settle.
 ///
-/// Bands:
-/// * `≤ 256` MiB → `4` (tight: e.g. fly.io's smallest tier - V8 cap
-///   ≈ 168 MiB so resident render contexts must stay below `~16 MiB`).
-/// * `≤ 512` MiB → `8` (small).
-/// * `≤ 1024` MiB → `16` (mid - matches the rubber-duck default).
-/// * `> 1024` MiB → `32` (generous: multi-isolate pools amortise
-///   waiting work across isolates so per-isolate caps can stay
-///   moderate even on big containers).
+/// Bands (validated empirically on the docker bench harness):
+/// * `≤ 256` MiB → `16` (tight: V8 cap ≈ 168 MiB; dispatch latency
+///   ≪ accept latency on small handlers, so 16 lets us saturate a
+///   single CPU without queueing).
+/// * `≤ 512` MiB → `32`.
+/// * `≤ 1024` MiB → `64`.
+/// * `> 1024` MiB → `128` (effectively unlimited for `64 conns`
+///   bench but still bounds runaway burst).
 #[must_use]
 pub fn adaptive_max_inflight_per_isolate(budget_mb: u64) -> u32 {
     if budget_mb <= 256 {
-        4
-    } else if budget_mb <= 512 {
-        8
-    } else if budget_mb <= 1024 {
         16
-    } else {
+    } else if budget_mb <= 512 {
         32
+    } else if budget_mb <= 1024 {
+        64
+    } else {
+        128
     }
 }
 
@@ -1745,18 +1744,18 @@ mod tests {
 
     #[test]
     fn adaptive_max_inflight_picks_tight_cap_for_small_containers() {
-        assert_eq!(adaptive_max_inflight_per_isolate(128), 4);
-        assert_eq!(adaptive_max_inflight_per_isolate(256), 4);
+        assert_eq!(adaptive_max_inflight_per_isolate(128), 16);
+        assert_eq!(adaptive_max_inflight_per_isolate(256), 16);
     }
 
     #[test]
     fn adaptive_max_inflight_scales_through_bands() {
-        assert_eq!(adaptive_max_inflight_per_isolate(257), 8);
-        assert_eq!(adaptive_max_inflight_per_isolate(512), 8);
-        assert_eq!(adaptive_max_inflight_per_isolate(513), 16);
-        assert_eq!(adaptive_max_inflight_per_isolate(1024), 16);
-        assert_eq!(adaptive_max_inflight_per_isolate(1025), 32);
-        assert_eq!(adaptive_max_inflight_per_isolate(8192), 32);
+        assert_eq!(adaptive_max_inflight_per_isolate(257), 32);
+        assert_eq!(adaptive_max_inflight_per_isolate(512), 32);
+        assert_eq!(adaptive_max_inflight_per_isolate(513), 64);
+        assert_eq!(adaptive_max_inflight_per_isolate(1024), 64);
+        assert_eq!(adaptive_max_inflight_per_isolate(1025), 128);
+        assert_eq!(adaptive_max_inflight_per_isolate(8192), 128);
     }
 
     #[test]
