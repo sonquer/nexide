@@ -104,7 +104,7 @@ where
             Ok(p) => p,
             Err(err) => return Ok(error_response(&err, accept_header.as_ref())),
         };
-        
+
         let accept_elapsed = t_accept_start.elapsed();
 
         let _permit = match &self.inflight_limit {
