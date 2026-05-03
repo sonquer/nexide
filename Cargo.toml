@@ -36,6 +36,20 @@ print_stdout = "deny"
 print_stderr = "deny"
 module_name_repetitions = "allow"
 
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+
+[profile.release-with-debug]
+inherits = "release"
+strip = "none"
+debug = "limited"
+
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"

@@ -1460,7 +1460,27 @@ fn op_cjs_compile_function<'s>(
         false,
         None,
     );
-    let mut src_obj = v8::script_compiler::Source::new(code_str, Some(&origin));
+
+    let cache = super::engine::code_cache_from_isolate(scope);
+    let cached_bytes = cache
+        .as_ref()
+        .filter(|c| c.is_enabled())
+        .and_then(|c| c.lookup(&source));
+
+    let (mut src_obj, options) = match cached_bytes {
+        Some(bytes) => {
+            let cached = v8::script_compiler::CachedData::new(&bytes);
+            (
+                v8::script_compiler::Source::new_with_cached_data(code_str, Some(&origin), cached),
+                v8::script_compiler::CompileOptions::ConsumeCodeCache,
+            )
+        }
+        None => (
+            v8::script_compiler::Source::new(code_str, Some(&origin)),
+            v8::script_compiler::CompileOptions::NoCompileOptions,
+        ),
+    };
+
     let arg_names = [
         v8::String::new(scope, "exports").unwrap(),
         v8::String::new(scope, "require").unwrap(),
@@ -1473,12 +1493,33 @@ fn op_cjs_compile_function<'s>(
         &mut src_obj,
         &arg_names,
         &[],
-        v8::script_compiler::CompileOptions::NoCompileOptions,
+        options,
         v8::script_compiler::NoCacheReason::NoReason,
     ) {
         Some(f) => f,
         None => return,
     };
+
+    if let Some(cache) = cache.as_ref().filter(|c| c.is_enabled()) {
+        let consumed = options.contains(v8::script_compiler::CompileOptions::ConsumeCodeCache);
+        let rejected = src_obj
+            .get_cached_data()
+            .map(v8::CachedData::rejected)
+            .unwrap_or(false);
+
+        if !consumed || rejected {
+            if consumed {
+                cache.metrics().record_reject();
+            }
+            if let Some(blob) = func.create_code_cache() {
+                let bytes = blob.to_vec();
+                if !bytes.is_empty() {
+                    cache.store(&source, bytes);
+                }
+            }
+        }
+    }
+
     rv.set(func.into());
 }
 

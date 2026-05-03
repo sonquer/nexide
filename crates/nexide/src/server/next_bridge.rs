@@ -177,7 +177,8 @@ fn stamp_phase_breakdown(
         duration_ms(respond),
     );
     if let Ok(v) = HeaderValue::from_str(&value) {
-        headers.append("server-timing", v);
+        const HN: HeaderName = HeaderName::from_static("server-timing");
+        headers.append(HN, v);
     }
 }
 

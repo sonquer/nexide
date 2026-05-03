@@ -352,9 +352,8 @@ fn serve_hot(
         url,
         cfg,
     );
-    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
-        resp.headers_mut().insert(CONTENT_LENGTH, v);
-    }
+    resp.headers_mut()
+        .insert(CONTENT_LENGTH, HeaderValue::from(len as u64));
     resp
 }
 
@@ -379,9 +378,8 @@ fn serve_bypass(
         &params.url,
         &source.config_snapshot,
     );
-    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
-        resp.headers_mut().insert(CONTENT_LENGTH, v);
-    }
+    resp.headers_mut()
+        .insert(CONTENT_LENGTH, HeaderValue::from(len as u64));
     resp
 }
 
@@ -394,19 +392,18 @@ fn attach_headers(
     url: &str,
     cfg: &ImageConfig,
 ) {
-    headers.insert(VARY, HeaderValue::from_static("Accept"));
-    if let Ok(v) = HeaderValue::from_str(mime) {
-        headers.insert(CONTENT_TYPE, v);
-    }
+    const HV_VARY_ACCEPT: HeaderValue = HeaderValue::from_static("Accept");
+    const HN_X_NEXTJS_CACHE_K: axum::http::HeaderName =
+        axum::http::HeaderName::from_static(X_NEXTJS_CACHE);
+    headers.insert(VARY, HV_VARY_ACCEPT);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
     if let Ok(v) = HeaderValue::from_str(&format!("public, max-age={max_age}, must-revalidate")) {
         headers.insert(CACHE_CONTROL, v);
     }
     if let Ok(v) = HeaderValue::from_str(&format!("\"{etag}\"")) {
         headers.insert(ETAG, v);
     }
-    if let Ok(v) = HeaderValue::from_str(cache_state) {
-        let _ = headers.insert(axum::http::HeaderName::from_static(X_NEXTJS_CACHE), v);
-    }
+    headers.insert(HN_X_NEXTJS_CACHE_K, HeaderValue::from_static(cache_state));
     if let Ok(v) = HeaderValue::from_str(&cfg.content_security_policy) {
         headers.insert(CONTENT_SECURITY_POLICY, v);
     }

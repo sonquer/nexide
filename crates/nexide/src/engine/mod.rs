@@ -11,7 +11,9 @@ mod isolate;
 pub(crate) mod v8_engine;
 
 pub mod cjs;
+pub mod code_cache;
 
+pub use code_cache::{CacheMetrics, CacheMetricsSnapshot, CodeCache};
 pub use errors::EngineError;
 pub use heap_config::{HeapLimitConfig, heap_limit_from_env};
 pub use isolate::{HeapStats, IsolateHandle};

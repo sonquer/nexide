@@ -2126,6 +2126,7 @@ dependencies = [
  "hickory-resolver",
  "hkdf",
  "hmac",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",

@@ -72,6 +72,7 @@ pub struct BootContext {
     fs: Option<FsHandle>,
     cjs: Option<std::sync::Arc<dyn crate::engine::cjs::CjsResolver>>,
     cjs_root: Option<String>,
+    code_cache: Option<crate::engine::code_cache::CodeCache>,
 }
 
 impl BootContext {
@@ -123,6 +124,15 @@ impl BootContext {
     #[must_use]
     pub fn with_cjs_root(mut self, root: impl Into<String>) -> Self {
         self.cjs_root = Some(root.into());
+        self
+    }
+
+    /// Installs a persistent V8 bytecode cache shared across every
+    /// compile site that opts in (see
+    /// [`crate::engine::code_cache::CodeCache`]).
+    #[must_use]
+    pub fn with_code_cache(mut self, cache: crate::engine::code_cache::CodeCache) -> Self {
+        self.code_cache = Some(cache);
         self
     }
 }
@@ -215,6 +225,10 @@ impl V8Engine {
         };
         isolate.set_slot(BridgeStateHandle::new(bridge));
         isolate.set_slot(ModuleMap::new());
+        isolate.set_slot(
+            ctx.code_cache
+                .unwrap_or_else(crate::engine::code_cache::CodeCache::disabled),
+        );
         isolate.set_host_import_module_dynamically_callback(host_import_module_dynamically);
 
         let context_global = {
@@ -415,6 +429,31 @@ impl V8Engine {
         self.isolate.perform_microtask_checkpoint();
         self.last_stats = capture_heap_stats(&mut self.isolate);
     }
+
+    /// Hints V8 that the host is under memory pressure so the isolate
+    /// should give back as much heap as it can right now.
+    ///
+    /// Calls
+    /// `v8::Isolate::MemoryPressureNotification(MemoryPressureLevel::Critical)`
+    /// which triggers a major GC and asks V8 to release reclaimed
+    /// pages back to the OS - the only way for an idle Node-style
+    /// isolate to drop its working-set RSS below the high-water mark
+    /// reached during peak traffic. Combined with jemalloc decay (or
+    /// `malloc_trim` on glibc), this lets a long-idle worker shrink
+    /// from `100-150` MiB back down to the cold-boot baseline
+    /// (~`30-40` MiB) without restarting the isolate.
+    ///
+    /// Cheap to call (one virtual call into V8 + one major GC pause
+    /// of `~5-30` ms depending on heap size). The caller is
+    /// responsible for rate-limiting; the typical pattern is to
+    /// invoke this once after the dispatch queue has been empty for
+    /// `NEXIDE_IDLE_GC_MS` (default `30_000` ms - see
+    /// [`run_pump`](crate::pool::engine_pump) for the exact wiring).
+    pub fn notify_low_memory(&mut self) {
+        self.isolate
+            .memory_pressure_notification(v8::MemoryPressureLevel::Critical);
+        self.last_stats = capture_heap_stats(&mut self.isolate);
+    }
 }
 
 fn drain_napi_work<'s>(
@@ -566,12 +605,43 @@ pub(super) fn compile_module<'s>(
         true,
         None,
     );
-    let mut source = v8::script_compiler::Source::new(code, Some(&origin));
-    let module = v8::script_compiler::compile_module(scope, &mut source).ok_or_else(|| {
-        EngineError::JsRuntime {
-            message: format!("compile failed for {}", path.display()),
+
+    let cache = code_cache_from_isolate(scope);
+    let cached_bytes = cache
+        .as_ref()
+        .filter(|c| c.is_enabled())
+        .and_then(|c| c.lookup(&source_text));
+
+    let (mut source, options) = match cached_bytes {
+        Some(bytes) => {
+            let cached = v8::script_compiler::CachedData::new(&bytes);
+            (
+                v8::script_compiler::Source::new_with_cached_data(code, Some(&origin), cached),
+                v8::script_compiler::CompileOptions::ConsumeCodeCache,
+            )
         }
+        None => (
+            v8::script_compiler::Source::new(code, Some(&origin)),
+            v8::script_compiler::CompileOptions::NoCompileOptions,
+        ),
+    };
+
+    let module = v8::script_compiler::compile_module2(
+        scope,
+        &mut source,
+        options,
+        v8::script_compiler::NoCacheReason::NoReason,
+    )
+    .ok_or_else(|| EngineError::JsRuntime {
+        message: format!("compile failed for {}", path.display()),
     })?;
+
+    let fresh_blob = module
+        .get_unbound_module_script(scope)
+        .create_code_cache()
+        .map(|cd| cd.to_vec());
+
+    finalise_cache_after_compile(cache.as_ref(), &source, &source_text, options, fresh_blob);
 
     let hash = module.get_identity_hash().get();
     let module_global = v8::Global::new(scope, module);
@@ -579,6 +649,48 @@ pub(super) fn compile_module<'s>(
         map.insert(path.to_path_buf(), hash, module_global);
     }
     Ok(module)
+}
+
+/// Returns the [`code_cache::CodeCache`] attached to `isolate`, or
+/// `None` when no cache slot has been installed (e.g. in unit tests
+/// that bypass [`V8Engine::boot_internal`]).
+pub(super) fn code_cache_from_isolate<'s>(
+    scope: &v8::PinScope<'s, '_>,
+) -> Option<crate::engine::code_cache::CodeCache> {
+    scope
+        .get_slot::<crate::engine::code_cache::CodeCache>()
+        .cloned()
+}
+
+fn finalise_cache_after_compile(
+    cache: Option<&crate::engine::code_cache::CodeCache>,
+    source_obj: &v8::script_compiler::Source,
+    source_text: &str,
+    options: v8::script_compiler::CompileOptions,
+    fresh_blob: Option<Vec<u8>>,
+) {
+    let Some(cache) = cache else { return };
+    if !cache.is_enabled() {
+        return;
+    }
+
+    let consumed = options.contains(v8::script_compiler::CompileOptions::ConsumeCodeCache);
+    let rejected = source_obj
+        .get_cached_data()
+        .map(v8::CachedData::rejected)
+        .unwrap_or(false);
+
+    if consumed && !rejected {
+        return;
+    }
+
+    if consumed && rejected {
+        cache.metrics().record_reject();
+    }
+
+    if let Some(blob) = fresh_blob.filter(|b| !b.is_empty()) {
+        cache.store(source_text, blob);
+    }
 }
 
 /// Returns `Some(&mut ModuleMap)` from the isolate's slot store.

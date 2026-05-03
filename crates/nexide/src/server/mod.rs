@@ -10,6 +10,7 @@ pub mod fallback;
 mod next_bridge;
 mod prerender;
 mod static_assets;
+mod static_ram_cache;
 mod stream_listener;
 pub mod worker_runtime;
 
@@ -90,7 +91,9 @@ pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Rou
     Router::new()
         .nest_service(
             "/_next/static",
-            immutable_cache.service(static_assets::next_static_only(cfg.next_static_dir())),
+            immutable_cache.service(static_ram_cache::RamCachedService::new(
+                static_assets::next_static_only(cfg.next_static_dir()),
+            )),
         )
         .nest_service("/_next/image", next_image)
         .fallback_service(public)
