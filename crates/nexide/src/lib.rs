@@ -719,9 +719,10 @@ fn fixed_runtime_overhead_mb(budget_mb: u64) -> u64 {
 /// never use.
 ///
 /// Bands:
-/// * `≤ 256` MiB → `64` MiB (tight: matches `MIN_OLD_SPACE_CAP_MB`
-///   floor; lets a 256 MiB container still host one isolate without
-///   OOM after fixed overhead).
+/// * `≤ 256` MiB → `64` MiB (tight: still floors to
+///   [`MIN_OLD_SPACE_CAP_MB`] in the V8 cap because V8 rejects smaller
+///   old-spaces; the smaller value here is what the pool sizer
+///   *reserves* per isolate so the pool stays correctly conservative).
 /// * `≤ 512` MiB → `80` MiB (small: lets two isolates fit a 512 MiB
 ///   container with comfortable margin).
 /// * `≤ 1024` MiB → `96` MiB (mid).
@@ -1347,15 +1348,19 @@ const HARD_OLD_SPACE_CAP_MB: u64 = 256;
 /// * No budget → no `--max-old-space-size` (V8 grows lazily, which
 ///   keeps GC pressure low on dev machines that don't expose a
 ///   container memory limit).
-/// * Budget present → cap each isolate at `clamp(raw, MIN, ceiling)`
-///   where `MIN = MIN_OLD_SPACE_CAP_MB`, `ceiling = max(HARD_OLD_SPACE_CAP_MB, raw/2)`,
-///   and `raw = ((budget - fixed_runtime_overhead) / workers) - PER_ISOLATE_RSS_OVERHEAD_MB`.
-///   The per-worker share is computed against the same fixed-overhead
-///   reservation that `pool_size_from_memory_budget` uses, so the V8
-///   cap and the pool size never disagree on how much memory each
-///   isolate may consume - a precondition for staying within the
-///   container limit when the recycler boots a fresh isolate before
-///   retiring the outgoing one.
+/// * Budget present → cap each isolate at the same per-isolate heap
+///   that [`pool_size_from_memory_budget`] uses to size the pool:
+///   `cap = clamp(adaptive_per_isolate_heap_mb(budget), MIN, ceiling)`
+///   where `MIN = MIN_OLD_SPACE_CAP_MB` and
+///   `ceiling = max(HARD_OLD_SPACE_CAP_MB, available_per_worker / 2)`.
+///   Crucially, the cap is **not** derived from
+///   `(budget / workers) - PER_ISOLATE_RSS_OVERHEAD_MB`: that formula
+///   assumed all workers share the budget evenly and ignored the
+///   recycle reserve, so on a `pool=1` 256 MiB container it produced a
+///   168 MiB old-space cap that exceeded what the pool sizer reserved
+///   (`64 + 40 = 104` MiB per isolate) and triggered "Ineffective
+///   mark-compacts near heap limit" fatal aborts under load. Using
+///   the same adaptive band keeps V8 and the pool sizer in lockstep.
 ///
 /// `--max-semi-space-size=N` (with `N` from [`DEFAULT_SEMI_SPACE_CAP_MB`])
 /// is always set so the young generation never grows faster than V8's
@@ -1372,9 +1377,10 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
         let fixed_oh = fixed_runtime_overhead_mb(budget);
         let usable = budget.saturating_sub(fixed_oh);
         let per_worker_share = usable.saturating_div(workers);
-        let raw = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
-        let ceiling = HARD_OLD_SPACE_CAP_MB.max(raw / 2);
-        let cap = raw.clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
+        let head_room = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
+        let band = adaptive_per_isolate_heap_mb(budget);
+        let ceiling = HARD_OLD_SPACE_CAP_MB.max(head_room / 2);
+        let cap = band.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
         let _ = write!(flags, " --max-old-space-size={cap}");
     }
     flags
@@ -1421,7 +1427,7 @@ fn resolve_v8_flags(env_value: Option<&str>, budget_mb: Option<u64>, workers: us
 #[cfg(test)]
 mod tests {
     use super::{
-        AppLayout, BIND_ENV, DEFAULT_BIND, DEFAULT_MAX_INFLIGHT_PER_ISOLATE, HARD_OLD_SPACE_CAP_MB,
+        AppLayout, BIND_ENV, DEFAULT_BIND, DEFAULT_MAX_INFLIGHT_PER_ISOLATE,
         MAX_FIXED_RUNTIME_OVERHEAD_MB, MIN_FIXED_RUNTIME_OVERHEAD_MB, MIN_OLD_SPACE_CAP_MB,
         RUNTIME_MODE_ENV, RuntimeError, RuntimeMode, absolute_dir,
         adaptive_max_inflight_per_isolate, adaptive_per_isolate_heap_mb, blocking_cap_from_env,
@@ -1636,36 +1642,47 @@ mod tests {
 
     #[test]
     fn compose_default_v8_flags_scales_old_space_with_budget_and_workers() {
-        // 1024/4: fixed_oh=96, usable=928, share=232, raw=192 → ceiling=max(256,96)=256, clamp=192.
+        // 1024/4: band=96, head_room=232-40=192, clamp(min(96,192)=96, 96, ...) = 96.
         let flags = compose_default_v8_flags(Some(1024), 4);
         assert!(
-            flags.contains("--max-old-space-size=192"),
+            flags.contains("--max-old-space-size=96"),
             "actual flags: {flags}"
         );
-        // 256/1: fixed_oh=48, usable=208, share=208, raw=168 → ceiling=max(256,84)=256, clamp=168.
+        // 256/1: band=64, head_room=168, clamp(64, 96, ...) = 96.
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(
-            flags.contains("--max-old-space-size=168"),
+            flags.contains("--max-old-space-size=96"),
             "actual flags: {flags}"
         );
-        // 1024/2: fixed_oh=96, usable=928, share=464, raw=424 → ceiling=max(256,212)=256 → clamp to HARD.
+        // 1024/2: band=96, head_room=424, clamp(96, 96, max(256,212)) = 96.
         let flags = compose_default_v8_flags(Some(1024), 2);
-        assert!(flags.contains(&format!("--max-old-space-size={HARD_OLD_SPACE_CAP_MB}")));
+        assert!(flags.contains("--max-old-space-size=96"));
     }
 
     #[test]
-    fn compose_default_v8_flags_loosens_ceiling_with_large_budget() {
-        // 1024/1: fixed_oh=96, usable=928, share=928, raw=888 → ceiling=max(256,444)=444 → clamp=444.
+    fn compose_default_v8_flags_uses_adaptive_band_not_runaway_share() {
+        // 1024 budget → adaptive band 96 MiB; clamp(96, 96, ...) = 96.
+        // Previously this returned 444 (raw share / 2), which conflicted
+        // with the pool sizer's per-isolate reserve and caused OOM.
         let flags = compose_default_v8_flags(Some(1024), 1);
         assert!(
-            flags.contains("--max-old-space-size=444"),
+            flags.contains("--max-old-space-size=96"),
             "actual flags: {flags}"
         );
-        // 8192/1: fixed_oh=256(cap), usable=7936, share=7936, raw=7896 → ceiling=3948 → clamp=3948.
+        // 8192 budget → adaptive band 128 MiB; clamp(128, 96, 3948) = 128.
         let flags = compose_default_v8_flags(Some(8192), 1);
         assert!(
-            flags.contains("--max-old-space-size=3948"),
+            flags.contains("--max-old-space-size=128"),
             "actual flags: {flags}"
+        );
+    }
+
+    #[test]
+    fn compose_default_v8_flags_aligns_with_pool_reserve_on_tight_container() {
+        let flags = compose_default_v8_flags(Some(256), 1);
+        assert!(
+            flags.contains("--max-old-space-size=96"),
+            "tight container must floor at MIN_OLD_SPACE_CAP_MB; flags: {flags}"
         );
     }
 
@@ -1674,7 +1691,7 @@ mod tests {
         let flags = compose_default_v8_flags(Some(96), 1);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
         let flags = compose_default_v8_flags(Some(512), 0);
-        assert!(flags.contains(&format!("--max-old-space-size={HARD_OLD_SPACE_CAP_MB}")));
+        assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
     }
 
     #[test]

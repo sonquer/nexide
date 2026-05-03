@@ -13,15 +13,16 @@
 
 globalThis.__nexide.__dispatch = function (idx, gen) {
   const meta = globalThis.__nexide.getMeta(idx, gen);
-  if (meta.uri === "/sync-throw") {
+  const uri = meta[1];
+  if (uri === "/sync-throw") {
     throw new Error("sync-boom");
   }
-  if (meta.uri === "/async-reject") {
+  if (uri === "/async-reject") {
     return Promise.resolve().then(() => {
       throw new Error("async-boom");
     });
   }
-  globalThis.__nexide.sendHead(idx, gen, 200, [["x-uri", meta.uri]]);
+  globalThis.__nexide.sendHead(idx, gen, 200, [["x-uri", uri]]);
   globalThis.__nexide.sendEnd(idx, gen);
   return undefined;
 };

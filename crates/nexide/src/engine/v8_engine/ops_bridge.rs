@@ -520,14 +520,19 @@ fn op_nexide_get_meta<'s>(
             }
         }
     };
-    let obj = v8::Object::new(scope);
-    let m_key = v8::String::new(scope, "method").unwrap();
-    let m_val = v8::String::new(scope, &method).unwrap();
-    obj.set(scope, m_key.into(), m_val.into());
-    let u_key = v8::String::new(scope, "uri").unwrap();
-    let u_val = v8::String::new(scope, &uri).unwrap();
-    obj.set(scope, u_key.into(), u_val.into());
-    rv.set(obj.into());
+    // Hot-path optimisation: HTTP method (RFC 7230 token) and URI
+    // (RFC 3986 ASCII) are always one-byte; `new_from_one_byte`
+    // bypasses V8's UTF-8 → UTF-16 transcoding path (typical 2-3×
+    // faster for short strings). Layout switched from
+    // `{ method, uri }` to `[method, uri]`: saves one `v8::Object`
+    // allocation, two property `Set` calls, and the hidden-class
+    // transition per request. JS side reads `meta[0]`/`meta[1]`.
+    let m_val = ascii_v8_string(scope, method.as_bytes());
+    let u_val = ascii_v8_string(scope, uri.as_bytes());
+    let array = v8::Array::new(scope, 2);
+    array.set_index(scope, 0, m_val.into());
+    array.set_index(scope, 1, u_val.into());
+    rv.set(array.into());
 }
 
 fn op_nexide_get_headers<'s>(
@@ -557,18 +562,47 @@ fn op_nexide_get_headers<'s>(
             }
         }
     };
-    let array = v8::Array::new(scope, headers.len() as i32);
-    let name_key = v8::String::new(scope, "name").unwrap();
-    let value_key = v8::String::new(scope, "value").unwrap();
+    // Hot-path optimisation: returns a *flat* `[name, value, name,
+    // value, ...]` array instead of an array of `{ name, value }`
+    // objects. This eliminates one `v8::Object` allocation and two
+    // property `Set` calls per header (typical request: ~15 headers
+    // → 15 fewer object allocations + 30 fewer hidden-class
+    // transitions). Combined with the ASCII fast-path
+    // (`new_from_one_byte`, bypasses UTF-8 → UTF-16 transcoding for
+    // header names+values which `HeaderValue::to_str` already
+    // guarantees are visible ASCII), this is one of the heaviest
+    // per-request bridge calls. JS side iterates by stride-2.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let array = v8::Array::new(scope, (headers.len() * 2) as i32);
     for (i, (name, value)) in headers.into_iter().enumerate() {
-        let obj = v8::Object::new(scope);
-        let n = v8::String::new(scope, &name).unwrap();
-        let v = v8::String::new(scope, &value).unwrap();
-        obj.set(scope, name_key.into(), n.into());
-        obj.set(scope, value_key.into(), v.into());
-        array.set_index(scope, i as u32, obj.into());
+        let n = ascii_v8_string(scope, name.as_bytes());
+        let v = ascii_v8_string(scope, value.as_bytes());
+        #[allow(clippy::cast_possible_truncation)]
+        let base = (i * 2) as u32;
+        array.set_index(scope, base, n.into());
+        array.set_index(scope, base + 1, v.into());
     }
     rv.set(array.into());
+}
+
+/// Allocates a V8 string from an ASCII byte slice using the one-byte
+/// fast path.
+///
+/// `v8::String::new_from_one_byte` skips the UTF-8 → UTF-16
+/// transcoding step that `v8::String::new` (UTF-8) always pays. For
+/// HTTP traffic - method/URI/header names+values - the bytes are
+/// guaranteed visible ASCII (method is a token per RFC 7230, URI is
+/// ASCII per RFC 3986, header values that survived
+/// `HeaderValue::to_str` are visible ASCII), so this is always safe
+/// and measurably faster on hot paths. Falls back to an empty string
+/// only on the V8-internal length overflow case (effectively
+/// unreachable for sane HTTP).
+fn ascii_v8_string<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    bytes: &[u8],
+) -> v8::Local<'s, v8::String> {
+    v8::String::new_from_one_byte(scope, bytes, v8::NewStringType::Normal)
+        .unwrap_or_else(|| v8::String::empty(scope))
 }
 
 fn op_nexide_read_body<'s>(

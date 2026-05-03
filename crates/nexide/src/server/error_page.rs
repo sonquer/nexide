@@ -7,7 +7,7 @@
 //! fetches, safe to render even when the upstream engine is dead.
 
 use axum::body::Body;
-use axum::http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, HeaderMap, HeaderValue};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use axum::http::{Response, StatusCode};
 
 /// Negotiated representation for an error response.
@@ -18,11 +18,16 @@ enum Wants {
     Text,
 }
 
-fn negotiate(headers: Option<&HeaderMap>) -> Wants {
-    let Some(headers) = headers else {
-        return Wants::Html;
-    };
-    let Some(accept) = headers.get(ACCEPT).and_then(|v| v.to_str().ok()) else {
+/// Negotiates the response representation from the request's `Accept`
+/// header value alone.
+///
+/// Taking the bare [`HeaderValue`] (rather than the whole [`HeaderMap`])
+/// keeps the hot path allocation-free: callers clone only the single
+/// header (a `Bytes`-backed value, ref-counted) instead of duplicating
+/// the entire request header table just for content negotiation that
+/// rarely fires (`error_page::render` is the error path).
+fn negotiate(accept: Option<&HeaderValue>) -> Wants {
+    let Some(accept) = accept.and_then(|v| v.to_str().ok()) else {
         return Wants::Html;
     };
     let lower = accept.to_ascii_lowercase();
@@ -38,16 +43,17 @@ fn negotiate(headers: Option<&HeaderMap>) -> Wants {
 }
 
 /// Builds an error response from a status code, optionally tailored by
-/// the original request headers (used for content negotiation) and an
-/// internal `detail` string that will be exposed only in the JSON
-/// envelope (HTML/text intentionally hide it from end users).
+/// the original request's `Accept` header (used for content
+/// negotiation) and an internal `detail` string that will be exposed
+/// only in the JSON envelope (HTML/text intentionally hide it from end
+/// users).
 pub(super) fn render(
     status: StatusCode,
-    request_headers: Option<&HeaderMap>,
+    accept: Option<&HeaderValue>,
     detail: Option<&str>,
 ) -> Response<Body> {
     let copy = copy_for(status);
-    let mode = negotiate(request_headers);
+    let mode = negotiate(accept);
     let (content_type, body) = match mode {
         Wants::Html => (
             HeaderValue::from_static("text/html; charset=utf-8"),
@@ -281,6 +287,7 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::{ACCEPT, HeaderMap};
     use http_body_util::BodyExt;
 
     async fn body_string(resp: Response<Body>) -> (StatusCode, String, String) {
@@ -295,6 +302,10 @@ mod tests {
         (status, ct, String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    fn accept_value(value: &'static str) -> HeaderValue {
+        HeaderValue::from_static(value)
+    }
+
     fn headers_with_accept(value: &'static str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(ACCEPT, HeaderValue::from_static(value));
@@ -303,8 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn html_negotiation_returns_inline_page() {
-        let h = headers_with_accept("text/html,application/xhtml+xml,*/*;q=0.8");
-        let resp = render(StatusCode::INTERNAL_SERVER_ERROR, Some(&h), None);
+        let v = accept_value("text/html,application/xhtml+xml,*/*;q=0.8");
+        let resp = render(StatusCode::INTERNAL_SERVER_ERROR, Some(&v), None);
         let (status, ct, body) = body_string(resp).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(ct.starts_with("text/html"));
@@ -315,10 +326,10 @@ mod tests {
 
     #[tokio::test]
     async fn json_negotiation_returns_envelope() {
-        let h = headers_with_accept("application/json");
+        let v = accept_value("application/json");
         let resp = render(
             StatusCode::BAD_GATEWAY,
-            Some(&h),
+            Some(&v),
             Some("upstream connection refused"),
         );
         let (status, ct, body) = body_string(resp).await;
@@ -330,8 +341,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_accept_falls_back_to_text() {
-        let h = headers_with_accept("application/octet-stream");
-        let resp = render(StatusCode::SERVICE_UNAVAILABLE, Some(&h), None);
+        let v = accept_value("application/octet-stream");
+        let resp = render(StatusCode::SERVICE_UNAVAILABLE, Some(&v), None);
         let (_status, ct, body) = body_string(resp).await;
         assert!(ct.starts_with("text/plain"));
         assert!(body.starts_with("503 "));
@@ -353,10 +364,10 @@ mod tests {
 
     #[tokio::test]
     async fn json_escapes_detail() {
-        let h = headers_with_accept("application/json");
+        let v = accept_value("application/json");
         let resp = render(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Some(&h),
+            Some(&v),
             Some("a \"quoted\"\n line"),
         );
         let (_status, _ct, body) = body_string(resp).await;
@@ -372,5 +383,13 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("no-store")
         );
+    }
+
+    #[test]
+    fn negotiate_helper_uses_only_accept_value() {
+        let h = headers_with_accept("application/json");
+        let accept = h.get(ACCEPT);
+        assert_eq!(negotiate(accept), Wants::Json);
+        assert_eq!(negotiate(None), Wants::Html);
     }
 }

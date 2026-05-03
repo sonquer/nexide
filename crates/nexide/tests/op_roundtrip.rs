@@ -25,6 +25,8 @@ const __nx = globalThis.__nexide;
 
 __nx.__dispatch = function (idx, gen) {
   const meta = __nx.getMeta(idx, gen);
+  const method = meta[0];
+  const uri = meta[1];
 
   const buf = new Uint8Array(64);
   const n = __nx.readBody(idx, gen, buf);
@@ -32,8 +34,8 @@ __nx.__dispatch = function (idx, gen) {
 
   __nx.sendHead(idx, gen, 200, [
     ["content-type", "text/plain"],
-    ["x-method", meta.method],
-    ["x-uri", meta.uri],
+    ["x-method", method],
+    ["x-uri", uri],
   ]);
 
   const prefix = new Uint8Array([0x70, 0x6f, 0x6e, 0x67, 0x3a]); // "pong:"

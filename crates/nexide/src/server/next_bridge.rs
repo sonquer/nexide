@@ -8,11 +8,12 @@
 //! (Dependency Inversion Principle).
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::header::{HeaderName, HeaderValue};
+use axum::http::header::{ACCEPT, HeaderName, HeaderValue};
 use axum::http::{HeaderMap, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use tokio::sync::Semaphore;
@@ -98,20 +99,14 @@ where
 {
     async fn handle(&self, req: Request<Body>) -> Result<Response<Body>, HandlerError> {
         let t_accept_start = Instant::now();
-        let request_headers = req.headers().clone();
+        let accept_header = req.headers().get(ACCEPT).cloned();
         let proto = match build_proto_request(req).await {
             Ok(p) => p,
-            Err(err) => return Ok(error_response(&err, Some(&request_headers))),
+            Err(err) => return Ok(error_response(&err, accept_header.as_ref())),
         };
+        
         let accept_elapsed = t_accept_start.elapsed();
 
-        // Acquire the inflight permit BEFORE entering the dispatch
-        // path so we never materialise a JS render context beyond
-        // the configured cap. The permit is dropped after the
-        // response is built, which releases backpressure for the
-        // next waiter. `acquire_owned` is cheap when the semaphore
-        // is uncontended and never panics on a live semaphore (we
-        // never close it).
         let _permit = match &self.inflight_limit {
             Some(sem) => Some(
                 Arc::clone(sem)
@@ -129,18 +124,40 @@ where
         let t_respond_start = Instant::now();
         let mut response = match outcome {
             Ok(payload) => payload_to_response(payload),
-            Err(err) => error_response(&err, Some(&request_headers)),
+            Err(err) => error_response(&err, accept_header.as_ref()),
         };
         let respond_elapsed = t_respond_start.elapsed();
 
-        stamp_phase_breakdown(
-            response.headers_mut(),
-            accept_elapsed,
-            dispatch_elapsed,
-            respond_elapsed,
-        );
+        if phase_breakdown_enabled() {
+            stamp_phase_breakdown(
+                response.headers_mut(),
+                accept_elapsed,
+                dispatch_elapsed,
+                respond_elapsed,
+            );
+        }
         Ok(response)
     }
+}
+
+/// Returns `true` when `NEXIDE_PHASE_BREAKDOWN=1` is set.
+///
+/// Resolved exactly once per process via [`OnceLock`] so the hot path
+/// reads a cached `bool` instead of touching the env on every request.
+/// The breakdown header is a developer aid (it stamps a multi-segment
+/// `Server-Timing` value with `accept`/`dispatch_inner`/`respond`
+/// durations) and adds a `format!()` + `HeaderValue::from_str()` plus a
+/// header-table append per response, which shows up at high RPS. We
+/// keep it disabled by default so production traffic pays nothing for
+/// it; observability stacks that need the data set the env flag.
+fn phase_breakdown_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        matches!(
+            std::env::var("NEXIDE_PHASE_BREAKDOWN").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+        )
+    })
 }
 
 /// Appends per-phase Server-Timing metrics (`accept`, `dispatch_inner`,
@@ -185,8 +202,12 @@ async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, Dispatc
             Ok(v) => v.to_owned(),
             Err(_) => continue,
         };
+        // `HeaderName::as_str()` already yields the canonical
+        // lowercased form; the previous `to_ascii_lowercase()` call
+        // forced an extra allocation on every header on every request
+        // for a no-op transformation.
         headers.push(HeaderPair {
-            name: name.as_str().to_ascii_lowercase(),
+            name: name.as_str().to_owned(),
             value: value_str,
         });
     }
@@ -231,7 +252,7 @@ fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
         .unwrap_or_else(|_| infallible_502())
 }
 
-fn error_response(err: &DispatchError, request_headers: Option<&HeaderMap>) -> Response<Body> {
+fn error_response(err: &DispatchError, accept: Option<&HeaderValue>) -> Response<Body> {
     tracing::error!(error = %err, "next bridge dispatch failed");
     let status = match err {
         DispatchError::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -239,7 +260,7 @@ fn error_response(err: &DispatchError, request_headers: Option<&HeaderMap>) -> R
         _ => StatusCode::BAD_GATEWAY,
     };
     let detail = err.to_string();
-    super::error_page::render(status, request_headers, Some(&detail))
+    super::error_page::render(status, accept, Some(&detail))
 }
 
 fn infallible_502() -> Response<Body> {
