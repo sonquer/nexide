@@ -8,6 +8,7 @@
 //! and replaced with a freshly booted one.
 
 mod engine_pump;
+pub mod idle_shrink;
 mod isolate_pool;
 mod isolate_worker;
 mod local_isolate_worker;

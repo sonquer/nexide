@@ -237,11 +237,32 @@ pub fn reap_rss_bytes_from_env(raw: Option<&str>) -> Option<u64> {
 /// configuration, applying the project-wide defaults when an env var
 /// is absent.
 ///
-/// Defaults: `heap_ratio = 0.8`, `request_count = 50_000`. Either
-/// component is **omitted** (not constructed with a degenerate `0`)
-/// when the corresponding env value is exactly `0`, because policies
-/// such as [`RequestCount::new(0)`] would fire on every dispatch and
-/// turn the recycler into a busy loop.
+/// Defaults: `heap_ratio = 0.95`, `request_count = 0` (disabled).
+///
+/// Rationale: the recycler is a **safety net** for pathological
+/// memory leaks, not a regular maintenance event. Each recycle boots
+/// a fresh V8 isolate on the worker's `current_thread` runtime - the
+/// same runtime that serves dispatches - so a recycle pause stalls
+/// every in-flight request on that worker. Earlier defaults
+/// (`0.8` / `50_000`) caused 2+ recycles per 30 s benchmark window;
+/// each rebuild blocked dispatch for hundreds of milliseconds and
+/// turned recycle events into clusters of p99 spikes (the `api-time`
+/// route showed `91 ms` p99 versus `57 ms` for `api-ping` precisely
+/// because allocation pressure tripped the heap-ratio trigger).
+///
+/// `RequestCount` is intentionally disabled by default: the count
+/// after which "something might leak" is workload-specific - the
+/// value is unknowable without per-deployment measurement, and
+/// guessing inflicts deterministic recycle pauses on perfectly
+/// healthy isolates. `HeapThreshold` (`95%` of the V8 cap) is a
+/// strictly better safety net because it triggers only when
+/// real heap pressure exists. Operators who *do* have a known leak
+/// can set `NEXIDE_RECYCLE_REQUESTS=N` for their workload.
+///
+/// Either component is **omitted** (not constructed with a
+/// degenerate `0`) when the corresponding env value is exactly `0`,
+/// because policies such as [`RequestCount::new(0)`] would fire on
+/// every dispatch and turn the recycler into a busy loop.
 ///
 /// Returning a zero-policy [`Composite`] (both disabled) is well
 /// defined - [`Composite::should_recycle`] returns `false` for an
@@ -272,8 +293,8 @@ pub fn build_default_recycle_policy_with(
     rss_bytes: Option<u64>,
     sampler: Option<Arc<dyn MemorySampler>>,
 ) -> Arc<dyn RecyclePolicy> {
-    const DEFAULT_HEAP_RATIO: f64 = 0.8;
-    const DEFAULT_REQUEST_COUNT: u64 = 50_000;
+    const DEFAULT_HEAP_RATIO: f64 = 0.95;
+    const DEFAULT_REQUEST_COUNT: u64 = 0;
     let heap = heap_ratio.unwrap_or(DEFAULT_HEAP_RATIO);
     let requests = request_count.unwrap_or(DEFAULT_REQUEST_COUNT);
     let mut policies: Vec<Arc<dyn RecyclePolicy>> = Vec::new();
@@ -398,9 +419,9 @@ mod tests {
     #[test]
     fn build_default_recycle_policy_uses_project_defaults() {
         let policy = build_default_recycle_policy(None, None);
-        assert!(!policy.should_recycle(&health(50, 100, 49_999)));
-        assert!(policy.should_recycle(&health(50, 100, 50_000)));
-        assert!(policy.should_recycle(&health(81, 100, 0)));
+        assert!(!policy.should_recycle(&health(50, 100, 999_999_999)));
+        assert!(!policy.should_recycle(&health(94, 100, 0)));
+        assert!(policy.should_recycle(&health(96, 100, 0)));
     }
 
     #[test]

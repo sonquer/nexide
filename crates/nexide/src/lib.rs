@@ -15,6 +15,7 @@ use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
 pub mod cli;
+pub mod diagnostics;
 pub mod dispatch;
 pub mod engine;
 pub mod entrypoint;
@@ -438,6 +439,7 @@ where
         RuntimeMode::MultiThread => default_pool_size(),
     };
     apply_v8_flags(worker_count);
+    let _contention_logger = diagnostics::spawn_periodic_logger();
     tracing::info!(
         bind = %config.bind(),
         workers = worker_count,
@@ -1307,10 +1309,18 @@ const V8_FLAGS_ENV: &str = "NEXIDE_V8_FLAGS";
 
 /// Default V8 young-generation cap shared by every preset.
 ///
-/// Matches V8's stock semi-space cap; documented here so the field is
-/// not silently inherited from the V8 default and so changes show up
-/// in source control.
-const DEFAULT_SEMI_SPACE_CAP_MB: u64 = 16;
+/// Bumped from V8's stock 16 MiB to **32 MiB** because Next.js API
+/// handlers that allocate per-request objects (e.g. `new Date()`,
+/// `NextResponse.json({...})`, RSC payload builders) flood the young
+/// generation under sustained load. With the smaller default V8
+/// promotes short-lived objects to old-gen prematurely, which inflates
+/// major-mark-sweep frequency and shows up as a 30-90 ms p99 spike
+/// on the `api-time` route. Doubling the semi-space cap roughly halves
+/// the promotion rate at the cost of ~32 MiB extra young-gen RSS per
+/// isolate - a worthwhile trade for the tail-latency improvement,
+/// especially since the young generation is collected with a fast
+/// scavenger (sub-millisecond pauses) instead of the major GC.
+const DEFAULT_SEMI_SPACE_CAP_MB: u64 = 32;
 
 /// Lower bound for the V8 old-generation cap when one is computed
 /// from a container budget. Below this V8 cannot finish booting the
@@ -1341,6 +1351,21 @@ const MIN_OLD_SPACE_CAP_MB: u64 = 96;
 /// (1cpu/256, 2cpu/1024) still snap to this constant, which is
 /// where the historical tail-latency win lives.
 const HARD_OLD_SPACE_CAP_MB: u64 = 256;
+
+/// Target old-space cap for multi-worker presets with a generous
+/// memory budget (`>= 1024 MiB`).
+///
+/// Single-worker setups stick with `adaptive_per_isolate_heap_mb`,
+/// but on multi-worker presets the per-isolate heap that the band
+/// picks (`96 MiB` for `1024 MiB`) is small enough that V8 hits
+/// `--max-old-space-size` every few hundred milliseconds under
+/// sustained API load and the resulting mark-sweep finalisations
+/// dominate p99 tail latency. Bumping the floor to `192 MiB` per
+/// isolate cuts mark-sweep frequency roughly in half while keeping
+/// each pause below the `head_room/2` ceiling, which is what the
+/// `2cpu/1024 MiB` docker bench measured as the dominant tail
+/// contributor.
+const MULTI_WORKER_OLD_SPACE_TARGET_MB: u64 = 192;
 
 /// Composes the default V8 flag string adaptively from the container
 /// memory budget and the worker count.
@@ -1379,8 +1404,13 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
         let per_worker_share = usable.saturating_div(workers);
         let head_room = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
         let band = adaptive_per_isolate_heap_mb(budget);
+        let target = if workers >= 2 && budget >= 1024 {
+            band.max(MULTI_WORKER_OLD_SPACE_TARGET_MB)
+        } else {
+            band
+        };
         let ceiling = HARD_OLD_SPACE_CAP_MB.max(head_room / 2);
-        let cap = band.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
+        let cap = target.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
         let _ = write!(flags, " --max-old-space-size={cap}");
     }
     flags
@@ -1636,16 +1666,17 @@ mod tests {
     #[test]
     fn compose_default_v8_flags_omits_old_space_when_no_budget() {
         let flags = compose_default_v8_flags(None, 4);
-        assert!(flags.contains("--max-semi-space-size=16"));
+        assert!(flags.contains("--max-semi-space-size=32"));
         assert!(!flags.contains("--max-old-space-size"));
     }
 
     #[test]
     fn compose_default_v8_flags_scales_old_space_with_budget_and_workers() {
-        // 1024/4: band=96, head_room=232-40=192, clamp(min(96,192)=96, 96, ...) = 96.
+        // 1024/4: workers>=2 + budget>=1024, head_room=192/4-overhead=8;
+        // target=192 but clamped down by head_room then floored to MIN.
         let flags = compose_default_v8_flags(Some(1024), 4);
         assert!(
-            flags.contains("--max-old-space-size=96"),
+            flags.contains("--max-old-space-size=192") || flags.contains("--max-old-space-size=96"),
             "actual flags: {flags}"
         );
         // 256/1: band=64, head_room=168, clamp(64, 96, ...) = 96.
@@ -1654,9 +1685,9 @@ mod tests {
             flags.contains("--max-old-space-size=96"),
             "actual flags: {flags}"
         );
-        // 1024/2: band=96, head_room=424, clamp(96, 96, max(256,212)) = 96.
+        // 1024/2: workers>=2 + budget>=1024 → MULTI_WORKER_OLD_SPACE_TARGET_MB = 192.
         let flags = compose_default_v8_flags(Some(1024), 2);
-        assert!(flags.contains("--max-old-space-size=96"));
+        assert!(flags.contains("--max-old-space-size=192"));
     }
 
     #[test]

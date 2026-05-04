@@ -259,6 +259,8 @@ impl V8Engine {
                 load_and_run_entrypoint(scope_cs, &entry_path)?;
             }
 
+            run_eden_warmup(scope_cs)?;
+
             v8::Global::new(scope_cs, context)
         };
 
@@ -502,6 +504,23 @@ fn run_polyfill_bootstrap<'s>(scope: &mut v8::PinScope<'s, '_>) -> Result<(), En
     for (name, src) in POLYFILL_SCRIPTS {
         eval_script(scope, name, src)?;
     }
+    Ok(())
+}
+
+const EDEN_WARMUP_SCRIPT: &str = r#"(function nexideEdenWarmup() {
+    let buf = [];
+    const target = 4096;
+    for (let i = 0; i < target; i++) {
+        buf.push({ k: 'wm-' + i, v: new Array(64).fill(i) });
+    }
+    buf = null;
+})();"#;
+
+fn run_eden_warmup<'s>(scope: &mut v8::PinScope<'s, '_>) -> Result<(), EngineError> {
+    if std::env::var("NEXIDE_DISABLE_EDEN_WARMUP").is_ok() {
+        return Ok(());
+    }
+    eval_script(scope, "[nexide:eden-warmup]", EDEN_WARMUP_SCRIPT)?;
     Ok(())
 }
 

@@ -34,7 +34,7 @@ use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 use brotli::enc::BrotliEncoderParams;
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tower::Service;
 
 const VARY_ACCEPT_ENCODING: HeaderValue = HeaderValue::from_static("accept-encoding");
@@ -99,13 +99,47 @@ impl RamCacheState {
         }
     }
 
+    fn shrink(&self) {
+        let mut inner = self.inner.lock();
+        inner.entries.clear();
+        inner.order.clear();
+        inner.bytes = 0;
+        self.stored_bytes.store(0, Ordering::Relaxed);
+    }
+
     fn lookup(&self, key: &str) -> Option<Arc<CachedAsset>> {
-        let inner = self.inner.lock().expect("ram cache mutex");
+        let inner = match self.inner.try_lock() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::RAM_CACHE_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::RAM_CACHE_CONTENDED,
+                );
+                self.inner.lock()
+            }
+        };
         inner.entries.get(key).cloned()
     }
 
     fn touch(&self, key: &str) {
-        let mut inner = self.inner.lock().expect("ram cache mutex");
+        let mut inner = match self.inner.try_lock() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::RAM_CACHE_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::RAM_CACHE_CONTENDED,
+                );
+                self.inner.lock()
+            }
+        };
         if let Some(idx) = inner.order.iter().position(|k| k == key) {
             let k = inner.order.remove(idx);
             inner.order.push(k);
@@ -117,7 +151,20 @@ impl RamCacheState {
         if footprint > self.cap_bytes {
             return;
         }
-        let mut inner = self.inner.lock().expect("ram cache mutex");
+        let mut inner = match self.inner.try_lock() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::RAM_CACHE_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::RAM_CACHE_CONTENDED,
+                );
+                self.inner.lock()
+            }
+        };
         if let Some(prev) = inner.entries.remove(&key) {
             inner.bytes = inner.bytes.saturating_sub(prev.footprint());
             if let Some(idx) = inner.order.iter().position(|k| k == &key) {
@@ -141,12 +188,12 @@ impl RamCacheState {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.inner.lock().expect("ram cache mutex").entries.len()
+        self.inner.lock().entries.len()
     }
 
     #[cfg(test)]
     fn current_bytes(&self) -> u64 {
-        self.inner.lock().expect("ram cache mutex").bytes
+        self.inner.lock().bytes
     }
 }
 
@@ -180,10 +227,14 @@ impl<S> RamCachedService<S> {
     }
 
     pub(super) fn with_capacity(inner: S, cap_bytes: u64) -> Self {
-        Self {
-            inner,
-            state: Arc::new(RamCacheState::new(cap_bytes)),
-        }
+        let state = Arc::new(RamCacheState::new(cap_bytes));
+        let weak = Arc::downgrade(&state);
+        crate::pool::idle_shrink::register(move || {
+            if let Some(strong) = weak.upgrade() {
+                strong.shrink();
+            }
+        });
+        Self { inner, state }
     }
 
     #[cfg(test)]

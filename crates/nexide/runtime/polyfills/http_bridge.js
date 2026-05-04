@@ -347,12 +347,12 @@
     try {
       const env = (typeof process === "object" && process && process.env) || {};
       const raw = env.NEXIDE_HANDLER_TIMEOUT_MS;
-      if (raw === undefined || raw === null || raw === "") return 60_000;
+      if (raw === undefined || raw === null || raw === "") return 0;
       const n = Number(raw);
-      if (!Number.isFinite(n) || n < 0) return 60_000;
+      if (!Number.isFinite(n) || n < 0) return 0;
       return n | 0;
     } catch (_e) {
-      return 60_000;
+      return 0;
     }
   }
 

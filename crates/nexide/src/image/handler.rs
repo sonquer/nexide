@@ -230,11 +230,11 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
     let url_owned = params.url.clone();
     let width = params.width;
     let quality = params.quality;
-    let optimized = tokio::task::spawn_blocking(move || {
-        produce_optimized(&bytes_owned, width, quality, chosen)
-    })
-    .await
-    .map_err(|_| {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(move || {
+        let _ = tx.send(produce_optimized(&bytes_owned, width, quality, chosen));
+    });
+    let optimized = rx.await.map_err(|_| {
         HandlerError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "image pipeline join failed",

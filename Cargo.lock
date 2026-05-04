@@ -2103,7 +2103,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexide"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2137,12 +2137,14 @@ dependencies = [
  "p256",
  "p384",
  "p521",
+ "parking_lot",
  "pbkdf2",
  "pem",
  "pkcs1",
  "pkcs8",
  "rand 0.9.4",
  "rand_core 0.6.4",
+ "rayon",
  "reqwest",
  "rsa",
  "rustls",
@@ -2172,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-bench"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "anyhow",
  "bollard",
@@ -2192,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-e2e"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "anyhow",
  "nexide",

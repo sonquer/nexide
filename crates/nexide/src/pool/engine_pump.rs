@@ -221,6 +221,7 @@ fn run_idle_reclaim(engine: &Rc<RefCell<V8Engine>>) {
         0
     };
     let snap = cache.metrics().snapshot();
+    let shrunk = super::idle_shrink::shrink_all();
     tracing::debug!(
         heap_before = before.used_heap_size,
         heap_after = after.used_heap_size,
@@ -230,6 +231,7 @@ fn run_idle_reclaim(engine: &Rc<RefCell<V8Engine>>) {
         cache_rejects = snap.rejects,
         cache_writes = snap.writes,
         cache_evicted = evicted,
+        ram_shrinkers = shrunk,
         "idle reclaim: V8 low-memory notification"
     );
 }

@@ -14,8 +14,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
+
+use parking_lot::RwLock;
 
 use axum::body::Body;
 use axum::http::header::{
@@ -67,6 +69,14 @@ pub(super) fn prerender_with_fallback(
     fallback: DynamicService,
 ) -> PrerenderService {
     let inner = Arc::new(PrerenderInner::new(app_dir));
+    {
+        let weak = Arc::downgrade(&inner);
+        crate::pool::idle_shrink::register(move || {
+            if let Some(strong) = weak.upgrade() {
+                strong.shrink();
+            }
+        });
+    }
     let svc = service_fn(move |req: Request<Body>| {
         let inner = inner.clone();
         let mut fallback = fallback.clone();
@@ -88,6 +98,18 @@ pub(super) fn prerender_with_fallback(
 struct PrerenderInner {
     root: PathBuf,
     cache: RwLock<HashMap<String, CachedAsset>>,
+    total_bytes: std::sync::atomic::AtomicU64,
+    byte_cap: u64,
+}
+
+const DEFAULT_PRERENDER_RAM_MB: u64 = 32;
+
+fn prerender_byte_cap() -> u64 {
+    std::env::var("NEXIDE_PRERENDER_RAM_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PRERENDER_RAM_MB)
+        .saturating_mul(1024 * 1024)
 }
 
 impl PrerenderInner {
@@ -95,8 +117,28 @@ impl PrerenderInner {
         Self {
             root,
             cache: RwLock::new(HashMap::with_capacity(64)),
+            total_bytes: std::sync::atomic::AtomicU64::new(0),
+            byte_cap: prerender_byte_cap(),
         }
     }
+
+    fn shrink(&self) {
+        let mut guard = self.cache.write();
+        guard.clear();
+        self.total_bytes
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn entry_bytes(asset: &CachedAsset) -> u64 {
+    let mut n = asset.bytes.len() as u64;
+    if let Some(b) = asset.br_q11.as_ref() {
+        n += b.len() as u64;
+    }
+    if let Some(g) = asset.gzip9.as_ref() {
+        n += g.len() as u64;
+    }
+    n
 }
 
 /// Stamps `Server-Timing` on the outbound response. The canonical
@@ -185,18 +227,83 @@ fn lookup_key(path: &str, is_rsc: bool) -> Option<String> {
 /// Cache lookup with mtime/size revalidation. On miss or staleness,
 /// reloads from disk and inserts the fresh entry.
 fn resolve_asset(inner: &PrerenderInner, key: &str, is_rsc: bool) -> Option<CachedAsset> {
-    if let Ok(guard) = inner.cache.read()
-        && let Some(hit) = guard.get(key)
-        && file_matches(&inner.root, key, hit)
     {
-        return Some(hit.clone());
+        let guard = match inner.cache.try_read() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::PRERENDER_READ_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::PRERENDER_READ_CONTENDED,
+                );
+                inner.cache.read()
+            }
+        };
+        if let Some(hit) = guard.get(key)
+            && file_matches(&inner.root, key, hit)
+        {
+            return Some(hit.clone());
+        }
     }
     let fresh = load_asset(&inner.root, key, is_rsc)?;
-    if let Ok(mut guard) = inner.cache.write() {
+    let fresh_bytes = entry_bytes(&fresh);
+    {
+        let mut guard = match inner.cache.try_write() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::PRERENDER_WRITE_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::PRERENDER_WRITE_CONTENDED,
+                );
+                inner.cache.write()
+            }
+        };
         if guard.len() >= CACHE_CAPACITY {
+            inner
+                .total_bytes
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             guard.clear();
         }
-        guard.insert(key.to_owned(), fresh.clone());
+        let cap = inner.byte_cap;
+        if cap > 0 {
+            let mut current = inner
+                .total_bytes
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if current.saturating_add(fresh_bytes) > cap && !guard.is_empty() {
+                let mut by_mtime: Vec<(SystemTime, String, u64)> = guard
+                    .iter()
+                    .map(|(k, v)| (v.mtime, k.clone(), entry_bytes(v)))
+                    .collect();
+                by_mtime.sort_by_key(|t| t.0);
+                let target = cap / 2;
+                for (_, k, sz) in by_mtime {
+                    if current.saturating_add(fresh_bytes) <= target {
+                        break;
+                    }
+                    if guard.remove(&k).is_some() {
+                        current = current.saturating_sub(sz);
+                    }
+                }
+                inner
+                    .total_bytes
+                    .store(current, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if let Some(prev) = guard.insert(key.to_owned(), fresh.clone()) {
+            inner
+                .total_bytes
+                .fetch_sub(entry_bytes(&prev), std::sync::atomic::Ordering::Relaxed);
+        }
+        inner
+            .total_bytes
+            .fetch_add(fresh_bytes, std::sync::atomic::Ordering::Relaxed);
     }
     Some(fresh)
 }
@@ -407,7 +514,8 @@ fn build_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedAsset, compute_etag, file_matches, load_asset, lookup_key, prerender_with_fallback,
+        CachedAsset, PrerenderInner, compute_etag, entry_bytes, file_matches, load_asset,
+        lookup_key, prerender_with_fallback, resolve_asset,
     };
     use crate::server::fallback::NotImplementedHandler;
     use crate::server::static_assets::dynamic_service;
@@ -699,5 +807,67 @@ mod tests {
         );
         let body = resp.into_body().collect().await.expect("body").to_bytes();
         assert!(body.is_empty());
+    }
+
+    #[test]
+    fn entry_bytes_sums_all_compressed_variants() {
+        let asset = CachedAsset {
+            bytes: Bytes::from_static(b"hello"),
+            br_q11: Some(Bytes::from_static(b"abc")),
+            gzip9: Some(Bytes::from_static(b"de")),
+            etag: "\"x\"".into(),
+            content_type: "text/html; charset=utf-8",
+            extra_headers: Vec::new(),
+            mtime: SystemTime::UNIX_EPOCH,
+            size: 5,
+        };
+        assert_eq!(entry_bytes(&asset), 10);
+    }
+
+    #[test]
+    fn resolve_asset_evicts_when_byte_cap_exceeded() {
+        let tmp = TempDir::new().expect("tempdir");
+        let big = "x".repeat(4096);
+        for i in 0..16 {
+            write_prerender(tmp.path(), &format!("p{i}"), &big, None);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut inner = PrerenderInner::new(tmp.path().to_path_buf());
+        inner.byte_cap = 16 * 1024;
+        for i in 0..16 {
+            let _ = resolve_asset(&inner, &format!("p{i}.html"), false);
+        }
+        let total = inner
+            .total_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            total <= 16 * 1024,
+            "total {total} must stay within cap after evictions",
+        );
+        let len = inner.cache.read().len();
+        assert!(len < 16, "cache must be smaller than full set after evictions, got {len}");
+    }
+
+    #[test]
+    fn shrink_drops_all_cached_entries_and_resets_total() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_prerender(tmp.path(), "about", "<html>about</html>", None);
+        let inner = PrerenderInner::new(tmp.path().to_path_buf());
+        let _ = resolve_asset(&inner, "about.html", false);
+        assert_eq!(inner.cache.read().len(), 1);
+        assert!(
+            inner
+                .total_bytes
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
+        inner.shrink();
+        assert_eq!(inner.cache.read().len(), 0);
+        assert_eq!(
+            inner
+                .total_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 }

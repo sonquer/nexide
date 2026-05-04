@@ -337,19 +337,28 @@ fn read_bytes_arg<'s>(
 ) -> Option<Bytes> {
     if let Ok(view) = TryInto::<v8::Local<v8::Uint8Array>>::try_into(value) {
         let len = view.byte_length();
-        let mut buf = vec![0u8; len];
-        view.copy_contents(&mut buf);
+        if len == 0 {
+            return Some(Bytes::new());
+        }
+        let mut buf: Vec<u8> = Vec::with_capacity(len);
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(buf.as_mut_ptr(), len);
+            let copied = view.copy_contents(slice);
+            buf.set_len(copied);
+        }
         return Some(Bytes::from(buf));
     }
     if let Ok(buf) = TryInto::<v8::Local<v8::ArrayBuffer>>::try_into(value) {
         let store = buf.get_backing_store();
         let len = store.byte_length();
-        let mut out = vec![0u8; len];
+        if len == 0 {
+            return Some(Bytes::new());
+        }
         if let Some(data) = store.data() {
             let raw = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len) };
-            out.copy_from_slice(raw);
+            return Some(Bytes::copy_from_slice(raw));
         }
-        return Some(Bytes::from(out));
+        return Some(Bytes::new());
     }
     None
 }

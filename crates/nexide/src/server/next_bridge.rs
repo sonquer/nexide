@@ -98,42 +98,38 @@ where
     D: EngineDispatcher,
 {
     async fn handle(&self, req: Request<Body>) -> Result<Response<Body>, HandlerError> {
-        let t_accept_start = Instant::now();
+        let breakdown = phase_breakdown_enabled();
+        let t_accept_start = if breakdown { Some(Instant::now()) } else { None };
         let accept_header = req.headers().get(ACCEPT).cloned();
         let proto = match build_proto_request(req).await {
             Ok(p) => p,
             Err(err) => return Ok(error_response(&err, accept_header.as_ref())),
         };
 
-        let accept_elapsed = t_accept_start.elapsed();
+        let accept_elapsed = t_accept_start.map(|t| t.elapsed());
 
         let _permit = match &self.inflight_limit {
-            Some(sem) => Some(
-                Arc::clone(sem)
-                    .acquire_owned()
-                    .await
-                    .expect("semaphore live"),
-            ),
+            Some(sem) => Some(sem.acquire().await.expect("semaphore live")),
             None => None,
         };
 
-        let t_dispatch_start = Instant::now();
+        let t_dispatch_start = if breakdown { Some(Instant::now()) } else { None };
         let outcome = self.dispatcher.dispatch(proto).await;
-        let dispatch_elapsed = t_dispatch_start.elapsed();
+        let dispatch_elapsed = t_dispatch_start.map(|t| t.elapsed());
 
-        let t_respond_start = Instant::now();
+        let t_respond_start = if breakdown { Some(Instant::now()) } else { None };
         let mut response = match outcome {
             Ok(payload) => payload_to_response(payload),
             Err(err) => error_response(&err, accept_header.as_ref()),
         };
-        let respond_elapsed = t_respond_start.elapsed();
+        let respond_elapsed = t_respond_start.map(|t| t.elapsed());
 
-        if phase_breakdown_enabled() {
+        if breakdown {
             stamp_phase_breakdown(
                 response.headers_mut(),
-                accept_elapsed,
-                dispatch_elapsed,
-                respond_elapsed,
+                accept_elapsed.unwrap_or_default(),
+                dispatch_elapsed.unwrap_or_default(),
+                respond_elapsed.unwrap_or_default(),
             );
         }
         Ok(response)
@@ -191,7 +187,7 @@ fn duration_ms(d: std::time::Duration) -> f64 {
 
 async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, DispatchError> {
     let (parts, body) = req.into_parts();
-    let method = parts.method.to_string();
+    let method = parts.method.as_str().to_owned();
     let uri = parts
         .uri
         .path_and_query()
@@ -199,16 +195,16 @@ async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, Dispatc
 
     let mut headers = Vec::with_capacity(parts.headers.len());
     for (name, value) in &parts.headers {
+        let name_str = name.as_str();
+        if is_hop_by_hop(name_str) {
+            continue;
+        }
         let value_str = match value.to_str() {
             Ok(v) => v.to_owned(),
             Err(_) => continue,
         };
-        // `HeaderName::as_str()` already yields the canonical
-        // lowercased form; the previous `to_ascii_lowercase()` call
-        // forced an extra allocation on every header on every request
-        // for a no-op transformation.
         headers.push(HeaderPair {
-            name: name.as_str().to_owned(),
+            name: name_str.to_owned(),
             value: value_str,
         });
     }
@@ -240,8 +236,12 @@ fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
         .headers_mut()
         .expect("response builder must accept headers");
     for (name, value) in payload.head.headers {
-        let Ok(header_name) = HeaderName::try_from(name) else {
-            continue;
+        let header_name = match canonical_header_name(&name) {
+            Some(n) => n,
+            None => match HeaderName::try_from(name) {
+                Ok(n) => n,
+                Err(_) => continue,
+            },
         };
         let Ok(header_value) = HeaderValue::try_from(value) else {
             continue;
@@ -251,6 +251,67 @@ fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
     builder
         .body(Body::from(payload.body))
         .unwrap_or_else(|_| infallible_502())
+}
+
+#[inline]
+fn canonical_header_name(name: &str) -> Option<HeaderName> {
+    use axum::http::header::{
+        ACCEPT_RANGES, AGE, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_ENCODING,
+        CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_LOCATION, CONTENT_RANGE, CONTENT_SECURITY_POLICY,
+        CONTENT_TYPE, DATE, ETAG, EXPIRES, LAST_MODIFIED, LINK, LOCATION, PRAGMA, REFERRER_POLICY,
+        SERVER, SET_COOKIE, STRICT_TRANSPORT_SECURITY, TRANSFER_ENCODING, VARY, X_CONTENT_TYPE_OPTIONS,
+        X_FRAME_OPTIONS, X_XSS_PROTECTION,
+    };
+    let lc = match name.as_bytes().first()? {
+        b'a'..=b'z' => name,
+        _ => return None,
+    };
+    Some(match lc {
+        "accept-ranges" => ACCEPT_RANGES,
+        "age" => AGE,
+        "cache-control" => CACHE_CONTROL,
+        "connection" => CONNECTION,
+        "content-disposition" => CONTENT_DISPOSITION,
+        "content-encoding" => CONTENT_ENCODING,
+        "content-language" => CONTENT_LANGUAGE,
+        "content-length" => CONTENT_LENGTH,
+        "content-location" => CONTENT_LOCATION,
+        "content-range" => CONTENT_RANGE,
+        "content-security-policy" => CONTENT_SECURITY_POLICY,
+        "content-type" => CONTENT_TYPE,
+        "date" => DATE,
+        "etag" => ETAG,
+        "expires" => EXPIRES,
+        "last-modified" => LAST_MODIFIED,
+        "link" => LINK,
+        "location" => LOCATION,
+        "pragma" => PRAGMA,
+        "referrer-policy" => REFERRER_POLICY,
+        "server" => SERVER,
+        "set-cookie" => SET_COOKIE,
+        "strict-transport-security" => STRICT_TRANSPORT_SECURITY,
+        "transfer-encoding" => TRANSFER_ENCODING,
+        "vary" => VARY,
+        "x-content-type-options" => X_CONTENT_TYPE_OPTIONS,
+        "x-frame-options" => X_FRAME_OPTIONS,
+        "x-xss-protection" => X_XSS_PROTECTION,
+        _ => return None,
+    })
+}
+
+#[inline]
+fn is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 fn error_response(err: &DispatchError, accept: Option<&HeaderValue>) -> Response<Body> {
@@ -469,5 +530,66 @@ mod tests {
         let response = handler.handle(req).await.expect("infallible");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(dispatcher.dispatch_count(), 1);
+    }
+
+    #[test]
+    fn is_hop_by_hop_filters_known_hop_by_hop_headers() {
+        assert!(is_hop_by_hop("connection"));
+        assert!(is_hop_by_hop("keep-alive"));
+        assert!(is_hop_by_hop("transfer-encoding"));
+        assert!(is_hop_by_hop("te"));
+        assert!(is_hop_by_hop("upgrade"));
+        assert!(is_hop_by_hop("proxy-authenticate"));
+        assert!(is_hop_by_hop("proxy-authorization"));
+        assert!(is_hop_by_hop("trailer"));
+        assert!(!is_hop_by_hop("content-type"));
+        assert!(!is_hop_by_hop("accept"));
+        assert!(!is_hop_by_hop("user-agent"));
+    }
+
+    #[test]
+    fn canonical_header_name_returns_static_for_common_lowercase() {
+        assert_eq!(
+            canonical_header_name("content-type").unwrap().as_str(),
+            "content-type"
+        );
+        assert_eq!(
+            canonical_header_name("cache-control").unwrap().as_str(),
+            "cache-control"
+        );
+        assert_eq!(
+            canonical_header_name("set-cookie").unwrap().as_str(),
+            "set-cookie"
+        );
+    }
+
+    #[test]
+    fn canonical_header_name_returns_none_for_unknown_or_uppercase() {
+        assert!(canonical_header_name("Content-Type").is_none());
+        assert!(canonical_header_name("x-custom-header").is_none());
+        assert!(canonical_header_name("").is_none());
+    }
+
+    #[tokio::test]
+    async fn build_proto_request_drops_hop_by_hop_headers() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "example.com")
+            .header("connection", "close")
+            .header("keep-alive", "timeout=5")
+            .header("transfer-encoding", "chunked")
+            .header("content-type", "text/plain")
+            .header("upgrade", "websocket")
+            .body(Body::empty())
+            .expect("request");
+        let proto = build_proto_request(req).await.expect("proto");
+        let names: Vec<&str> = proto.headers.iter().map(|h| h.name.as_str()).collect();
+        assert!(names.contains(&"host"));
+        assert!(names.contains(&"content-type"));
+        assert!(!names.contains(&"connection"));
+        assert!(!names.contains(&"keep-alive"));
+        assert!(!names.contains(&"transfer-encoding"));
+        assert!(!names.contains(&"upgrade"));
     }
 }
