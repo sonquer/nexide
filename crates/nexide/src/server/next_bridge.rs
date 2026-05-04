@@ -22,6 +22,7 @@ use tokio_stream::StreamExt;
 use super::fallback::{DynamicHandler, HandlerError};
 use crate::dispatch::{DispatchError, EngineDispatcher, ProtoRequest, StreamingResponse};
 use crate::ops::HeaderPair;
+use crate::ops::upgrade_socket::{self, UPGRADE_SOCKET_ID_HEADER};
 
 /// Maximum buffered request body size. Larger bodies are rejected
 /// with `413 Payload Too Large` to keep the worker thread bounded.
@@ -198,18 +199,53 @@ fn duration_ms(d: std::time::Duration) -> f64 {
     ms
 }
 
+/// Heuristic for "this is an HTTP/1.1 Upgrade request the JS layer
+/// should service via the `'upgrade'` event". We require both the
+/// `Upgrade` header and a `Connection: upgrade` token because hyper
+/// only triggers `OnUpgrade` for requests that satisfy both — sending
+/// just one of them is a malformed upgrade, and the JS side has no
+/// recourse if `OnUpgrade` never resolves.
+fn is_upgrade_request(headers: &axum::http::HeaderMap) -> bool {
+    let has_upgrade_header = headers.get("upgrade").is_some();
+    if !has_upgrade_header {
+        return false;
+    }
+    headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|tok| tok.eq_ignore_ascii_case("upgrade"))
+        })
+}
+
 async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, DispatchError> {
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
     let method = parts.method.as_str().to_owned();
     let uri = parts
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.to_string(), ToString::to_string);
 
+    let upgrade = is_upgrade_request(&parts.headers);
+
     let mut headers = Vec::with_capacity(parts.headers.len());
     for (name, value) in &parts.headers {
         let name_str = name.as_str();
-        if is_hop_by_hop(name_str) {
+        // For Upgrade requests we must keep `connection`, `upgrade`,
+        // and the `sec-websocket-*` family visible to JS so user code
+        // (e.g. the `ws` library) can validate the handshake. We still
+        // strip the truly hop-by-hop headers that have no place in
+        // the JS view (`keep-alive`, `te`, `trailer`,
+        // `transfer-encoding`, `proxy-*`).
+        let strip = if upgrade {
+            is_hop_by_hop_strict(name_str)
+        } else {
+            is_hop_by_hop(name_str)
+        };
+        if strip {
             continue;
         }
         let value_str = match value.to_str() {
@@ -219,6 +255,57 @@ async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, Dispatc
         headers.push(HeaderPair {
             name: name_str.to_owned(),
             value: value_str,
+        });
+    }
+
+    if upgrade {
+        // Take the `OnUpgrade` future before any body collection so
+        // hyper retains the post-101 socket for us. Body collection is
+        // skipped: HTTP/1.1 Upgrade requests carry no separate body
+        // (any post-handshake bytes belong to the upgraded protocol).
+        let on_upgrade = parts.extensions.remove::<hyper::upgrade::OnUpgrade>();
+        let socket = upgrade_socket::allocate();
+        let socket_id = socket.id();
+        headers.push(HeaderPair {
+            name: UPGRADE_SOCKET_ID_HEADER.to_owned(),
+            value: socket_id.to_string(),
+        });
+        if let Some(on_upgrade) = on_upgrade {
+            // Drop our handle: the registry holds the canonical Arc
+            // so this only releases the cloned reference. The shield
+            // does not need to read/write through the handle itself —
+            // it just needs to keep the slot alive long enough for JS
+            // to discover it via the synthetic header.
+            drop(socket);
+            tokio::spawn(async move {
+                match on_upgrade.await {
+                    Ok(upgraded) => upgrade_socket::attach_upgraded(socket_id, upgraded),
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "nexide::server::next_bridge",
+                            socket_id,
+                            error = %err,
+                            "OnUpgrade resolution failed",
+                        );
+                        upgrade_socket::abort(socket_id, err.to_string());
+                    }
+                }
+            });
+        } else {
+            // No OnUpgrade extension means hyper has nothing to hand
+            // back to us (e.g. HTTP/2 or already-upgraded request).
+            // Surface it as an aborted slot so JS sees a clean error.
+            drop(socket);
+            upgrade_socket::abort(
+                socket_id,
+                "request did not carry hyper::upgrade::OnUpgrade".to_owned(),
+            );
+        }
+        return Ok(ProtoRequest {
+            method,
+            uri,
+            headers,
+            body: bytes::Bytes::new(),
         });
     }
 
@@ -326,6 +413,22 @@ fn is_hop_by_hop(name: &str) -> bool {
             | "trailer"
             | "transfer-encoding"
             | "upgrade"
+    )
+}
+
+/// Variant used on Upgrade requests: keeps `connection` and
+/// `upgrade` visible to JS so the handshake can be validated by
+/// user code (e.g. the `ws` library).
+#[inline]
+fn is_hop_by_hop_strict(name: &str) -> bool {
+    matches!(
+        name,
+        "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
     )
 }
 

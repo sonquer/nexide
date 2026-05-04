@@ -258,6 +258,25 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_http_response_read", op_http_response_read);
     install_fn(scope, ops, "op_http_response_close", op_http_response_close);
 
+    install_fn(
+        scope,
+        ops,
+        "op_upgrade_socket_read_async",
+        op_upgrade_socket_read_async,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_upgrade_socket_write_async",
+        op_upgrade_socket_write_async,
+    );
+    install_fn(
+        scope,
+        ops,
+        "op_upgrade_socket_close",
+        op_upgrade_socket_close,
+    );
+
     install_fn(scope, ops, "op_proc_spawn", op_proc_spawn);
     install_fn(scope, ops, "op_proc_wait", op_proc_wait);
     install_fn(scope, ops, "op_proc_kill", op_proc_kill);
@@ -7800,4 +7819,143 @@ fn read_vm_context_id<'s>(
         return None;
     }
     Some(ptr as usize as u32)
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Upgrade socket ops (HTTP/1.1 `Upgrade` raw byte pass-through)
+// ──────────────────────────────────────────────────────────────────
+//
+// These ops drive the raw post-handshake byte stream exposed to JS
+// after the `node:http` Server's `'upgrade'` event fires. The
+// underlying registry lives in `crate::ops::upgrade_socket`; here we
+// only translate between V8 values and the Rust-side handle.
+
+/// Pulls one chunk from the inbound stream associated with `id`.
+///
+/// Resolves with a `Uint8Array` carrying the bytes, `null` on EOF,
+/// or rejects with a Node-shaped error (`code: 'EPIPE'` or
+/// `'ECONNRESET'`) when the underlying transport failed.
+fn op_upgrade_socket_read_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        rv.set_undefined();
+        return;
+    };
+    let promise = resolver.get_promise(scope);
+    let global = v8::Global::new(scope, resolver);
+    let handle = from_isolate(scope);
+    let tx = handle.0.borrow().async_completions_tx.clone();
+
+    let Some(socket) = crate::ops::upgrade_socket::handle(id) else {
+        let err = crate::ops::NetError::new(
+            "EPIPE",
+            "upgrade socket is closed",
+        );
+        reject_net(scope, v8::Local::new(scope, &global), &err);
+        rv.set(promise.into());
+        return;
+    };
+
+    tokio::task::spawn_local(async move {
+        let settler: super::async_ops::Settler = match socket.read().await {
+            Ok(Some(chunk)) => Box::new(move |scope, resolver| {
+                let view = bytes_to_uint8_array(scope, &chunk);
+                resolver.resolve(scope, view.into());
+            }),
+            Ok(None) => Box::new(|scope, resolver| {
+                resolver.resolve(scope, v8::null(scope).into());
+            }),
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => {
+                net_settler_err(crate::ops::NetError::new(
+                    "EPIPE",
+                    "upgrade socket is closed",
+                ))
+            }
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Aborted(_, msg)) => {
+                net_settler_err(crate::ops::NetError::new("ECONNRESET", &msg))
+            }
+        };
+        let _ = tx.send(super::async_ops::Completion::new(global, settler));
+    });
+    rv.set(promise.into());
+}
+
+/// Sends `bytes` on the upgrade socket. Resolves once the bytes have
+/// been queued for delivery (the actual write completes
+/// asynchronously on the writer task). Rejects if the slot is closed
+/// or aborted.
+fn op_upgrade_socket_write_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        rv.set_undefined();
+        return;
+    };
+    let promise = resolver.get_promise(scope);
+    let global = v8::Global::new(scope, resolver);
+    let handle = from_isolate(scope);
+    let tx = handle.0.borrow().async_completions_tx.clone();
+
+    let bytes = match read_bytes_arg(scope, args.get(1)) {
+        Some(b) => b.to_vec(),
+        None => {
+            let err = crate::ops::NetError::new(
+                "ERR_INVALID_ARG_TYPE",
+                "expected Uint8Array",
+            );
+            reject_net(scope, v8::Local::new(scope, &global), &err);
+            rv.set(promise.into());
+            return;
+        }
+    };
+
+    let Some(socket) = crate::ops::upgrade_socket::handle(id) else {
+        let err = crate::ops::NetError::new(
+            "EPIPE",
+            "upgrade socket is closed",
+        );
+        reject_net(scope, v8::Local::new(scope, &global), &err);
+        rv.set(promise.into());
+        return;
+    };
+
+    tokio::task::spawn_local(async move {
+        let settler: super::async_ops::Settler = match socket.write(bytes).await {
+            Ok(()) => Box::new(|scope, resolver| {
+                resolver.resolve(scope, v8::undefined(scope).into());
+            }),
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => {
+                net_settler_err(crate::ops::NetError::new(
+                    "EPIPE",
+                    "upgrade socket is closed",
+                ))
+            }
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Aborted(_, msg)) => {
+                net_settler_err(crate::ops::NetError::new("ECONNRESET", &msg))
+            }
+        };
+        let _ = tx.send(super::async_ops::Completion::new(global, settler));
+    });
+    rv.set(promise.into());
+}
+
+/// Closes the upgrade socket immediately. Subsequent reads/writes
+/// reject with `EPIPE`. Idempotent.
+fn op_upgrade_socket_close<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let id = args.get(0).number_value(scope).unwrap_or(0.0) as u64;
+    if let Some(socket) = crate::ops::upgrade_socket::handle(id) {
+        socket.close();
+    }
+    rv.set_undefined();
 }

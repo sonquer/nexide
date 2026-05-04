@@ -21,6 +21,7 @@ mod request;
 mod response;
 mod signals;
 mod tls;
+pub mod upgrade_socket;
 mod zlib_stream;
 
 pub use dispatch_table::{
