@@ -1325,7 +1325,14 @@ const DEFAULT_SEMI_SPACE_CAP_MB: u64 = 32;
 /// Lower bound for the V8 old-generation cap when one is computed
 /// from a container budget. Below this V8 cannot finish booting the
 /// snapshot and `CommonJS` module graph reliably.
-const MIN_OLD_SPACE_CAP_MB: u64 = 96;
+///
+/// Bumped from 96 -> 128 in the K1 adaptive-heap pass: bench
+/// `paste-1777879637709.txt` showed that even the tightest single-worker
+/// container (1cpu/256 MiB) reliably mem-maxes at ~213 MiB while V8
+/// stays clamped to 96 MiB old-space, so the extra 32 MiB of old-gen
+/// headroom is safe and removes the major-GC pause that drove
+/// `api-time` p99 to 107 ms.
+const MIN_OLD_SPACE_CAP_MB: u64 = 128;
 
 /// Upper bound for the adaptive V8 old-generation cap.
 ///
@@ -1404,12 +1411,17 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
         let per_worker_share = usable.saturating_div(workers);
         let head_room = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
         let band = adaptive_per_isolate_heap_mb(budget);
-        let target = if workers >= 2 && budget >= 1024 {
-            band.max(MULTI_WORKER_OLD_SPACE_TARGET_MB)
+        let (target, ceiling) = if workers >= 2 && budget >= 1024 {
+            (
+                band.max(MULTI_WORKER_OLD_SPACE_TARGET_MB),
+                HARD_OLD_SPACE_CAP_MB.max(head_room / 2),
+            )
+        } else if workers == 1 && budget >= 256 {
+            let proportional = (budget as f64 * 0.30) as u64;
+            (band.max(proportional), HARD_OLD_SPACE_CAP_MB)
         } else {
-            band
+            (band, HARD_OLD_SPACE_CAP_MB.max(head_room / 2))
         };
-        let ceiling = HARD_OLD_SPACE_CAP_MB.max(head_room / 2);
         let cap = target.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
         let _ = write!(flags, " --max-old-space-size={cap}");
     }
@@ -1676,13 +1688,15 @@ mod tests {
         // target=192 but clamped down by head_room then floored to MIN.
         let flags = compose_default_v8_flags(Some(1024), 4);
         assert!(
-            flags.contains("--max-old-space-size=192") || flags.contains("--max-old-space-size=96"),
+            flags.contains("--max-old-space-size=192")
+                || flags.contains("--max-old-space-size=128"),
             "actual flags: {flags}"
         );
-        // 256/1: band=64, head_room=168, clamp(64, 96, ...) = 96.
+        // 256/1: K1 single-worker rule -> proportional=76, max(band=64, 76)=76,
+        // clamp(76, MIN=128, HARD=256) = 128.
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(
-            flags.contains("--max-old-space-size=96"),
+            flags.contains("--max-old-space-size=128"),
             "actual flags: {flags}"
         );
         // 1024/2: workers>=2 + budget>=1024 → MULTI_WORKER_OLD_SPACE_TARGET_MB = 192.
@@ -1692,18 +1706,16 @@ mod tests {
 
     #[test]
     fn compose_default_v8_flags_uses_adaptive_band_not_runaway_share() {
-        // 1024 budget → adaptive band 96 MiB; clamp(96, 96, ...) = 96.
-        // Previously this returned 444 (raw share / 2), which conflicted
-        // with the pool sizer's per-isolate reserve and caused OOM.
+        // 1024/1: K1 single-worker rule -> proportional=307, clamp to HARD=256.
         let flags = compose_default_v8_flags(Some(1024), 1);
         assert!(
-            flags.contains("--max-old-space-size=96"),
+            flags.contains("--max-old-space-size=256"),
             "actual flags: {flags}"
         );
-        // 8192 budget → adaptive band 128 MiB; clamp(128, 96, 3948) = 128.
+        // 8192/1: K1 single-worker rule -> proportional=2457, clamp to HARD=256.
         let flags = compose_default_v8_flags(Some(8192), 1);
         assert!(
-            flags.contains("--max-old-space-size=128"),
+            flags.contains("--max-old-space-size=256"),
             "actual flags: {flags}"
         );
     }
@@ -1712,7 +1724,7 @@ mod tests {
     fn compose_default_v8_flags_aligns_with_pool_reserve_on_tight_container() {
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(
-            flags.contains("--max-old-space-size=96"),
+            flags.contains("--max-old-space-size=128"),
             "tight container must floor at MIN_OLD_SPACE_CAP_MB; flags: {flags}"
         );
     }
@@ -1721,7 +1733,9 @@ mod tests {
     fn compose_default_v8_flags_floors_at_min_cap() {
         let flags = compose_default_v8_flags(Some(96), 1);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
-        let flags = compose_default_v8_flags(Some(512), 0);
+        // workers=0 normalized to 1; budget<256 skips K1 single-worker rule
+        // and falls back to plain `band`, which clamps up to MIN.
+        let flags = compose_default_v8_flags(Some(128), 0);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
     }
 
