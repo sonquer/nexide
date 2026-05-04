@@ -1565,7 +1565,46 @@ fn op_cjs_compile_function<'s>(
             if consumed {
                 cache.metrics().record_reject();
             }
-            if let Some(blob) = func.create_code_cache() {
+            let cache_func = if consumed && rejected {
+                let resource_fresh = v8::String::new(scope, &specifier).unwrap_or(resource);
+                let undefined_fresh = v8::undefined(scope).into();
+                let origin_fresh = v8::ScriptOrigin::new(
+                    scope,
+                    resource_fresh.into(),
+                    0,
+                    0,
+                    false,
+                    0,
+                    Some(undefined_fresh),
+                    false,
+                    false,
+                    false,
+                    None,
+                );
+                v8::String::new(scope, &source).and_then(|code_fresh| {
+                    let mut src_fresh =
+                        v8::script_compiler::Source::new(code_fresh, Some(&origin_fresh));
+                    let arg_names_fresh = [
+                        v8::String::new(scope, "exports").unwrap(),
+                        v8::String::new(scope, "require").unwrap(),
+                        v8::String::new(scope, "module").unwrap(),
+                        v8::String::new(scope, "__filename").unwrap(),
+                        v8::String::new(scope, "__dirname").unwrap(),
+                    ];
+                    v8::script_compiler::compile_function(
+                        scope,
+                        &mut src_fresh,
+                        &arg_names_fresh,
+                        &[],
+                        v8::script_compiler::CompileOptions::NoCompileOptions,
+                        v8::script_compiler::NoCacheReason::NoReason,
+                    )
+                })
+            } else {
+                None
+            };
+            let func_for_cache = cache_func.as_ref().unwrap_or(&func);
+            if let Some(blob) = func_for_cache.create_code_cache() {
                 let bytes = blob.to_vec();
                 if !bytes.is_empty() {
                     cache.store(&source, bytes);
