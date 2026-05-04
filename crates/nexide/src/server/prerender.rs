@@ -26,9 +26,8 @@ use axum::http::header::{
 };
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 
-const HV_VARY_RSC: HeaderValue = HeaderValue::from_static(
-    "rsc, next-router-state-tree, next-router-prefetch, accept-encoding",
-);
+const HV_VARY_RSC: HeaderValue =
+    HeaderValue::from_static("rsc, next-router-state-tree, next-router-prefetch, accept-encoding");
 const HV_CACHE_CONTROL_PRERENDER: HeaderValue = HeaderValue::from_static("s-maxage=31536000");
 const HV_X_NEXTJS_CACHE_HIT: HeaderValue = HeaderValue::from_static("HIT");
 const HV_TIMING_ALLOW_ORIGIN_ANY: HeaderValue = HeaderValue::from_static("*");
@@ -204,7 +203,11 @@ fn try_serve(inner: &PrerenderInner, req: &Request<Body>) -> Option<Response<Bod
     let key = lookup_key(req.uri().path(), is_rsc)?;
     let asset = resolve_asset(inner, &key, is_rsc)?;
     let encoding = pick_encoding(req.headers());
-    Some(build_response(&asset, encoding, req.method() == Method::HEAD))
+    Some(build_response(
+        &asset,
+        encoding,
+        req.method() == Method::HEAD,
+    ))
 }
 
 /// Translates a request path into the relative file path that Next.js
@@ -273,9 +276,7 @@ fn resolve_asset(inner: &PrerenderInner, key: &str, is_rsc: bool) -> Option<Cach
         }
         let cap = inner.byte_cap;
         if cap > 0 {
-            let mut current = inner
-                .total_bytes
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let mut current = inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
             if current.saturating_add(fresh_bytes) > cap && !guard.is_empty() {
                 let mut by_mtime: Vec<(SystemTime, String, u64)> = guard
                     .iter()
@@ -837,15 +838,16 @@ mod tests {
         for i in 0..16 {
             let _ = resolve_asset(&inner, &format!("p{i}.html"), false);
         }
-        let total = inner
-            .total_bytes
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let total = inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
             total <= 16 * 1024,
             "total {total} must stay within cap after evictions",
         );
         let len = inner.cache.read().len();
-        assert!(len < 16, "cache must be smaller than full set after evictions, got {len}");
+        assert!(
+            len < 16,
+            "cache must be smaller than full set after evictions, got {len}"
+        );
     }
 
     #[test]
@@ -855,18 +857,11 @@ mod tests {
         let inner = PrerenderInner::new(tmp.path().to_path_buf());
         let _ = resolve_asset(&inner, "about.html", false);
         assert_eq!(inner.cache.read().len(), 1);
-        assert!(
-            inner
-                .total_bytes
-                .load(std::sync::atomic::Ordering::Relaxed)
-                > 0
-        );
+        assert!(inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed) > 0);
         inner.shrink();
         assert_eq!(inner.cache.read().len(), 0);
         assert_eq!(
-            inner
-                .total_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
+            inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed),
             0
         );
     }

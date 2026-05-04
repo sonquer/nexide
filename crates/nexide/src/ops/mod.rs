@@ -23,8 +23,7 @@ mod tls;
 mod zlib_stream;
 
 pub use dispatch_table::{
-    CompletionResult, DispatchError, DispatchTable, InFlight, RequestFailure, RequestId,
-    StreamTaps,
+    CompletionResult, DispatchError, DispatchTable, InFlight, RequestFailure, RequestId, StreamTaps,
 };
 pub use dns::{
     DnsError, LookupFamily, LookupResult, MxRecord, SrvRecord, lookup as dns_lookup,

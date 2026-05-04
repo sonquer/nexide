@@ -428,11 +428,7 @@ fn attach_headers_from_hot(
     headers.insert(CONTENT_DISPOSITION, entry.disposition_hv.clone());
 }
 
-pub(super) fn build_content_disposition(
-    url: &str,
-    mime: &str,
-    disposition_type: &str,
-) -> String {
+pub(super) fn build_content_disposition(url: &str, mime: &str, disposition_type: &str) -> String {
     let filename = filename_from_url(url, mime);
     format!("{disposition_type}; filename=\"{filename}\"")
 }

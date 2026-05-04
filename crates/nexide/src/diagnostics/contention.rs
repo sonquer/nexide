@@ -58,7 +58,9 @@ impl Snapshot {
 
     pub(crate) fn delta(&self, prev: &Self) -> Self {
         Self {
-            prerender_read_fast: self.prerender_read_fast.saturating_sub(prev.prerender_read_fast),
+            prerender_read_fast: self
+                .prerender_read_fast
+                .saturating_sub(prev.prerender_read_fast),
             prerender_read_contended: self
                 .prerender_read_contended
                 .saturating_sub(prev.prerender_read_contended),

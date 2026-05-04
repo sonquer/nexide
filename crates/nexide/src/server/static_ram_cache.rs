@@ -304,8 +304,10 @@ fn brotli_q11(data: &[u8]) -> Option<Bytes> {
 }
 
 fn gzip_q9(data: &[u8]) -> Option<Bytes> {
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::with_capacity(data.len() / 2), flate2::Compression::new(9));
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(data.len() / 2),
+        flate2::Compression::new(9),
+    );
     if encoder.write_all(data).is_err() {
         return None;
     }
@@ -382,10 +384,7 @@ fn build_response_from_cache(asset: &CachedAsset, encoding: Encoding) -> Respons
 
 impl<S, B> Service<Request<Body>> for RamCachedService<S>
 where
-    S: Service<Request<Body>, Response = Response<B>, Error = Infallible>
-        + Clone
-        + Send
-        + 'static,
+    S: Service<Request<Body>, Response = Response<B>, Error = Infallible> + Clone + Send + 'static,
     S::Future: Send + 'static,
     B: http_body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
@@ -433,7 +432,8 @@ where
             if (collected.len() as u64) > MAX_ENTRY_BYTES {
                 let len = collected.len() as u64;
                 let mut resp = Response::from_parts(parts, Body::from(collected));
-                resp.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from(len));
+                resp.headers_mut()
+                    .insert(CONTENT_LENGTH, HeaderValue::from(len));
                 resp.headers_mut().insert(HN_X_NEXIDE_STATIC, HV_MISS);
                 return Ok(resp);
             }
@@ -494,7 +494,10 @@ mod tests {
     #[test]
     fn pick_encoding_prefers_br() {
         let mut h = HeaderMap::new();
-        h.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+        h.insert(
+            ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate, br"),
+        );
         assert_eq!(pick_encoding(&h), Encoding::Br);
     }
 
@@ -508,7 +511,10 @@ mod tests {
     #[test]
     fn pick_encoding_identity_when_q_zero() {
         let mut h = HeaderMap::new();
-        h.insert(ACCEPT_ENCODING, HeaderValue::from_static("br;q=0, gzip;q=0"));
+        h.insert(
+            ACCEPT_ENCODING,
+            HeaderValue::from_static("br;q=0, gzip;q=0"),
+        );
         assert_eq!(pick_encoding(&h), Encoding::Identity);
     }
 
@@ -603,7 +609,11 @@ mod tests {
         let svc = RamCachedService::with_capacity(next_static_only(tmp.path()), 8 * 1024);
         let state = svc.state();
         for n in ["/a.js", "/b.js", "/c.js"] {
-            let _ = svc.clone().oneshot(make_request(n, None)).await.expect("ok");
+            let _ = svc
+                .clone()
+                .oneshot(make_request(n, None))
+                .await
+                .expect("ok");
         }
         assert!(state.current_bytes() <= 8 * 1024);
         assert!(state.len() < 3);

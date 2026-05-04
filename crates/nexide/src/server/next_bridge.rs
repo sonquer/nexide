@@ -100,7 +100,11 @@ where
 {
     async fn handle(&self, req: Request<Body>) -> Result<Response<Body>, HandlerError> {
         let breakdown = phase_breakdown_enabled();
-        let t_accept_start = if breakdown { Some(Instant::now()) } else { None };
+        let t_accept_start = if breakdown {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let accept_header = req.headers().get(ACCEPT).cloned();
         let proto = match build_proto_request(req).await {
             Ok(p) => p,
@@ -114,11 +118,19 @@ where
             None => None,
         };
 
-        let t_dispatch_start = if breakdown { Some(Instant::now()) } else { None };
+        let t_dispatch_start = if breakdown {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let outcome = self.dispatcher.dispatch_streaming(proto).await;
         let dispatch_elapsed = t_dispatch_start.map(|t| t.elapsed());
 
-        let t_respond_start = if breakdown { Some(Instant::now()) } else { None };
+        let t_respond_start = if breakdown {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let mut response = match outcome {
             Ok(streaming) => streaming_to_response(streaming),
             Err(err) => error_response(&err, accept_header.as_ref()),
@@ -250,9 +262,8 @@ fn streaming_to_response(streaming: StreamingResponse) -> Response<Body> {
         };
         headers_mut.append(header_name, header_value);
     }
-    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(body).map(|res| {
-        res.map_err(|err| std::io::Error::other(err.to_string()))
-    });
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(body)
+        .map(|res| res.map_err(|err| std::io::Error::other(err.to_string())));
     let axum_body = Body::from_stream(stream);
     builder.body(axum_body).unwrap_or_else(|_| infallible_502())
 }
@@ -263,8 +274,8 @@ fn canonical_header_name(name: &str) -> Option<HeaderName> {
         ACCEPT_RANGES, AGE, CACHE_CONTROL, CONNECTION, CONTENT_DISPOSITION, CONTENT_ENCODING,
         CONTENT_LANGUAGE, CONTENT_LENGTH, CONTENT_LOCATION, CONTENT_RANGE, CONTENT_SECURITY_POLICY,
         CONTENT_TYPE, DATE, ETAG, EXPIRES, LAST_MODIFIED, LINK, LOCATION, PRAGMA, REFERRER_POLICY,
-        SERVER, SET_COOKIE, STRICT_TRANSPORT_SECURITY, TRANSFER_ENCODING, VARY, X_CONTENT_TYPE_OPTIONS,
-        X_FRAME_OPTIONS, X_XSS_PROTECTION,
+        SERVER, SET_COOKIE, STRICT_TRANSPORT_SECURITY, TRANSFER_ENCODING, VARY,
+        X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION,
     };
     let lc = match name.as_bytes().first()? {
         b'a'..=b'z' => name,
