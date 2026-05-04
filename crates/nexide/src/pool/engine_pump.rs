@@ -99,7 +99,8 @@ pub(super) async fn boot_engine(
             .with_worker_id(worker_id)
             .with_fs(crate::ops::FsHandle::real(vec![project_root]))
             .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build())
-            .with_code_cache(process_code_cache());
+            .with_code_cache(process_code_cache())
+            .with_heap_limit(crate::effective_heap_limit());
         V8Engine::boot_with(entrypoint, ctx)
             .await
             .map_err(|err| WorkerError::Engine(err.to_string()))?

@@ -10,9 +10,12 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
+
+use crate::engine::HeapLimitConfig;
 
 pub mod cli;
 pub mod diagnostics;
@@ -720,25 +723,29 @@ fn fixed_runtime_overhead_mb(budget_mb: u64) -> u64 {
 /// budget so tight presets do not waste reserve on heap V8 will
 /// never use.
 ///
-/// Bands:
-/// * `≤ 256` MiB → `64` MiB (tight: still floors to
+/// Bands (re-tuned for dedicated Next.js workloads — RSC module
+/// graph + i18n catalogs + prerender cache routinely hit `150 –
+/// 350 MiB` working set, so the previous bands of `64 – 128 MiB`
+/// produced fatal `Reached heap limit` aborts on real apps):
+/// * `≤ 256` MiB → `96` MiB (tight: floors to
 ///   [`MIN_OLD_SPACE_CAP_MB`] in the V8 cap because V8 rejects smaller
 ///   old-spaces; the smaller value here is what the pool sizer
 ///   *reserves* per isolate so the pool stays correctly conservative).
-/// * `≤ 512` MiB → `80` MiB (small: lets two isolates fit a 512 MiB
-///   container with comfortable margin).
-/// * `≤ 1024` MiB → `96` MiB (mid).
-/// * `> 1024` MiB → `128` MiB (generous: hot working set fits without
+/// * `≤ 512` MiB → `128` MiB (small: a single dedicated Next.js
+///   isolate dominates the budget, so reserving more per-slot stops
+///   the pool sizer from over-committing on `512 MiB / 1 cpu` pods).
+/// * `≤ 1024` MiB → `192` MiB (mid).
+/// * `> 1024` MiB → `256` MiB (generous: hot working set fits without
 ///   triggering frequent major GC).
 fn adaptive_per_isolate_heap_mb(budget_mb: u64) -> u64 {
     if budget_mb <= 256 {
-        64
-    } else if budget_mb <= 512 {
-        80
-    } else if budget_mb <= 1024 {
         96
-    } else {
+    } else if budget_mb <= 512 {
         128
+    } else if budget_mb <= 1024 {
+        192
+    } else {
+        256
     }
 }
 
@@ -1359,6 +1366,25 @@ const MIN_OLD_SPACE_CAP_MB: u64 = 128;
 /// where the historical tail-latency win lives.
 const HARD_OLD_SPACE_CAP_MB: u64 = 256;
 
+/// Upper bound for the V8 old-generation cap when a **single** worker
+/// owns the whole container memory budget.
+///
+/// The multi-worker [`HARD_OLD_SPACE_CAP_MB`] (`256 MiB`) was tuned
+/// for tail-latency on shared-pool deployments where each isolate
+/// holds a slice of the budget and a long mark-sweep on one isolate
+/// stalls the others' shared dispatcher. In a *dedicated* Next.js
+/// single-worker pod (`workers == 1`), there is nobody else to stall:
+/// mark-sweep latency is bounded only by the working set itself,
+/// and modern V8 concurrent marking keeps real-world pauses under
+/// `25 ms` even at `~1 GiB` old-space. Capping at `256 MiB` instead
+/// caused fatal `Reached heap limit` aborts on real Next.js apps
+/// whose hot working set (i18n catalogs, RSC module graph, prerender
+/// cache) exceeds the historical band-derived target.
+///
+/// `1 GiB` covers every realistic Next.js workload while still giving
+/// V8 a deterministic ceiling that keeps mark-sweep latency bounded.
+const SINGLE_WORKER_HARD_OLD_SPACE_CAP_MB: u64 = 1024;
+
 /// Target old-space cap for multi-worker presets with a generous
 /// memory budget (`>= 1024 MiB`).
 ///
@@ -1410,29 +1436,65 @@ const MULTI_WORKER_OLD_SPACE_TARGET_MB: u64 = HARD_OLD_SPACE_CAP_MB;
 /// mutating V8's process-global flag table.
 fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
     use std::fmt::Write as _;
-    let workers = workers.max(1) as u64;
     let mut flags = format!("--max-semi-space-size={DEFAULT_SEMI_SPACE_CAP_MB}");
     if let Some(budget) = budget_mb {
-        let fixed_oh = fixed_runtime_overhead_mb(budget);
-        let usable = budget.saturating_sub(fixed_oh);
-        let per_worker_share = usable.saturating_div(workers);
-        let head_room = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
-        let band = adaptive_per_isolate_heap_mb(budget);
-        let (target, ceiling) = if workers >= 2 && budget >= 1024 {
-            (
-                band.max(MULTI_WORKER_OLD_SPACE_TARGET_MB),
-                HARD_OLD_SPACE_CAP_MB.max(head_room / 2),
-            )
-        } else if workers == 1 && budget >= 256 {
-            let proportional = (budget as f64 * 0.30) as u64;
-            (band.max(proportional), HARD_OLD_SPACE_CAP_MB)
-        } else {
-            (band, HARD_OLD_SPACE_CAP_MB.max(head_room / 2))
-        };
-        let cap = target.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling);
+        let cap = compute_old_space_cap_mb(budget, workers);
         let _ = write!(flags, " --max-old-space-size={cap}");
     }
     flags
+}
+
+/// Computes the V8 `--max-old-space-size` value (in MiB) for a given
+/// container memory budget and worker count.
+///
+/// Pure helper extracted from [`compose_default_v8_flags`] so the same
+/// number can drive both the process-wide V8 flag *and* the per-isolate
+/// `Isolate::create_params().heap_limits(...)` cap (see
+/// [`effective_heap_limit`]). Keeping the two caps in lockstep prevents
+/// the historical bug where the V8 flag allowed e.g. `346 MiB` but the
+/// per-isolate hard cap silently clamped each isolate to the
+/// `HeapLimitConfig::default()` value of `256 MiB`.
+///
+/// # Single-worker behaviour (`workers == 1`)
+///
+/// A dedicated Next.js single-worker pod has no peer isolate to stall,
+/// so it takes the dominant share of `head_room` (`85 %`) up to
+/// [`SINGLE_WORKER_HARD_OLD_SPACE_CAP_MB`]. The historical
+/// `30 %`-of-budget proportional rule was tuned for the bench suite's
+/// p99 sweet-spot but produced caps too small (`153 MiB` for a
+/// `512 MiB` container) to hold real Next.js working sets, triggering
+/// `Reached heap limit` fatal aborts.
+///
+/// # Multi-worker behaviour (`workers >= 2`)
+///
+/// Unchanged from the previous implementation: targets
+/// [`MULTI_WORKER_OLD_SPACE_TARGET_MB`] when budget allows, otherwise
+/// the band picked by [`adaptive_per_isolate_heap_mb`], clamped to
+/// `[MIN_OLD_SPACE_CAP_MB, ceiling]` where the ceiling is
+/// `max(HARD_OLD_SPACE_CAP_MB, head_room / 2)`. Tail-latency wins from
+/// the bench suite are preserved.
+fn compute_old_space_cap_mb(budget_mb: u64, workers: usize) -> u64 {
+    let workers = (workers.max(1)) as u64;
+    let fixed_oh = fixed_runtime_overhead_mb(budget_mb);
+    let usable = budget_mb.saturating_sub(fixed_oh);
+    let per_worker_share = usable.saturating_div(workers);
+    let head_room = per_worker_share.saturating_sub(PER_ISOLATE_RSS_OVERHEAD_MB);
+    let band = adaptive_per_isolate_heap_mb(budget_mb);
+    let (target, ceiling) = if workers >= 2 && budget_mb >= 1024 {
+        (
+            band.max(MULTI_WORKER_OLD_SPACE_TARGET_MB),
+            HARD_OLD_SPACE_CAP_MB.max(head_room / 2),
+        )
+    } else if workers == 1 && budget_mb >= 256 {
+        let proportional = head_room.saturating_mul(85).saturating_div(100);
+        let ceiling = head_room
+            .saturating_sub(16)
+            .clamp(MIN_OLD_SPACE_CAP_MB, SINGLE_WORKER_HARD_OLD_SPACE_CAP_MB);
+        (band.max(proportional), ceiling)
+    } else {
+        (band, HARD_OLD_SPACE_CAP_MB.max(head_room / 2))
+    };
+    target.min(head_room).clamp(MIN_OLD_SPACE_CAP_MB, ceiling)
 }
 
 /// Applies the V8 process-wide flags before any isolate is created.
@@ -1441,18 +1503,81 @@ fn compose_default_v8_flags(budget_mb: Option<u64>, workers: usize) -> String {
 /// once `v8::V8::initialize` runs (lazily on the first
 /// `JsRuntime::try_new`), flags become read-only. The function is
 /// idempotent (guarded by a `Once`).
+///
+/// In addition to setting V8's process-wide flags, this also seeds
+/// [`EFFECTIVE_HEAP_LIMIT`] with the matching per-isolate
+/// `HeapLimitConfig` so that
+/// [`crate::engine::v8_engine::BootContext::with_heap_limit`] can pin
+/// every isolate's `heap_size_limit` to the same number reported in
+/// `--max-old-space-size`. Without this synchronisation the V8 flag
+/// could allow e.g. `346 MiB` while each isolate's `create_params`
+/// silently clamped to the project default of `256 MiB`, producing
+/// the same `Reached heap limit` aborts the flag was supposed to
+/// avoid.
 fn apply_v8_flags(workers: usize) {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let flags = resolve_v8_flags(
-            std::env::var(V8_FLAGS_ENV).ok().as_deref(),
-            cgroup_memory_limit_mb(),
+        let budget = cgroup_memory_limit_mb();
+        let flags = resolve_v8_flags(std::env::var(V8_FLAGS_ENV).ok().as_deref(), budget, workers);
+        let heap_limit = resolve_effective_heap_limit(budget, workers);
+        let _ = EFFECTIVE_HEAP_LIMIT.set(heap_limit);
+        tracing::info!(
+            %flags,
+            heap_initial_mb = heap_limit.initial_mb(),
+            heap_max_mb = heap_limit.max_mb(),
+            budget_mb = ?budget,
             workers,
+            "applying V8 flags",
         );
-        tracing::info!(%flags, "applying V8 flags");
         v8::V8::set_flags_from_string(&flags);
     });
+}
+
+/// Process-wide cache of the per-isolate heap budget computed at
+/// startup by [`apply_v8_flags`]. `OnceLock` keeps the wiring
+/// lock-free on the dispatch hot path.
+static EFFECTIVE_HEAP_LIMIT: OnceLock<HeapLimitConfig> = OnceLock::new();
+
+/// Returns the per-isolate [`HeapLimitConfig`] computed at startup.
+///
+/// Wired into every [`crate::engine::v8_engine::BootContext`] so the
+/// per-isolate `Isolate::create_params().heap_limits(...)` cap stays
+/// in lockstep with the process-wide `--max-old-space-size` flag set
+/// in [`apply_v8_flags`].
+///
+/// Falls back to [`HeapLimitConfig::default()`] when `apply_v8_flags`
+/// has not run yet - relevant for unit tests that boot a `V8Engine`
+/// directly without going through [`serve_app_until`].
+#[must_use]
+pub fn effective_heap_limit() -> HeapLimitConfig {
+    EFFECTIVE_HEAP_LIMIT.get().copied().unwrap_or_default()
+}
+
+/// Resolves the per-isolate [`HeapLimitConfig`] from the detected
+/// container budget and the worker count.
+///
+/// Resolution order (mirrors [`compose_default_v8_flags`]):
+/// 1. `NEXIDE_HEAP_LIMIT_MB` operator override (escape hatch).
+/// 2. Container budget detected via cgroup, fed through
+///    [`compute_old_space_cap_mb`] so the per-isolate cap matches
+///    the V8 flag exactly.
+/// 3. [`HeapLimitConfig::default`] when no budget is detected
+///    (development on bare metal).
+fn resolve_effective_heap_limit(budget_mb: Option<u64>, workers: usize) -> HeapLimitConfig {
+    if let Some(env_cfg) =
+        crate::engine::heap_limit_from_env(std::env::var("NEXIDE_HEAP_LIMIT_MB").ok().as_deref())
+    {
+        return env_cfg;
+    }
+    match budget_mb {
+        Some(budget) => {
+            let cap_mb = compute_old_space_cap_mb(budget, workers) as usize;
+            let initial = HeapLimitConfig::DEFAULT_INITIAL_MB.min(cap_mb);
+            HeapLimitConfig::new(initial, cap_mb)
+        }
+        None => HeapLimitConfig::default(),
+    }
 }
 
 /// Picks the effective V8 flag string given the raw env value and the
@@ -1480,10 +1605,11 @@ mod tests {
         MAX_FIXED_RUNTIME_OVERHEAD_MB, MIN_FIXED_RUNTIME_OVERHEAD_MB, MIN_OLD_SPACE_CAP_MB,
         RUNTIME_MODE_ENV, RuntimeError, RuntimeMode, absolute_dir,
         adaptive_max_inflight_per_isolate, adaptive_per_isolate_heap_mb, blocking_cap_from_env,
-        compose_default_v8_flags, detected_blocking_cap, detected_pool_size,
-        fixed_runtime_overhead_mb, install_tracing, mb_from_env, parse_bind, pool_size_from_env,
-        pool_size_from_memory_budget, pool_size_from_perf_cores, resolve_default_bind,
-        resolve_max_inflight_per_isolate, resolve_runtime_mode, resolve_v8_flags,
+        compose_default_v8_flags, compute_old_space_cap_mb, detected_blocking_cap,
+        detected_pool_size, fixed_runtime_overhead_mb, install_tracing, mb_from_env, parse_bind,
+        pool_size_from_env, pool_size_from_memory_budget, pool_size_from_perf_cores,
+        resolve_default_bind, resolve_effective_heap_limit, resolve_max_inflight_per_isolate,
+        resolve_runtime_mode, resolve_v8_flags,
     };
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1643,14 +1769,14 @@ mod tests {
 
     #[test]
     fn adaptive_per_isolate_heap_picks_band_from_budget() {
-        assert_eq!(adaptive_per_isolate_heap_mb(128), 64);
-        assert_eq!(adaptive_per_isolate_heap_mb(256), 64);
-        assert_eq!(adaptive_per_isolate_heap_mb(257), 80);
-        assert_eq!(adaptive_per_isolate_heap_mb(512), 80);
-        assert_eq!(adaptive_per_isolate_heap_mb(513), 96);
-        assert_eq!(adaptive_per_isolate_heap_mb(1024), 96);
-        assert_eq!(adaptive_per_isolate_heap_mb(1025), 128);
-        assert_eq!(adaptive_per_isolate_heap_mb(8192), 128);
+        assert_eq!(adaptive_per_isolate_heap_mb(128), 96);
+        assert_eq!(adaptive_per_isolate_heap_mb(256), 96);
+        assert_eq!(adaptive_per_isolate_heap_mb(257), 128);
+        assert_eq!(adaptive_per_isolate_heap_mb(512), 128);
+        assert_eq!(adaptive_per_isolate_heap_mb(513), 192);
+        assert_eq!(adaptive_per_isolate_heap_mb(1024), 192);
+        assert_eq!(adaptive_per_isolate_heap_mb(1025), 256);
+        assert_eq!(adaptive_per_isolate_heap_mb(8192), 256);
     }
 
     #[test]
@@ -1669,9 +1795,12 @@ mod tests {
         let p = pool_size_from_memory_budget(256, adaptive_per_isolate_heap_mb(256));
         assert_eq!(p, 1, "256 MiB only fits one isolate after fixed overhead");
         let p = pool_size_from_memory_budget(512, adaptive_per_isolate_heap_mb(512));
-        assert_eq!(p, 2, "512 MiB fits two isolates");
+        assert_eq!(
+            p, 1,
+            "512 MiB fits one fat Next.js isolate (band raised to 128 MiB)"
+        );
         let p = pool_size_from_memory_budget(1024, adaptive_per_isolate_heap_mb(1024));
-        assert_eq!(p, 5, "1 GiB fits five 96-MiB-heap isolates");
+        assert_eq!(p, 3, "1 GiB fits three 192-MiB-heap isolates");
         let p = pool_size_from_memory_budget(8192, adaptive_per_isolate_heap_mb(8192));
         assert!(p >= 24, "8 GiB should fit at least 24 isolates (got {p})");
     }
@@ -1691,60 +1820,127 @@ mod tests {
 
     #[test]
     fn compose_default_v8_flags_scales_old_space_with_budget_and_workers() {
-        // 1024/4: workers>=2 + budget>=1024, head_room=192/4-overhead=8;
-        // target=192 but clamped down by head_room then floored to MIN.
+        // 1024/4 multi-worker: target=max(band=192, MULTI=256)=256,
+        // head_room=192 clamps min, ceiling=256, cap=192.
         let flags = compose_default_v8_flags(Some(1024), 4);
         assert!(
-            flags.contains("--max-old-space-size=192")
-                || flags.contains("--max-old-space-size=128"),
+            flags.contains("--max-old-space-size=192"),
             "actual flags: {flags}"
         );
-        // 256/1: K1 single-worker rule -> proportional=76, max(band=64, 76)=76,
-        // clamp(76, MIN=128, HARD=256) = 128.
+        // 256/1 dedicated: head_room=168, target=max(band=96, 168*0.85=142)=142,
+        // ceiling=min(max(152, 128), 1024)=152, cap=142.
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(
-            flags.contains("--max-old-space-size=128"),
+            flags.contains("--max-old-space-size=142"),
             "actual flags: {flags}"
         );
-        // 1024/2: workers>=2 + budget>=1024 → MULTI_WORKER_OLD_SPACE_TARGET_MB
-        // = HARD_OLD_SPACE_CAP_MB = 256, head_room=424 leaves room for it.
+        // 1024/2 multi-worker: target=max(band=192, MULTI=256)=256,
+        // head_room=424, ceiling=256, cap=256.
         let flags = compose_default_v8_flags(Some(1024), 2);
         assert!(flags.contains("--max-old-space-size=256"));
     }
 
     #[test]
-    fn compose_default_v8_flags_uses_adaptive_band_not_runaway_share() {
-        // 1024/1: K1 single-worker rule -> proportional=307, clamp to HARD=256.
+    fn compose_default_v8_flags_takes_dominant_share_for_dedicated_single_worker() {
+        // 512/1 dedicated Next.js: head_room=408, target=max(128, 408*0.85=346)=346,
+        // ceiling=min(max(392, 128), 1024)=392, cap=346.
+        // Previously: 153 — too tight, fatal aborts on real Next.js apps.
+        let flags = compose_default_v8_flags(Some(512), 1);
+        assert!(
+            flags.contains("--max-old-space-size=346"),
+            "512/1 must take dominant share of head_room; flags: {flags}"
+        );
+        // 1024/1 dedicated: head_room=888, target=max(192, 754)=754, ceiling=872,
+        // cap=754. Previously clamped to HARD=256.
         let flags = compose_default_v8_flags(Some(1024), 1);
         assert!(
-            flags.contains("--max-old-space-size=256"),
+            flags.contains("--max-old-space-size=754"),
             "actual flags: {flags}"
         );
-        // 8192/1: K1 single-worker rule -> proportional=2457, clamp to HARD=256.
+        // 8192/1 dedicated: head_room=7896, target=6711, ceiling clamps to
+        // SINGLE_WORKER_HARD=1024. Previously clamped to HARD=256.
         let flags = compose_default_v8_flags(Some(8192), 1);
         assert!(
-            flags.contains("--max-old-space-size=256"),
+            flags.contains("--max-old-space-size=1024"),
             "actual flags: {flags}"
         );
     }
 
     #[test]
     fn compose_default_v8_flags_aligns_with_pool_reserve_on_tight_container() {
+        // 256/1 dedicated: see scales_old_space_with_budget_and_workers — cap=142.
         let flags = compose_default_v8_flags(Some(256), 1);
         assert!(
-            flags.contains("--max-old-space-size=128"),
-            "tight container must floor at MIN_OLD_SPACE_CAP_MB; flags: {flags}"
+            flags.contains("--max-old-space-size=142"),
+            "tight container computes 85% of head_room; flags: {flags}"
         );
     }
 
     #[test]
     fn compose_default_v8_flags_floors_at_min_cap() {
+        // 96/1: budget < 256 falls into the else-branch where target=band=96,
+        // head_room=18, cap clamps up to MIN=128.
         let flags = compose_default_v8_flags(Some(96), 1);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
-        // workers=0 normalized to 1; budget<256 skips K1 single-worker rule
-        // and falls back to plain `band`, which clamps up to MIN.
+        // workers=0 normalised to 1; budget<256 still falls back to plain band.
         let flags = compose_default_v8_flags(Some(128), 0);
         assert!(flags.contains(&format!("--max-old-space-size={MIN_OLD_SPACE_CAP_MB}")));
+    }
+
+    #[test]
+    fn compute_old_space_cap_matches_compose_default() {
+        // The pure helper must agree with the embedded number in the
+        // composed flag string for every interesting (budget, workers)
+        // input. This keeps the V8 flag and the per-isolate
+        // `HeapLimitConfig` (driven by `compute_old_space_cap_mb`) in
+        // lockstep — the whole point of extracting the helper.
+        for (budget, workers) in [
+            (96u64, 1usize),
+            (256, 1),
+            (256, 2),
+            (512, 1),
+            (512, 2),
+            (1024, 1),
+            (1024, 2),
+            (1024, 4),
+            (8192, 1),
+            (8192, 8),
+        ] {
+            let cap = compute_old_space_cap_mb(budget, workers);
+            let flags = compose_default_v8_flags(Some(budget), workers);
+            assert!(
+                flags.contains(&format!("--max-old-space-size={cap}")),
+                "cap mismatch for budget={budget} workers={workers}: \
+                 helper={cap}, flags={flags}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_effective_heap_limit_uses_compute_when_budget_present() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("NEXIDE_HEAP_LIMIT_MB") };
+        let cfg = resolve_effective_heap_limit(Some(512), 1);
+        let expected_max = compute_old_space_cap_mb(512, 1) as usize;
+        assert_eq!(cfg.max_mb(), expected_max);
+        assert!(cfg.initial_mb() <= cfg.max_mb());
+    }
+
+    #[test]
+    fn resolve_effective_heap_limit_honours_env_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("NEXIDE_HEAP_LIMIT_MB", "192") };
+        let cfg = resolve_effective_heap_limit(Some(8192), 8);
+        assert_eq!(cfg.max_mb(), 192, "env must override cgroup-derived cap");
+        unsafe { std::env::remove_var("NEXIDE_HEAP_LIMIT_MB") };
+    }
+
+    #[test]
+    fn resolve_effective_heap_limit_falls_back_to_default_without_budget() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("NEXIDE_HEAP_LIMIT_MB") };
+        let cfg = resolve_effective_heap_limit(None, 1);
+        assert_eq!(cfg.max_mb(), crate::engine::HeapLimitConfig::DEFAULT_MAX_MB);
     }
 
     #[test]

@@ -275,7 +275,8 @@ async fn run_worker(
         .with_cjs(resolver)
         .with_cjs_root(ROOT_PARENT)
         .with_fs(crate::ops::FsHandle::real(vec![project_root]))
-        .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build());
+        .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build())
+        .with_heap_limit(crate::effective_heap_limit());
 
     let mut engine = match V8Engine::boot_with(&entrypoint, ctx).await {
         Ok(engine) => {
