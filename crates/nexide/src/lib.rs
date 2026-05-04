@@ -1367,12 +1367,19 @@ const HARD_OLD_SPACE_CAP_MB: u64 = 256;
 /// picks (`96 MiB` for `1024 MiB`) is small enough that V8 hits
 /// `--max-old-space-size` every few hundred milliseconds under
 /// sustained API load and the resulting mark-sweep finalisations
-/// dominate p99 tail latency. Bumping the floor to `192 MiB` per
-/// isolate cuts mark-sweep frequency roughly in half while keeping
-/// each pause below the `head_room/2` ceiling, which is what the
-/// `2cpu/1024 MiB` docker bench measured as the dominant tail
-/// contributor.
-const MULTI_WORKER_OLD_SPACE_TARGET_MB: u64 = 192;
+/// dominate p99 tail latency.
+///
+/// The target is set equal to [`HARD_OLD_SPACE_CAP_MB`] so that
+/// every multi-worker isolate with enough head-room runs at the
+/// bench-validated p99 sweet-spot (`256 MiB`): smaller heaps trip
+/// "Reached heap limit" fatal aborts on real Next.js apps that
+/// keep 250-300 MiB of working set (i18n catalogs, prerender cache,
+/// React Server Component module graph), while larger heaps lengthen
+/// each major mark-sweep enough to dominate `api-*` p99 again.
+/// `target.min(head_room)` in [`compose_default_v8_flags`] still
+/// prevents over-commit on tighter worker shares (e.g. `1024/4`,
+/// where `head_room == 192 MiB` snaps the cap back down).
+const MULTI_WORKER_OLD_SPACE_TARGET_MB: u64 = HARD_OLD_SPACE_CAP_MB;
 
 /// Composes the default V8 flag string adaptively from the container
 /// memory budget and the worker count.
@@ -1699,9 +1706,10 @@ mod tests {
             flags.contains("--max-old-space-size=128"),
             "actual flags: {flags}"
         );
-        // 1024/2: workers>=2 + budget>=1024 → MULTI_WORKER_OLD_SPACE_TARGET_MB = 192.
+        // 1024/2: workers>=2 + budget>=1024 → MULTI_WORKER_OLD_SPACE_TARGET_MB
+        // = HARD_OLD_SPACE_CAP_MB = 256, head_room=424 leaves room for it.
         let flags = compose_default_v8_flags(Some(1024), 2);
-        assert!(flags.contains("--max-old-space-size=192"));
+        assert!(flags.contains("--max-old-space-size=256"));
     }
 
     #[test]
