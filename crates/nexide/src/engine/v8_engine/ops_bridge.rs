@@ -77,6 +77,12 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_process_hrtime_ns", op_process_hrtime_ns);
     install_fn(scope, ops, "op_process_exit", op_process_exit);
     install_fn(scope, ops, "op_process_kill", op_process_kill);
+    install_fn(
+        scope,
+        ops,
+        "op_process_drain_signals",
+        op_process_drain_signals,
+    );
     install_fn(scope, ops, "op_process_cpu_usage", op_process_cpu_usage);
     install_fn(
         scope,
@@ -124,6 +130,27 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_fs_rm", op_fs_rm);
     install_fn(scope, ops, "op_fs_copy", op_fs_copy);
     install_fn(scope, ops, "op_fs_readlink", op_fs_readlink);
+    install_fn(scope, ops, "op_fs_rename", op_fs_rename);
+    install_fn(scope, ops, "op_fs_append", op_fs_append);
+    install_fn(scope, ops, "op_fs_read_async", op_fs_read_async);
+    install_fn(scope, ops, "op_fs_write_async", op_fs_write_async);
+    install_fn(scope, ops, "op_fs_append_async", op_fs_append_async);
+    install_fn(scope, ops, "op_fs_stat_async", op_fs_stat_async);
+    install_fn(scope, ops, "op_fs_readdir_async", op_fs_readdir_async);
+    install_fn(scope, ops, "op_fs_mkdir_async", op_fs_mkdir_async);
+    install_fn(scope, ops, "op_fs_rm_async", op_fs_rm_async);
+    install_fn(scope, ops, "op_fs_copy_async", op_fs_copy_async);
+    install_fn(scope, ops, "op_fs_rename_async", op_fs_rename_async);
+    install_fn(scope, ops, "op_fs_realpath_async", op_fs_realpath_async);
+    install_fn(scope, ops, "op_url_parse", op_url_parse);
+    install_fn(scope, ops, "op_url_can_parse", op_url_can_parse);
+    install_fn(scope, ops, "op_os_network_interfaces", op_os_network_interfaces);
+    install_fn(scope, ops, "op_fs_chmod", op_fs_chmod);
+    install_fn(scope, ops, "op_fs_chmod_async", op_fs_chmod_async);
+    install_fn(scope, ops, "op_fs_symlink", op_fs_symlink);
+    install_fn(scope, ops, "op_fs_link", op_fs_link);
+    install_fn(scope, ops, "op_fs_truncate", op_fs_truncate);
+    install_fn(scope, ops, "op_fs_utimes", op_fs_utimes);
 
     install_fn(scope, ops, "op_crypto_hash", op_crypto_hash);
     install_fn(scope, ops, "op_crypto_hmac", op_crypto_hmac);
@@ -1269,6 +1296,29 @@ fn op_process_kill<'s>(
     }
 }
 
+/// `op_process_drain_signals()` - returns the OS signals delivered
+/// to the host process since the previous call (in arrival order).
+///
+/// The JS `process` polyfill polls this op from a 100 ms interval and
+/// emits the corresponding `'SIGTERM'` / `'SIGINT'` / `'SIGHUP'`
+/// events on the in-isolate `EventEmitter`, giving Next.js graceful
+/// shutdown hooks (DB pool drain, queue worker stop, log flushers)
+/// the same surface they rely on under upstream Node.
+fn op_process_drain_signals<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let names = crate::ops::drain_signals();
+    let arr = v8::Array::new(scope, names.len() as i32);
+    for (idx, name) in names.iter().enumerate() {
+        let s = v8::String::new(scope, name).unwrap();
+        let i = v8::Integer::new(scope, idx as i32);
+        arr.set(scope, i.into(), s.into());
+    }
+    rv.set(arr.into());
+}
+
 /// `process.cpuUsage()` - returns `{ user, system }` in microseconds.
 /// Unix uses `getrusage(RUSAGE_SELF)`; other platforms return zeroes.
 fn op_process_cpu_usage<'s>(
@@ -2122,6 +2172,839 @@ fn op_fs_readlink<'s>(
         }
         Err((code, msg)) => throw_error(scope, &format!("{code}: {msg}")),
     }
+}
+
+fn op_fs_rename<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let src = string_arg(scope, &args, 0);
+    let dst = string_arg(scope, &args, 1);
+    let result = if let Some(fs) = fs_handle_for(scope) {
+        fs.rename(&src, &dst).map_err(|e| (e.code, e.message))
+    } else {
+        std::fs::rename(&src, &dst).map_err(map_io_err)
+    };
+    if let Err((code, msg)) = result {
+        throw_error(scope, &format!("{code}: {msg}"));
+    }
+}
+
+fn op_fs_append<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let Some(data) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "fs.append: data must be Uint8Array");
+        return;
+    };
+    let result = if let Some(fs) = fs_handle_for(scope) {
+        fs.append(&path, &data).map_err(|e| (e.code, e.message))
+    } else {
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(&data))
+            .map_err(map_io_err)
+    };
+    if let Err((code, msg)) = result {
+        throw_error(scope, &format!("{code}: {msg}"));
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// node:fs async ops
+// ──────────────────────────────────────────────────────────────────────
+//
+// Mirror image of the sync ops above, but each entry point allocates
+// a `PromiseResolver` and spawns the actual I/O on `tokio::fs`. The
+// hot Tokio thread (HTTP accept + JS pump + recv loop) keeps making
+// progress while the FS request is in flight on the blocking pool -
+// closing the gap with Node's libuv thread pool. Sandbox admission
+// runs on the isolate thread (cheap, in-memory path comparison) so
+// the async surface inherits the same `EACCES` policy as the sync
+// surface.
+
+fn schedule_fs<'s, Fut, T, Mk>(
+    scope: &mut v8::PinScope<'s, '_>,
+    work: Fut,
+    on_ok: Mk,
+) -> Option<v8::Local<'s, v8::Promise>>
+where
+    Fut: std::future::Future<Output = Result<T, (&'static str, String)>> + 'static,
+    T: 'static,
+    Mk: for<'a, 'b> FnOnce(&mut v8::PinScope<'a, 'b>, T) -> v8::Local<'a, v8::Value> + 'static,
+{
+    let resolver = v8::PromiseResolver::new(scope)?;
+    let promise = resolver.get_promise(scope);
+    let global = v8::Global::new(scope, resolver);
+    let handle = from_isolate(scope);
+    let tx = handle.0.borrow().async_completions_tx.clone();
+    tokio::task::spawn_local(async move {
+        let result = work.await;
+        let settler: super::async_ops::Settler = match result {
+            Ok(value) => Box::new(move |scope, resolver| {
+                let v = on_ok(scope, value);
+                resolver.resolve(scope, v);
+            }),
+            Err((code, message)) => super::async_ops::reject_with_code(message, code),
+        };
+        let _ = tx.send(super::async_ops::Completion::new(global, settler));
+    });
+    Some(promise)
+}
+
+fn schedule_fs_void<'s, Fut>(
+    scope: &mut v8::PinScope<'s, '_>,
+    work: Fut,
+) -> Option<v8::Local<'s, v8::Promise>>
+where
+    Fut: std::future::Future<Output = Result<(), (&'static str, String)>> + 'static,
+{
+    schedule_fs(scope, work, |scope, ()| v8::undefined(scope).into())
+}
+
+fn admit_for_async(
+    scope: &mut v8::PinScope<'_, '_>,
+    path: &str,
+) -> Result<std::path::PathBuf, (&'static str, String)> {
+    if let Some(fs) = fs_handle_for(scope) {
+        fs.admit(path).map_err(|e| (e.code, e.message))
+    } else {
+        Ok(std::path::PathBuf::from(path))
+    }
+}
+
+fn map_tokio_io_err<P: AsRef<std::path::Path>>(err: std::io::Error, _path: P) -> (&'static str, String) {
+    (io_error_code(&err), err.to_string())
+}
+
+fn op_fs_read_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        tokio::fs::read(&admitted)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))
+    };
+    let Some(promise) = schedule_fs(scope, work, |scope, bytes| {
+        bytes_to_uint8array(scope, &bytes).into()
+    }) else {
+        throw_error(scope, "fs.readAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_write_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let Some(data) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "fs.writeAsync: data must be Uint8Array");
+        return;
+    };
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let bytes = data.to_vec();
+    let work = async move {
+        tokio::fs::write(&admitted, &bytes)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.writeAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_append_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let Some(data) = bytes_arg(scope, &args, 1) else {
+        throw_error(scope, "fs.appendAsync: data must be Uint8Array");
+        return;
+    };
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let bytes = data.to_vec();
+    let work = async move {
+        use tokio::io::AsyncWriteExt as _;
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&admitted)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))?;
+        f.write_all(&bytes)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))?;
+        Ok(())
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.appendAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_stat_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let follow = args.get(1).boolean_value(scope);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        let meta_res = if follow {
+            tokio::fs::metadata(&admitted).await
+        } else {
+            tokio::fs::symlink_metadata(&admitted).await
+        };
+        let meta = meta_res.map_err(|e| map_tokio_io_err(e, &admitted))?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            meta.permissions().mode()
+        };
+        #[cfg(not(unix))]
+        let mode = 0u32;
+        Ok((
+            meta.len(),
+            meta.is_file(),
+            meta.is_dir(),
+            meta.file_type().is_symlink(),
+            mtime,
+            mode,
+        ))
+    };
+    let Some(promise) = schedule_fs(scope, work, |scope, t| {
+        let (size, is_file, is_dir, is_symlink, mtime_ms, mode) = t;
+        let obj = v8::Object::new(scope);
+        let names = ["size", "is_file", "is_dir", "is_symlink", "mtime_ms", "mode"];
+        let values: [v8::Local<'_, v8::Value>; 6] = [
+            v8::Number::new(scope, size as f64).into(),
+            v8::Boolean::new(scope, is_file).into(),
+            v8::Boolean::new(scope, is_dir).into(),
+            v8::Boolean::new(scope, is_symlink).into(),
+            v8::Number::new(scope, mtime_ms).into(),
+            v8::Integer::new_from_unsigned(scope, mode).into(),
+        ];
+        for (n, v) in names.iter().zip(values.iter()) {
+            let key = v8::String::new(scope, n).unwrap();
+            obj.set(scope, key.into(), *v);
+        }
+        obj.into()
+    }) else {
+        throw_error(scope, "fs.statAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_readdir_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        let mut iter = tokio::fs::read_dir(&admitted)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))?;
+        let mut out: Vec<(String, bool, bool)> = Vec::new();
+        loop {
+            match iter.next_entry().await {
+                Ok(Some(entry)) => {
+                    let ft = entry
+                        .file_type()
+                        .await
+                        .map_err(|e| map_tokio_io_err(e, &admitted))?;
+                    out.push((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        ft.is_dir(),
+                        ft.is_symlink(),
+                    ));
+                }
+                Ok(None) => break,
+                Err(e) => return Err(map_tokio_io_err(e, &admitted)),
+            }
+        }
+        Ok(out)
+    };
+    let Some(promise) = schedule_fs(scope, work, |scope, entries| {
+        let arr = v8::Array::new(scope, entries.len() as i32);
+        for (i, (name, is_dir, is_symlink)) in entries.iter().enumerate() {
+            let obj = v8::Object::new(scope);
+            let n_key = v8::String::new(scope, "name").unwrap();
+            let n_val = v8::String::new(scope, name).unwrap();
+            obj.set(scope, n_key.into(), n_val.into());
+            let d_key = v8::String::new(scope, "is_dir").unwrap();
+            let d_val = v8::Boolean::new(scope, *is_dir);
+            obj.set(scope, d_key.into(), d_val.into());
+            let s_key = v8::String::new(scope, "is_symlink").unwrap();
+            let s_val = v8::Boolean::new(scope, *is_symlink);
+            obj.set(scope, s_key.into(), s_val.into());
+            let idx = v8::Integer::new(scope, i as i32);
+            arr.set(scope, idx.into(), obj.into());
+        }
+        arr.into()
+    }) else {
+        throw_error(scope, "fs.readdirAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_mkdir_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let recursive = args.get(1).boolean_value(scope);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        let res = if recursive {
+            tokio::fs::create_dir_all(&admitted).await
+        } else {
+            tokio::fs::create_dir(&admitted).await
+        };
+        res.map_err(|e| map_tokio_io_err(e, &admitted))
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.mkdirAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_rm_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let recursive = args.get(1).boolean_value(scope);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        let meta = tokio::fs::symlink_metadata(&admitted)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))?;
+        if meta.is_dir() {
+            let res = if recursive {
+                tokio::fs::remove_dir_all(&admitted).await
+            } else {
+                tokio::fs::remove_dir(&admitted).await
+            };
+            res.map_err(|e| map_tokio_io_err(e, &admitted))
+        } else {
+            tokio::fs::remove_file(&admitted)
+                .await
+                .map_err(|e| map_tokio_io_err(e, &admitted))
+        }
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.rmAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_copy_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let src = string_arg(scope, &args, 0);
+    let dst = string_arg(scope, &args, 1);
+    let admitted_src = match admit_for_async(scope, &src) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let admitted_dst = match admit_for_async(scope, &dst) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        tokio::fs::copy(&admitted_src, &admitted_dst)
+            .await
+            .map(|_| ())
+            .map_err(|e| map_tokio_io_err(e, &admitted_src))
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.copyAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_rename_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let src = string_arg(scope, &args, 0);
+    let dst = string_arg(scope, &args, 1);
+    let admitted_src = match admit_for_async(scope, &src) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let admitted_dst = match admit_for_async(scope, &dst) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        tokio::fs::rename(&admitted_src, &admitted_dst)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted_src))
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.renameAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_realpath_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let admitted = match admit_for_async(scope, &path) {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            return;
+        }
+    };
+    let work = async move {
+        tokio::fs::canonicalize(&admitted)
+            .await
+            .map_err(|e| map_tokio_io_err(e, &admitted))
+    };
+    let Some(promise) = schedule_fs(scope, work, |scope, p| {
+        let s = v8::String::new(scope, &p.to_string_lossy()).unwrap();
+        s.into()
+    }) else {
+        throw_error(scope, "fs.realpathAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// node:url - WHATWG parsing
+// ──────────────────────────────────────────────────────────────────────
+//
+// `op_url_parse` returns a 9-element array describing the parsed URL
+// fields per the WHATWG URL spec. Strings are decoded by the `url`
+// crate, which handles IPv6 brackets, IDN host punycode, percent
+// normalisation and opaque vs special schemes correctly. The JS
+// polyfill consumes this on construction and writes the fields into
+// a NexideURL instance, falling back to the legacy regex parser if
+// the op is missing (for ABI compatibility with older builds).
+
+fn op_url_parse<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let input = string_arg(scope, &args, 0);
+    let base_arg = args.get(1);
+    let parsed = if base_arg.is_string() {
+        let base = string_arg(scope, &args, 1);
+        match url::Url::parse(&base) {
+            Ok(b) => b.join(&input),
+            Err(e) => Err(e),
+        }
+    } else {
+        url::Url::parse(&input)
+    };
+    let url = match parsed {
+        Ok(u) => u,
+        Err(_) => {
+            rv.set_null();
+            return;
+        }
+    };
+
+    let arr = v8::Array::new(scope, 10);
+    let put_str = |scope: &mut v8::PinScope<'_, '_>, arr: v8::Local<'_, v8::Array>, idx: i32, s: &str| {
+        let v = v8::String::new(scope, s).unwrap();
+        let i = v8::Integer::new(scope, idx);
+        arr.set(scope, i.into(), v.into());
+    };
+    let put_null = |scope: &mut v8::PinScope<'_, '_>, arr: v8::Local<'_, v8::Array>, idx: i32| {
+        let v = v8::null(scope);
+        let i = v8::Integer::new(scope, idx);
+        arr.set(scope, i.into(), v.into());
+    };
+
+    put_str(scope, arr, 0, url.as_str());
+    put_str(scope, arr, 1, &format!("{}:", url.scheme()));
+    put_str(scope, arr, 2, url.username());
+    put_str(scope, arr, 3, url.password().unwrap_or(""));
+    match url.host_str() {
+        Some(h) => put_str(scope, arr, 4, h),
+        None => put_null(scope, arr, 4),
+    }
+    match url.port() {
+        Some(p) => put_str(scope, arr, 5, &p.to_string()),
+        None => put_str(scope, arr, 5, ""),
+    }
+    put_str(scope, arr, 6, url.path());
+    match url.query() {
+        Some(q) => put_str(scope, arr, 7, &format!("?{q}")),
+        None => put_str(scope, arr, 7, ""),
+    }
+    match url.fragment() {
+        Some(f) => put_str(scope, arr, 8, &format!("#{f}")),
+        None => put_str(scope, arr, 8, ""),
+    }
+    let origin = match url.origin() {
+        url::Origin::Tuple(scheme, host, port) => format!("{scheme}://{host}:{port}"),
+        url::Origin::Opaque(_) => "null".to_string(),
+    };
+    put_str(scope, arr, 9, &origin);
+    rv.set(arr.into());
+}
+
+fn op_url_can_parse<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let input = string_arg(scope, &args, 0);
+    let ok = if args.get(1).is_string() {
+        let base = string_arg(scope, &args, 1);
+        url::Url::parse(&base)
+            .and_then(|b| b.join(&input))
+            .is_ok()
+    } else {
+        url::Url::parse(&input).is_ok()
+    };
+    rv.set(v8::Boolean::new(scope, ok).into());
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// node:fs - extra metadata ops (chmod, symlink, link, truncate, utimes)
+// ──────────────────────────────────────────────────────────────────────
+//
+// These bypass the `FsBackend` abstraction and call `std::fs` /
+// `tokio::fs` directly, after running the same path-admission check
+// the rest of the fs ops use. Memory-backed test backends do not see
+// these ops because the tests do not exercise them; in production
+// the sandbox check is what matters.
+
+fn fs_admit_or_throw(
+    scope: &mut v8::PinScope<'_, '_>,
+    path: &str,
+) -> Option<std::path::PathBuf> {
+    match admit_for_async(scope, path) {
+        Ok(p) => Some(p),
+        Err((code, msg)) => {
+            throw_error(scope, &format!("{code}: {msg}"));
+            None
+        }
+    }
+}
+
+fn op_fs_chmod<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let mode = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Err(err) = std::fs::set_permissions(&admitted, std::fs::Permissions::from_mode(mode))
+        {
+            throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (admitted, mode);
+        throw_error(scope, "ENOSYS: chmod is unix-only");
+    }
+}
+
+fn op_fs_chmod_async<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let mode = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let work = async move {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            tokio::fs::set_permissions(&admitted, std::fs::Permissions::from_mode(mode))
+                .await
+                .map_err(|e| (io_error_code(&e), e.to_string()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (admitted, mode);
+            Err(("ENOSYS", "chmod is unix-only".to_string()))
+        }
+    };
+    let Some(promise) = schedule_fs_void(scope, work) else {
+        throw_error(scope, "fs.chmodAsync: failed to allocate promise");
+        return;
+    };
+    rv.set(promise.into());
+}
+
+fn op_fs_symlink<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let target = string_arg(scope, &args, 0);
+    let link = string_arg(scope, &args, 1);
+    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else { return; };
+    #[cfg(unix)]
+    let res = std::os::unix::fs::symlink(&target, &link_admitted);
+    #[cfg(windows)]
+    let res = std::os::windows::fs::symlink_file(&target, &link_admitted);
+    #[cfg(not(any(unix, windows)))]
+    let res: std::io::Result<()> = Err(std::io::Error::other("symlink unsupported"));
+    if let Err(err) = res {
+        throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
+    }
+}
+
+fn op_fs_link<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let existing = string_arg(scope, &args, 0);
+    let link = string_arg(scope, &args, 1);
+    let Some(existing_admitted) = fs_admit_or_throw(scope, &existing) else { return; };
+    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else { return; };
+    if let Err(err) = std::fs::hard_link(&existing_admitted, &link_admitted) {
+        throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
+    }
+}
+
+fn op_fs_truncate<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let len = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let res = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&admitted)
+        .and_then(|f| f.set_len(len));
+    if let Err(err) = res {
+        throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
+    }
+}
+
+fn op_fs_utimes<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let path = string_arg(scope, &args, 0);
+    let atime = args.get(1).number_value(scope).unwrap_or(0.0);
+    let mtime = args.get(2).number_value(scope).unwrap_or(0.0);
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let to_systime = |ms: f64| -> std::time::SystemTime {
+        let d = std::time::Duration::from_secs_f64((ms / 1000.0).max(0.0));
+        std::time::SystemTime::UNIX_EPOCH + d
+    };
+    let res = std::fs::File::options()
+        .write(true)
+        .open(&admitted)
+        .and_then(|f| {
+            f.set_modified(to_systime(mtime))?;
+            // set_accessed isn't stable; use filetime via libc on unix.
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd as _;
+                let raw = f.as_raw_fd();
+                let times = [
+                    libc::timespec {
+                        tv_sec: (atime / 1000.0) as libc::time_t,
+                        tv_nsec: 0,
+                    },
+                    libc::timespec {
+                        tv_sec: (mtime / 1000.0) as libc::time_t,
+                        tv_nsec: 0,
+                    },
+                ];
+                let r = unsafe { libc::futimens(raw, times.as_ptr()) };
+                if r != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = atime;
+            }
+            Ok(())
+        });
+    if let Err(err) = res {
+        throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// node:os - networkInterfaces()
+// ──────────────────────────────────────────────────────────────────────
+
+fn op_os_network_interfaces<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue<'s, v8::Value>,
+) {
+    let obj = v8::Object::new(scope);
+    let Ok(addrs) = if_addrs::get_if_addrs() else {
+        rv.set(obj.into());
+        return;
+    };
+    use std::collections::BTreeMap;
+    let mut grouped: BTreeMap<String, Vec<&if_addrs::Interface>> = BTreeMap::new();
+    for a in &addrs {
+        grouped.entry(a.name.clone()).or_default().push(a);
+    }
+    for (name, list) in grouped {
+        let arr = v8::Array::new(scope, list.len() as i32);
+        for (i, iface) in list.iter().enumerate() {
+            let entry = v8::Object::new(scope);
+            let (address, netmask, family) = match &iface.addr {
+                if_addrs::IfAddr::V4(v4) => (
+                    v4.ip.to_string(),
+                    v4.netmask.to_string(),
+                    "IPv4",
+                ),
+                if_addrs::IfAddr::V6(v6) => (
+                    v6.ip.to_string(),
+                    v6.netmask.to_string(),
+                    "IPv6",
+                ),
+            };
+            let internal = iface.is_loopback();
+            let mac = String::new();
+            let cidr = match &iface.addr {
+                if_addrs::IfAddr::V4(v4) => format!(
+                    "{}/{}",
+                    v4.ip,
+                    u32::from(v4.netmask).count_ones()
+                ),
+                if_addrs::IfAddr::V6(v6) => format!(
+                    "{}/{}",
+                    v6.ip,
+                    v6.netmask.octets().iter().map(|b| b.count_ones()).sum::<u32>()
+                ),
+            };
+            let pairs: [(&str, v8::Local<'_, v8::Value>); 6] = [
+                ("address", v8::String::new(scope, &address).unwrap().into()),
+                ("netmask", v8::String::new(scope, &netmask).unwrap().into()),
+                ("family", v8::String::new(scope, family).unwrap().into()),
+                ("mac", v8::String::new(scope, &mac).unwrap().into()),
+                ("internal", v8::Boolean::new(scope, internal).into()),
+                ("cidr", v8::String::new(scope, &cidr).unwrap().into()),
+            ];
+            for (k, v) in pairs {
+                let key = v8::String::new(scope, k).unwrap();
+                entry.set(scope, key.into(), v);
+            }
+            let idx = v8::Integer::new(scope, i as i32);
+            arr.set(scope, idx.into(), entry.into());
+        }
+        let key = v8::String::new(scope, &name).unwrap();
+        obj.set(scope, key.into(), arr.into());
+    }
+    rv.set(obj.into());
 }
 
 // ──────────────────────────────────────────────────────────────────────

@@ -1,14 +1,31 @@
 //! Per-FFI-call binding handed to addons as the opaque `napi_env*`.
 
 use std::cell::RefCell;
+use std::ffi::c_void;
 
 use v8::Global;
 
 use crate::napi::types::napi_value;
 
+/// Per-addon-instance data stored via `napi_set_instance_data`.
+pub struct InstanceData {
+    pub data: *mut c_void,
+    pub finalize: Option<unsafe extern "C" fn(env: *mut c_void, data: *mut c_void, hint: *mut c_void)>,
+    pub finalize_hint: *mut c_void,
+}
+
+/// One env-cleanup hook registered via `napi_add_env_cleanup_hook`.
+#[derive(Clone, Copy)]
+pub struct CleanupHook {
+    pub fun: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub arg: *mut c_void,
+}
+
 pub struct NapiContext {
     pub module_name: Option<String>,
     pub refs: RefCell<Vec<Box<Global<v8::Value>>>>,
+    pub instance_data: RefCell<Option<InstanceData>>,
+    pub cleanup_hooks: RefCell<Vec<CleanupHook>>,
 }
 
 impl Default for NapiContext {
@@ -23,6 +40,8 @@ impl NapiContext {
         Self {
             module_name: None,
             refs: RefCell::new(Vec::new()),
+            instance_data: RefCell::new(None),
+            cleanup_hooks: RefCell::new(Vec::new()),
         }
     }
 }

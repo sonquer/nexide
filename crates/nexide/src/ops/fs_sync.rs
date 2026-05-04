@@ -148,6 +148,20 @@ pub trait FsBackend: Send + Sync + 'static {
     /// # Errors
     /// Propagates host I/O failures.
     fn realpath(&self, path: &Path) -> Result<PathBuf, FsError>;
+    /// Atomically renames `from` to `to` (replacing any existing file at
+    /// `to` on POSIX). Required by the Next.js ISR cache to publish a
+    /// freshly-rendered page without intermediate readers seeing
+    /// half-written contents.
+    ///
+    /// # Errors
+    /// Propagates host I/O failures.
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError>;
+    /// Appends `data` to `path`, creating it with mode `0o644` if absent.
+    /// Mirrors Node's `fs.appendFile` semantics.
+    ///
+    /// # Errors
+    /// Propagates host I/O failures.
+    fn append(&self, path: &Path, data: &[u8]) -> Result<(), FsError>;
 }
 
 /// Standard-library backed [`FsBackend`].
@@ -244,6 +258,18 @@ impl FsBackend for RealFs {
     }
     fn realpath(&self, path: &Path) -> Result<PathBuf, FsError> {
         std::fs::canonicalize(path).map_err(|e| FsError::from_io(&e, path))
+    }
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+        std::fs::rename(from, to).map_err(|e| FsError::from_io(&e, from))
+    }
+    fn append(&self, path: &Path, data: &[u8]) -> Result<(), FsError> {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| FsError::from_io(&e, path))?;
+        f.write_all(data).map_err(|e| FsError::from_io(&e, path))
     }
 }
 
@@ -345,8 +371,20 @@ impl FsHandle {
         Self::new(Arc::new(RealFs), Arc::new(PathSandbox::new(roots)))
     }
 
-    fn check(&self, path: &str) -> Result<PathBuf, FsError> {
+    /// Sandbox-checked path admission.
+    ///
+    /// Exposed publicly so async ops can run the sandbox check on the
+    /// isolate thread (cheap, sync) before spawning the actual I/O on
+    /// a `tokio::fs` worker thread, keeping the JS thread non-blocked.
+    ///
+    /// # Errors
+    /// `EACCES` when `path` escapes any allowed root.
+    pub fn admit(&self, path: &str) -> Result<PathBuf, FsError> {
         self.sandbox.admit(Path::new(path))
+    }
+
+    fn check(&self, path: &str) -> Result<PathBuf, FsError> {
+        self.admit(path)
     }
 
     /// Sandbox-checked file read. Returns the bytes on success.
@@ -484,6 +522,37 @@ impl FsHandle {
             .realpath(&p)
             .inspect_err(|e| log_err("realpath", path, e))
     }
+
+    /// Sandbox-checked rename - both endpoints must be admissible.
+    ///
+    /// # Errors
+    /// `EACCES` when either endpoint escapes the sandbox; otherwise
+    /// propagates backend I/O failures.
+    pub fn rename(&self, from: &str, to: &str) -> Result<(), FsError> {
+        let src = self
+            .check(from)
+            .inspect_err(|e| log_err("rename_src", from, e))?;
+        let dst = self
+            .check(to)
+            .inspect_err(|e| log_err("rename_dst", to, e))?;
+        self.backend
+            .rename(&src, &dst)
+            .inspect_err(|e| log_err("rename", from, e))
+    }
+
+    /// Sandbox-checked append.
+    ///
+    /// # Errors
+    /// `EACCES` when `path` escapes the sandbox; otherwise propagates
+    /// backend I/O failures.
+    pub fn append(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
+        let p = self
+            .check(path)
+            .inspect_err(|e| log_err("append", path, e))?;
+        self.backend
+            .append(&p, data)
+            .inspect_err(|e| log_err("append", path, e))
+    }
 }
 
 /// In-memory [`FsBackend`] used by unit tests.
@@ -608,6 +677,23 @@ impl FsBackend for MemoryFs {
     fn realpath(&self, path: &Path) -> Result<PathBuf, FsError> {
         Ok(path.to_path_buf())
     }
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FsError> {
+        let mut map = self.inner.lock().expect("memfs lock");
+        let Some(data) = map.remove(from) else {
+            return Err(FsError::new(
+                "ENOENT",
+                format!("ENOENT: {}", from.display()),
+            ));
+        };
+        map.insert(to.to_path_buf(), data);
+        Ok(())
+    }
+    fn append(&self, path: &Path, data: &[u8]) -> Result<(), FsError> {
+        let mut map = self.inner.lock().expect("memfs lock");
+        let entry = map.entry(path.to_path_buf()).or_default();
+        entry.extend_from_slice(data);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -689,5 +775,44 @@ mod tests {
         let err = std::fs::read(dir.path().join("nope")).unwrap_err();
         let mapped = FsError::from_io(&err, dir.path());
         assert_eq!(mapped.code, "ENOENT");
+    }
+
+    #[test]
+    fn memory_fs_rename_moves_entry_atomically() {
+        let fs = MemoryFs::new();
+        fs.write(Path::new("/a.tmp"), b"payload").unwrap();
+        fs.rename(Path::new("/a.tmp"), Path::new("/a.final"))
+            .unwrap();
+        assert!(fs.read(Path::new("/a.tmp")).is_err());
+        assert_eq!(fs.read(Path::new("/a.final")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn memory_fs_append_creates_then_grows() {
+        let fs = MemoryFs::new();
+        fs.append(Path::new("/log.txt"), b"hello ").unwrap();
+        fs.append(Path::new("/log.txt"), b"world").unwrap();
+        assert_eq!(fs.read(Path::new("/log.txt")).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn real_fs_rename_replaces_target() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::write(&dst, b"y").unwrap();
+        RealFs.rename(&src, &dst).expect("rename");
+        assert!(!src.exists());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"x");
+    }
+
+    #[test]
+    fn real_fs_append_appends_to_existing_file() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let p = dir.path().join("a.txt");
+        RealFs.append(&p, b"hello ").expect("append");
+        RealFs.append(&p, b"world").expect("append");
+        assert_eq!(std::fs::read(&p).unwrap(), b"hello world");
     }
 }

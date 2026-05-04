@@ -16,6 +16,95 @@
 
   const meta = ops.op_process_meta();
 
+  const listeners = Object.create(null);
+  
+  function getList(event) {
+    return listeners[event] || (listeners[event] = []);
+  }
+  function on(event, fn) {
+    if (typeof fn !== "function") return process;
+    getList(event).push({ fn, once: false });
+    return process;
+  }
+  function once(event, fn) {
+    if (typeof fn !== "function") return process;
+    getList(event).push({ fn, once: true });
+    return process;
+  }
+  function off(event, fn) {
+    const list = listeners[event];
+    if (!list) return process;
+    listeners[event] = list.filter((e) => e.fn !== fn);
+    return process;
+  }
+  function removeAllListeners(event) {
+    if (event == null) {
+      for (const k of Object.keys(listeners)) delete listeners[k];
+    } else {
+      delete listeners[event];
+    }
+    return process;
+  }
+  function listenersFor(event) {
+    const list = listeners[event];
+    return list ? list.map((e) => e.fn) : [];
+  }
+  function listenerCount(event) {
+    const list = listeners[event];
+    return list ? list.length : 0;
+  }
+  function eventNames() { return Object.keys(listeners); }
+  function emit(event, ...args) {
+    const list = listeners[event];
+    if (!list || list.length === 0) return false;
+    // Snapshot + filter to support listener removal during dispatch.
+    const snapshot = list.slice();
+    listeners[event] = list.filter((e) => !e.once);
+    for (const entry of snapshot) {
+      try { entry.fn(...args); } catch (err) {
+        // Mirror Node's behaviour: emit 'uncaughtException' and fall
+        // back to stderr so a buggy SIGTERM handler doesn't poison
+        // every other listener.
+        const handlers = listeners["uncaughtException"];
+        if (handlers && handlers.length) {
+          for (const h of handlers.slice()) {
+            try { h.fn(err); } catch (_) { /* swallow */ }
+          }
+        } else {
+          Nexide.core.print(
+            `[nexide] uncaught in '${event}' handler: ${err && err.stack || err}\n`,
+            true,
+          );
+        }
+      }
+    }
+    return true;
+  }
+
+  // ── Pump signal queue ────────────────────────────────────────────
+  // The Rust side records SIGTERM/SIGINT/SIGHUP (Unix) into a
+  // process-wide queue; we drain it on a 100 ms cadence and emit on
+  // the EventEmitter above. Cadence is fixed - tighter polling burns
+  // CPU, slacker polling delays graceful drain inside K8s
+  // `terminationGracePeriodSeconds`.
+  let signalPumpStarted = false;
+  function startSignalPump() {
+    if (signalPumpStarted) return;
+    if (typeof ops.op_process_drain_signals !== "function") return;
+    if (typeof globalThis.setTimeout !== "function") return;
+    signalPumpStarted = true;
+    const tick = () => {
+      try {
+        const pending = ops.op_process_drain_signals();
+        if (pending && pending.length) {
+          for (const sig of pending) emit(sig, sig);
+        }
+      } catch (_) { /* op missing on minimal builds */ }
+      globalThis.setTimeout(tick, 100);
+    };
+    globalThis.setTimeout(tick, 100);
+  }
+
   const envHandler = {
     get(_target, prop) {
       if (typeof prop !== "string") return undefined;
@@ -51,6 +140,8 @@
   const env = new Proxy(Object.create(null), envHandler);
 
   const noopEmitter = () => process;
+
+  const _ = noopEmitter;
 
   const stdout = {
     write(chunk) {
@@ -245,6 +336,9 @@
       const n = Number(code);
       const safe = Number.isFinite(n) ? Math.trunc(n) : 0;
       const clamped = safe >= 0 && safe <= 255 ? safe : 1;
+      // Node fires 'exit' synchronously before the process tears down
+      // so DB pools, log flushers, etc. get a final chance to run.
+      try { emit("exit", clamped); } catch (_) { /* swallow */ }
       ops.op_process_exit(clamped);
     },
     abort,
@@ -257,21 +351,29 @@
     emitWarning(warning) {
       Nexide.core.print("(warning) " + String(warning) + "\n", true);
     },
-    on: noopEmitter,
-    once: noopEmitter,
-    off: noopEmitter,
-    addListener: noopEmitter,
-    removeListener: noopEmitter,
-    removeAllListeners: noopEmitter,
-    prependListener: noopEmitter,
-    prependOnceListener: noopEmitter,
-    listeners: emptyArray,
-    rawListeners: emptyArray,
-    listenerCount: () => 0,
-    eventNames: emptyArray,
+    on,
+    once,
+    off,
+    addListener: on,
+    removeListener: off,
+    removeAllListeners,
+    prependListener: (event, fn) => {
+      if (typeof fn !== "function") return process;
+      getList(event).unshift({ fn, once: false });
+      return process;
+    },
+    prependOnceListener: (event, fn) => {
+      if (typeof fn !== "function") return process;
+      getList(event).unshift({ fn, once: true });
+      return process;
+    },
+    listeners: listenersFor,
+    rawListeners: listenersFor,
+    listenerCount,
+    eventNames,
     setMaxListeners: () => process,
     getMaxListeners: () => 10,
-    emit: alwaysFalse,
+    emit,
     binding() {
       throw new Error("process.binding is not supported by nexide");
     },
@@ -369,6 +471,16 @@
   if (typeof globalThis.global === "undefined") {
     globalThis.global = globalThis;
   }
+
+  // Expose the signal-queue poller; late_globals.js arms it after the
+  // timers polyfill is in place.
+  Object.defineProperty(process, "__startSignalPump", {
+    value: startSignalPump,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  startSignalPump();
 
   if (!globalThis.__nexideErrorTrap) {
     const _origErr = globalThis.console.error;

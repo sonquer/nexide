@@ -1723,6 +1723,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2103,7 +2113,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexide"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2130,6 +2140,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "if-addrs",
  "image",
  "libc",
  "libloading",
@@ -2175,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-bench"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "anyhow",
  "bollard",
@@ -2195,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "nexide-e2e"
-version = "0.1.28"
+version = "0.1.29"
 dependencies = [
  "anyhow",
  "nexide",

@@ -1298,9 +1298,7 @@ fn find_unique_nested_app(root: &Path) -> Option<PathBuf> {
 }
 
 async fn wait_for_ctrl_c() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(%error, "failed to listen for ctrl-c");
-    }
+    crate::ops::bind_termination_signals().await;
 }
 
 /// Environment variable that injects V8 process-wide flags

@@ -19,6 +19,7 @@ mod process_spawn;
 mod queue;
 mod request;
 mod response;
+mod signals;
 mod tls;
 mod zlib_stream;
 
@@ -50,6 +51,7 @@ pub use process_spawn::{
     spawn as proc_spawn, wait as proc_wait, write_pipe as proc_write_pipe,
 };
 pub use queue::RequestQueue;
+pub use signals::{bind_termination_signals, drain as drain_signals, push as push_signal};
 pub use request::{
     HeaderPair, REQUEST_META_MAX_LEN, RequestMeta, RequestMetaError, RequestSlot, RequestSource,
 };

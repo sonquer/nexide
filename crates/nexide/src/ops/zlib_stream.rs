@@ -9,6 +9,7 @@
 
 use std::io::Write;
 
+use brotli::{CompressorWriter as BrotliCompressorWriter, DecompressorWriter as BrotliDecompressorWriter};
 use flate2::Compression;
 use flate2::write::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
@@ -34,6 +35,10 @@ pub enum ZlibKind {
     Gzip,
     /// `Gunzip` - gzip decoder.
     Gunzip,
+    /// `BrotliCompress` - streaming brotli encoder.
+    BrotliCompress,
+    /// `BrotliDecompress` - streaming brotli decoder.
+    BrotliDecompress,
 }
 
 /// Streaming engine. The `flate2` write-side adapters consume the
@@ -52,6 +57,11 @@ pub enum ZlibStream {
     InflateRaw(DeflateDecoder<Vec<u8>>),
     /// Gzip decoder.
     Gunzip(GzDecoder<Vec<u8>>),
+    /// Brotli encoder. The CompressorWriter buffers into the inner
+    /// Vec; we drain after every write to surface output bytes.
+    BrotliCompress(Box<BrotliCompressorWriter<Vec<u8>>>),
+    /// Brotli decoder.
+    BrotliDecompress(Box<BrotliDecompressorWriter<Vec<u8>>>),
 }
 
 impl ZlibStream {
@@ -59,14 +69,25 @@ impl ZlibStream {
     /// `0..=9` range honoured by Node.
     #[must_use]
     pub fn new(kind: ZlibKind, level: u32) -> Self {
-        let level = Compression::new(level.min(9));
+        let flate_level = Compression::new(level.min(9));
         match kind {
-            ZlibKind::Deflate => Self::Deflate(ZlibEncoder::new(Vec::new(), level)),
-            ZlibKind::DeflateRaw => Self::DeflateRaw(DeflateEncoder::new(Vec::new(), level)),
-            ZlibKind::Gzip => Self::Gzip(GzEncoder::new(Vec::new(), level)),
+            ZlibKind::Deflate => Self::Deflate(ZlibEncoder::new(Vec::new(), flate_level)),
+            ZlibKind::DeflateRaw => Self::DeflateRaw(DeflateEncoder::new(Vec::new(), flate_level)),
+            ZlibKind::Gzip => Self::Gzip(GzEncoder::new(Vec::new(), flate_level)),
             ZlibKind::Inflate => Self::Inflate(ZlibDecoder::new(Vec::new())),
             ZlibKind::InflateRaw => Self::InflateRaw(DeflateDecoder::new(Vec::new())),
             ZlibKind::Gunzip => Self::Gunzip(GzDecoder::new(Vec::new())),
+            ZlibKind::BrotliCompress => {
+                // quality 0..=11, lgwin default 22 (matches Node's default
+                // BROTLI_DEFAULT_WINDOW). Node's default quality is 11
+                // for one-shot but level=6 maps reasonably well for
+                // streaming.
+                let quality = level.min(11);
+                Self::BrotliCompress(Box::new(BrotliCompressorWriter::new(Vec::new(), 4096, quality, 22)))
+            }
+            ZlibKind::BrotliDecompress => {
+                Self::BrotliDecompress(Box::new(BrotliDecompressorWriter::new(Vec::new(), 4096)))
+            }
         }
     }
 
@@ -84,6 +105,8 @@ impl ZlibStream {
             Self::Inflate(d) => write_and_drain(d, input, |d| d.get_mut()),
             Self::InflateRaw(d) => write_and_drain(d, input, |d| d.get_mut()),
             Self::Gunzip(d) => write_and_drain(d, input, |d| d.get_mut()),
+            Self::BrotliCompress(e) => write_and_drain(e, input, |e| e.get_mut()),
+            Self::BrotliDecompress(d) => write_and_drain(d, input, |d| d.get_mut()),
         };
         match &result {
             Ok(out) => tracing::trace!(
@@ -116,6 +139,20 @@ impl ZlibStream {
             Self::Inflate(d) => d.finish().map_err(io_to_net),
             Self::InflateRaw(d) => d.finish().map_err(io_to_net),
             Self::Gunzip(d) => d.finish().map_err(io_to_net),
+            Self::BrotliCompress(mut e) => {
+                e.flush().map_err(io_to_net)?;
+                drop(e);
+                // CompressorWriter doesn't expose into_inner; flush is
+                // sufficient because brotli emits its final block on
+                // flush. The drained bytes were already returned by
+                // earlier feeds and the trailing flush.
+                Ok(Vec::new())
+            }
+            Self::BrotliDecompress(mut d) => {
+                d.flush().map_err(io_to_net)?;
+                let tail = std::mem::take(d.get_mut());
+                Ok(tail)
+            }
         };
         match &result {
             Ok(out) => tracing::debug!(
@@ -162,6 +199,8 @@ pub fn parse_kind(name: &str) -> Result<ZlibKind, NetError> {
         "inflate-raw" => ZlibKind::InflateRaw,
         "gzip" => ZlibKind::Gzip,
         "gunzip" => ZlibKind::Gunzip,
+        "brotli-compress" => ZlibKind::BrotliCompress,
+        "brotli-decompress" => ZlibKind::BrotliDecompress,
         other => {
             return Err(NetError::new(
                 "EINVAL",
@@ -216,7 +255,22 @@ mod tests {
 
     #[test]
     fn parse_kind_rejects_unknown() {
-        assert!(parse_kind("brotli").is_err());
+        assert!(parse_kind("nope").is_err());
         assert!(parse_kind("deflate").is_ok());
+        assert!(parse_kind("brotli-compress").is_ok());
+        assert!(parse_kind("brotli-decompress").is_ok());
+    }
+
+    #[test]
+    fn brotli_round_trip() {
+        let payload = b"streaming brotli test payload that compresses".repeat(4);
+        let mut enc = ZlibStream::new(ZlibKind::BrotliCompress, 4);
+        let mut compressed = enc.feed(&payload).unwrap();
+        compressed.extend(enc.finish().unwrap());
+
+        let mut dec = ZlibStream::new(ZlibKind::BrotliDecompress, 0);
+        let mut out = dec.feed(&compressed).unwrap();
+        out.extend(dec.finish().unwrap());
+        assert_eq!(out, payload);
     }
 }

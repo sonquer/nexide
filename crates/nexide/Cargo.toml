@@ -76,6 +76,7 @@ reqwest = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "rayon"] }
 fast_image_resize = { version = "5", features = ["image"] }
 url = "2"
+if-addrs = "0.13"
 base64 = "0.22"
 parking_lot = "0.12"
 rayon = "1.10"

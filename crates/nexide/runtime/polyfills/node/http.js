@@ -354,6 +354,27 @@ class Server extends EventEmitter {
       const req = new IncomingMessage(synthReq);
       const res = new ServerResponse(synthRes);
       res.req = req;
+      const upgradeHeader = req.headers && req.headers.upgrade;
+      if (upgradeHeader) {
+        const upgradeListeners = this.listeners("upgrade");
+        if (upgradeListeners.length > 0) {
+          for (const fn of upgradeListeners) {
+            try { fn(req, null, Buffer.alloc(0)); } catch (e) { this.emit("error", e); }
+          }
+          if (!res._ended && !res._destroyed) {
+            res.statusCode = 501;
+            res.setHeader("Connection", "close");
+            res.end("Upgrade not supported by this nexide build");
+          }
+          return Promise.resolve();
+        }
+        if (this.listenerCount("request") === 0) {
+          res.statusCode = 501;
+          res.setHeader("Connection", "close");
+          res.end("Upgrade not supported by this nexide build");
+          return Promise.resolve();
+        }
+      }
       const listeners = this.listeners("request");
       const pending = [];
       for (const fn of listeners) {

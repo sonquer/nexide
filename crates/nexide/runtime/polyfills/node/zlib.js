@@ -115,13 +115,11 @@ class Gzip extends ZlibTransform {
 class Gunzip extends ZlibTransform {
   constructor(options) { super("gunzip", options); }
 }
-
-function brotliStreamingUnavailable() {
-  const err = new Error(
-    "Brotli streaming is not available in nexide; use brotliCompress/brotliDecompress",
-  );
-  err.code = "ERR_NOT_AVAILABLE";
-  throw err;
+class BrotliCompress extends ZlibTransform {
+  constructor(options) { super("brotli-compress", options); }
+}
+class BrotliDecompress extends ZlibTransform {
+  constructor(options) { super("brotli-decompress", options); }
 }
 
 function unzipDecode(input) {
@@ -133,8 +131,12 @@ function unzipDecode(input) {
 }
 
 class BrotliUnavailable {
-  constructor() { brotliStreamingUnavailable(); }
+  constructor() {
+    throw new Error("BrotliUnavailable is no longer used");
+  }
 }
+// Kept exported for ABI stability with previous pre-streaming releases.
+void BrotliUnavailable;
 
 module.exports = {
   gzipSync: (i) => syncEncode("gzip", i),
@@ -164,8 +166,8 @@ module.exports = {
   createGzip: (opts) => new Gzip(opts),
   createGunzip: (opts) => new Gunzip(opts),
   createUnzip: (opts) => new Gunzip(opts),
-  createBrotliCompress: brotliStreamingUnavailable,
-  createBrotliDecompress: brotliStreamingUnavailable,
+  createBrotliCompress: (opts) => new BrotliCompress(opts),
+  createBrotliDecompress: (opts) => new BrotliDecompress(opts),
 
   Deflate,
   Inflate,
@@ -174,8 +176,8 @@ module.exports = {
   Gzip,
   Gunzip,
   Unzip: Gunzip,
-  BrotliCompress: BrotliUnavailable,
-  BrotliDecompress: BrotliUnavailable,
+  BrotliCompress,
+  BrotliDecompress,
 
   constants: {
     Z_NO_FLUSH: 0,

@@ -1,15 +1,43 @@
 "use strict";
 
-// node:url - self-contained legacy `url` API plus a minimal
-// WHATWG-ish URL/URLSearchParams shim. The bare V8 isolate that
-// nexide boots does not install the WHATWG URL globals, so this
-// module ships the minimum surface that covers the request shapes
-// exercised by Next.js standalone.
+// node:url - self-contained legacy `url` API plus a WHATWG URL/
+// URLSearchParams shim. The bare V8 isolate that nexide boots does
+// not install the WHATWG URL globals, so this module ships the
+// minimum surface that covers the request shapes exercised by
+// Next.js standalone. When the host exposes `op_url_parse` the
+// shim delegates to the Rust `url` crate (full WHATWG: IPv6 hosts,
+// IDN, percent normalisation, special vs opaque schemes, …) and
+// falls back to the in-process regex parser otherwise.
 
+const ops = (typeof Nexide !== "undefined" && Nexide.core && Nexide.core.ops) || {};
 const URL_REGEX = /^([a-z][a-z0-9+\-.]*:)?(?:\/\/((?:([^/?#@]*)@)?([^/?#:]*)(?::(\d+))?))?([^?#]*)(\?[^#]*)?(#.*)?$/i;
+
+function rustParse(input, base) {
+  if (typeof ops.op_url_parse !== "function") return null;
+  const arr = ops.op_url_parse(String(input), base === undefined ? null : String(base));
+  if (!arr) return null;
+  return {
+    href: arr[0], protocol: arr[1], username: arr[2], password: arr[3],
+    hostname: arr[4] === null ? "" : arr[4], port: arr[5],
+    pathname: arr[6], search: arr[7], hash: arr[8], origin: arr[9],
+  };
+}
 
 class NexideURL {
   constructor(input, base) {
+    const r = rustParse(input, base);
+    if (r) {
+      this.protocol = r.protocol;
+      this.username = r.username;
+      this.password = r.password;
+      this.hostname = r.hostname;
+      this.port = r.port;
+      this.pathname = r.pathname;
+      this.search = r.search;
+      this.hash = r.hash;
+      this._origin = r.origin;
+      return;
+    }
     let str = String(input);
     if (base !== undefined) {
       str = resolveAgainst(String(base), str);
@@ -28,11 +56,19 @@ class NexideURL {
     this.pathname = m[6] || (this.hostname ? "/" : "");
     this.search = m[7] || "";
     this.hash = m[8] || "";
+    this._origin = null;
+  }
+  static canParse(input, base) {
+    if (typeof ops.op_url_can_parse === "function") {
+      return ops.op_url_can_parse(String(input), base === undefined ? null : String(base));
+    }
+    try { new NexideURL(input, base); return true; } catch { return false; }
   }
   get host() {
     return this.port ? `${this.hostname}:${this.port}` : this.hostname;
   }
   get origin() {
+    if (this._origin !== null && this._origin !== undefined) return this._origin;
     return this.hostname ? `${this.protocol}//${this.host}` : "null";
   }
   get href() {

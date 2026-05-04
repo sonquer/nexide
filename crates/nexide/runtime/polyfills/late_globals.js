@@ -41,5 +41,10 @@
         }
       }
     } catch { }
+    try {
+      if (globalThis.process && typeof globalThis.process.__startSignalPump === "function") {
+        globalThis.process.__startSignalPump();
+      }
+    } catch { }
   }
 })();

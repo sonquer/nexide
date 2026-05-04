@@ -1,10 +1,25 @@
 "use strict";
 
-// node:stream - minimal Readable/Writable/Duplex/Transform/PassThrough
-// implementation sufficient for the surface Next.js standalone uses
-// (mostly Readable.from + pipeline + finished + simple piping).
+// node:stream - Readable/Writable/Duplex/Transform/PassThrough plus
+// Web Streams interop and a working high-water-mark / cork model.
+//
+// Coverage was extended to the surface Next.js App Router streaming
+// SSR uses: `Readable.toWeb` / `Readable.fromWeb` (so the route
+// handler can return a `ReadableStream` to `axum`),
+// `writableHighWaterMark` / backpressure on Writable so a slow client
+// doesn't grow the buffer unbounded, and `cork` / `uncork` so
+// renderers that batch many small writes don't emit a per-byte event.
 
 const EventEmitter = require("node:events");
+
+const DEFAULT_HWM = 16 * 1024;
+
+function chunkLen(c) {
+  if (c == null) return 0;
+  if (typeof c === "string") return c.length;
+  if (typeof c.byteLength === "number") return c.byteLength;
+  return 0;
+}
 
 class Readable extends EventEmitter {
   constructor(opts = {}) {
@@ -16,9 +31,16 @@ class Readable extends EventEmitter {
     this._destroyed = false;
     this._readImpl = opts.read;
     this._encoding = null;
+    this._highWaterMark = typeof opts.highWaterMark === "number"
+      ? opts.highWaterMark : DEFAULT_HWM;
+    this._bufferedBytes = 0;
   }
-  static from(iterable) {
-    const r = new Readable();
+  get readableHighWaterMark() { return this._highWaterMark; }
+  get readableLength() { return this._bufferedBytes; }
+  get readableEnded() { return this._ended && this._buffer.length === 0; }
+  get destroyed() { return this._destroyed; }
+  static from(iterable, opts) {
+    const r = new Readable(opts);
     (async () => {
       try {
         for await (const chunk of iterable) {
@@ -28,6 +50,40 @@ class Readable extends EventEmitter {
       } catch (err) {
         r.destroy(err);
       }
+    })();
+    return r;
+  }
+  // Web Streams interop -----------------------------------------------
+  static toWeb(node) {
+    return new globalThis.ReadableStream({
+      start(controller) {
+        node.on("data", (chunk) => {
+          try {
+            const buf = typeof chunk === "string"
+              ? new TextEncoder().encode(chunk)
+              : (chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+            controller.enqueue(buf);
+          } catch (err) { controller.error(err); }
+        });
+        node.once("end", () => { try { controller.close(); } catch (_) {} });
+        node.once("error", (err) => { try { controller.error(err); } catch (_) {} });
+      },
+      cancel(reason) { try { node.destroy(reason); } catch (_) {} },
+    });
+  }
+  static fromWeb(web, opts) {
+    const r = new Readable(opts);
+    (async () => {
+      const reader = web.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          r.push(value);
+        }
+        r.push(null);
+      } catch (err) { r.destroy(err); }
+      finally { try { reader.releaseLock(); } catch (_) {} }
     })();
     return r;
   }
@@ -49,12 +105,20 @@ class Readable extends EventEmitter {
   push(chunk) {
     if (chunk === null) { this._ended = true; this.emit("end"); return false; }
     this._buffer.push(chunk);
+    this._bufferedBytes += chunkLen(chunk);
     this.emit("data", chunk);
-    return true;
+    return this._bufferedBytes < this._highWaterMark;
+  }
+  unshift(chunk) {
+    if (chunk == null) return;
+    this._buffer.unshift(chunk);
+    this._bufferedBytes += chunkLen(chunk);
   }
   read() {
     if (this._buffer.length === 0) return null;
-    return this._buffer.shift();
+    const chunk = this._buffer.shift();
+    this._bufferedBytes -= chunkLen(chunk);
+    return chunk;
   }
   resume() {
     if (this._destroyed) return this;
@@ -62,6 +126,7 @@ class Readable extends EventEmitter {
     if (this._buffer.length) {
       const replay = this._buffer.slice();
       this._buffer = [];
+      this._bufferedBytes = 0;
       queueMicrotask(() => {
         for (const chunk of replay) this.emit("data", chunk);
         if (this._ended) this.emit("end");
@@ -82,6 +147,7 @@ class Readable extends EventEmitter {
     if (this._buffer.length) {
       const replay = this._buffer.slice();
       this._buffer = [];
+      this._bufferedBytes = 0;
       queueMicrotask(() => {
         for (const chunk of replay) dest.write(chunk);
         if (this._ended) dest.end();
@@ -105,13 +171,19 @@ class Readable extends EventEmitter {
     const self = this;
     return {
       async next() {
-        if (self._buffer.length) return { value: self._buffer.shift(), done: false };
+        if (self._buffer.length) {
+          const c = self._buffer.shift();
+          self._bufferedBytes -= chunkLen(c);
+          return { value: c, done: false };
+        }
         if (self._ended) return { value: undefined, done: true };
         return new Promise((resolve, reject) => {
           const onData = () => {
             if (!self._buffer.length) return;
             cleanup();
-            resolve({ value: self._buffer.shift(), done: false });
+            const c = self._buffer.shift();
+            self._bufferedBytes -= chunkLen(c);
+            resolve({ value: c, done: false });
           };
           const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
           const onErr = (err) => { cleanup(); reject(err); };
@@ -136,7 +208,58 @@ class Writable extends EventEmitter {
     this._chunks = [];
     this._ended = false;
     this._writeImpl = opts.write;
+    this._writevImpl = opts.writev;
     this._finalImpl = opts.final;
+    this._highWaterMark = typeof opts.highWaterMark === "number"
+      ? opts.highWaterMark : DEFAULT_HWM;
+    this._bufferedBytes = 0;
+    this._corkCount = 0;
+    this._corkBuffer = [];
+    this._needDrain = false;
+  }
+  get writableHighWaterMark() { return this._highWaterMark; }
+  get writableLength() { return this._bufferedBytes; }
+  get writableEnded() { return this._ended; }
+  get writableFinished() { return this._ended && this._bufferedBytes === 0; }
+  cork() { this._corkCount++; }
+  uncork() {
+    if (this._corkCount === 0) return;
+    this._corkCount--;
+    if (this._corkCount === 0 && this._corkBuffer.length) {
+      const drained = this._corkBuffer.splice(0);
+      if (this._writevImpl) {
+        this._writevImpl(
+          drained.map(([chunk, encoding]) => ({ chunk, encoding })),
+          (err) => {
+            for (const [, , cb] of drained) {
+              if (cb) cb(err);
+            }
+          },
+        );
+      } else {
+        for (const [chunk, encoding, cb] of drained) {
+          this._doWrite(chunk, encoding, cb);
+        }
+      }
+    }
+  }
+  _doWrite(chunk, encoding, cb) {
+    const len = chunkLen(chunk);
+    this._bufferedBytes += len;
+    const done = (err) => {
+      this._bufferedBytes = Math.max(0, this._bufferedBytes - len);
+      if (cb) cb(err);
+      if (this._needDrain && this._bufferedBytes < this._highWaterMark) {
+        this._needDrain = false;
+        this.emit("drain");
+      }
+    };
+    if (this._writeImpl) {
+      this._writeImpl(chunk, encoding, done);
+    } else {
+      this._chunks.push(chunk);
+      done();
+    }
   }
   write(chunk, encoding, cb) {
     if (typeof encoding === "function") { cb = encoding; encoding = undefined; }
@@ -145,17 +268,25 @@ class Writable extends EventEmitter {
       if (cb) cb(err); else this.emit("error", err);
       return false;
     }
-    this._chunks.push(chunk);
-    if (this._writeImpl) {
-      this._writeImpl(chunk, encoding, cb || (() => {}));
-    } else if (cb) {
-      cb();
+    if (this._corkCount > 0) {
+      this._corkBuffer.push([chunk, encoding, cb]);
+      this._bufferedBytes += chunkLen(chunk);
+    } else {
+      this._doWrite(chunk, encoding, cb);
     }
-    return true;
+    const ok = this._bufferedBytes < this._highWaterMark;
+    if (!ok) this._needDrain = true;
+    return ok;
   }
   end(chunk, encoding, cb) {
     if (typeof chunk === "function") { cb = chunk; chunk = undefined; }
+    if (typeof encoding === "function") { cb = encoding; encoding = undefined; }
     if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+    if (this._corkCount > 0) {
+      // Implicit uncork on end so a forgotten uncork doesn't deadlock.
+      this._corkCount = 1;
+      this.uncork();
+    }
     this._ended = true;
     const finish = () => { this.emit("finish"); if (cb) cb(); };
     if (this._finalImpl) this._finalImpl(finish); else finish();
@@ -166,6 +297,33 @@ class Writable extends EventEmitter {
     this.emit("close");
     return this;
   }
+  // Web Streams interop -----------------------------------------------
+  static toWeb(node) {
+    return new globalThis.WritableStream({
+      write(chunk) {
+        return new Promise((resolve, reject) => {
+          const ok = node.write(chunk, undefined, (err) => err ? reject(err) : resolve());
+          if (ok && !node._writeImpl) resolve();
+        });
+      },
+      close() {
+        return new Promise((resolve) => node.end(undefined, undefined, resolve));
+      },
+      abort(reason) { try { node.destroy(reason); } catch (_) {} },
+    });
+  }
+  static fromWeb(web, opts) {
+    const writer = web.getWriter();
+    return new Writable({
+      ...opts,
+      write(chunk, _enc, cb) {
+        writer.write(chunk).then(() => cb && cb(), (err) => cb && cb(err));
+      },
+      final(cb) {
+        writer.close().then(() => cb && cb(), (err) => cb && cb(err));
+      },
+    });
+  }
 }
 
 class Duplex extends Readable {
@@ -175,12 +333,17 @@ class Duplex extends Readable {
   }
   write(chunk, encoding, cb) { return this._writableInner.write(chunk, encoding, cb); }
   end(...args) { return this._writableInner.end(...args); }
+  cork() { return this._writableInner.cork(); }
+  uncork() { return this._writableInner.uncork(); }
+  get writableHighWaterMark() { return this._writableInner._highWaterMark; }
+  get writableLength() { return this._writableInner._bufferedBytes; }
 }
 
 class Transform extends Duplex {
   constructor(opts = {}) {
     super(opts);
     this._transform = opts.transform;
+    this._flush = opts.flush;
   }
   write(chunk, encoding, cb) {
     const done = (err, transformed) => {
@@ -191,6 +354,27 @@ class Transform extends Duplex {
     if (this._transform) this._transform(chunk, encoding, done);
     else done(null, chunk);
     return true;
+  }
+  end(chunk, encoding, cb) {
+    if (typeof chunk === "function") { cb = chunk; chunk = undefined; }
+    if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
+    const finalize = () => {
+      if (this._flush) {
+        this._flush((err, tail) => {
+          if (err) { this.emit("error", err); return; }
+          if (tail !== undefined && tail !== null) this.push(tail);
+          this.push(null);
+          this.emit("finish");
+          if (cb) cb();
+        });
+      } else {
+        this.push(null);
+        this.emit("finish");
+        if (cb) cb();
+      }
+    };
+    queueMicrotask(finalize);
+    return this;
   }
 }
 
@@ -236,6 +420,22 @@ function finished(stream, cb) {
   return undefined;
 }
 
+function addAbortSignal(signal, stream) {
+  if (!signal) return stream;
+  const onAbort = () => {
+    const err = new Error("The operation was aborted");
+    err.code = "ABORT_ERR";
+    err.name = "AbortError";
+    try { stream.destroy(err); } catch (_) {}
+  };
+  if (signal.aborted) {
+    queueMicrotask(onAbort);
+  } else if (typeof signal.addEventListener === "function") {
+    signal.addEventListener("abort", onAbort, { once: true });
+  }
+  return stream;
+}
+
 class Stream extends EventEmitter {
   pipe(dest) { this.on("data", (c) => dest.write && dest.write(c)); this.on("end", () => dest.end && dest.end()); return dest; }
 }
@@ -249,5 +449,6 @@ stream.Transform = Transform;
 stream.PassThrough = PassThrough;
 stream.pipeline = pipeline;
 stream.finished = finished;
+stream.addAbortSignal = addAbortSignal;
 stream.default = stream;
 module.exports = stream;
