@@ -24,6 +24,8 @@ use crate::ops::{
     ResponsePayload, WorkerId,
 };
 
+const LOG_TARGET: &str = "nexide::engine::v8";
+
 static V8_INIT: Once = Once::new();
 
 #[repr(C, align(16))]
@@ -70,6 +72,7 @@ pub struct BootContext {
     fs: Option<FsHandle>,
     cjs: Option<std::sync::Arc<dyn crate::engine::cjs::CjsResolver>>,
     cjs_root: Option<String>,
+    code_cache: Option<crate::engine::code_cache::CodeCache>,
 }
 
 impl BootContext {
@@ -123,6 +126,15 @@ impl BootContext {
         self.cjs_root = Some(root.into());
         self
     }
+
+    /// Installs a persistent V8 bytecode cache shared across every
+    /// compile site that opts in (see
+    /// [`crate::engine::code_cache::CodeCache`]).
+    #[must_use]
+    pub fn with_code_cache(mut self, cache: crate::engine::code_cache::CodeCache) -> Self {
+        self.code_cache = Some(cache);
+        self
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -168,6 +180,15 @@ impl V8Engine {
                 path: entrypoint.to_path_buf(),
             })?;
 
+        let worker_id = ctx.worker_id.unwrap_or_else(|| WorkerId::new(0, true));
+        tracing::debug!(
+            target: LOG_TARGET,
+            worker = worker_id.id,
+            primary = worker_id.is_primary,
+            entry = %entry_path.display(),
+            "v8 isolate boot starting",
+        );
+
         let heap_limit = ctx.heap_limit.unwrap_or_default();
         let create_params = heap_limit.to_create_params();
         let mut isolate = v8::Isolate::new(create_params);
@@ -178,7 +199,7 @@ impl V8Engine {
         let bridge = BridgeState {
             queue: Rc::new(RequestQueue::new()),
             dispatch_table: DispatchTable::default(),
-            worker_id: ctx.worker_id.unwrap_or_else(|| WorkerId::new(0, true)),
+            worker_id,
             process: ctx.process,
             env_overlay: crate::ops::EnvOverlay::default(),
             fs: ctx.fs,
@@ -204,6 +225,11 @@ impl V8Engine {
         };
         isolate.set_slot(BridgeStateHandle::new(bridge));
         isolate.set_slot(ModuleMap::new());
+        isolate.set_slot(
+            ctx.code_cache
+                .unwrap_or_else(crate::engine::code_cache::CodeCache::disabled),
+        );
+        isolate.set_host_import_module_dynamically_callback(host_import_module_dynamically);
 
         let context_global = {
             v8::scope!(let scope, &mut isolate);
@@ -233,10 +259,21 @@ impl V8Engine {
                 load_and_run_entrypoint(scope_cs, &entry_path)?;
             }
 
+            run_eden_warmup(scope_cs)?;
+
             v8::Global::new(scope_cs, context)
         };
 
         let stats = capture_heap_stats(&mut isolate);
+
+        tracing::debug!(
+            target: LOG_TARGET,
+            worker = worker_id.id,
+            entry = %entry_path.display(),
+            heap_used = stats.used_heap_size,
+            heap_total = stats.total_heap_size,
+            "v8 isolate boot complete",
+        );
 
         Ok(Self {
             isolate,
@@ -291,6 +328,30 @@ impl V8Engine {
         rx
     }
 
+    /// Streaming variant of [`Self::enqueue_with`]: pushes the request
+    /// and immediately attaches the supplied [`crate::ops::StreamTaps`]
+    /// so that subsequent `send_head`/`send_chunk` ops fire the head
+    /// oneshot and forward chunks to the body channel as they arrive.
+    pub fn enqueue_streaming(
+        &self,
+        slot: RequestSlot,
+        completion: oneshot::Sender<Result<ResponsePayload, RequestFailure>>,
+        taps: crate::ops::StreamTaps,
+    ) -> RequestId {
+        let handle = self
+            .isolate
+            .get_slot::<BridgeStateHandle>()
+            .cloned()
+            .expect("bridge state must be installed");
+        let mut state = handle.0.borrow_mut();
+        let id = state.dispatch_table.insert(slot, completion);
+        if let Ok(inflight) = state.dispatch_table.get_mut(id) {
+            inflight.attach_taps(taps);
+        }
+        state.queue.push(id);
+        id
+    }
+
     /// Drains the dispatch table, failing every in-flight request
     /// with `RequestFailure::PumpDied(reason)`.
     pub fn fail_inflight(&self, reason: &str) {
@@ -320,11 +381,25 @@ impl V8Engine {
 
     /// Evaluates a classic script in the engine's main realm.
     pub fn execute(&mut self, name: &str, source: &str) -> Result<(), EngineError> {
+        tracing::trace!(
+            target: LOG_TARGET,
+            script = name,
+            bytes = source.len(),
+            "execute classic script",
+        );
         let context = self.context.clone();
         v8::scope!(let scope, &mut self.isolate);
         let context = v8::Local::new(scope, context);
         let scope_cs = &mut v8::ContextScope::new(scope, context);
-        eval_script(scope_cs, name, source)
+        eval_script(scope_cs, name, source).map_err(|e| {
+            tracing::warn!(
+                target: LOG_TARGET,
+                script = name,
+                error = %e,
+                "classic script failed",
+            );
+            e
+        })
     }
 
     /// Returns `true` when no requests are queued and there are no
@@ -380,6 +455,31 @@ impl V8Engine {
         self.isolate.perform_microtask_checkpoint();
         self.last_stats = capture_heap_stats(&mut self.isolate);
     }
+
+    /// Hints V8 that the host is under memory pressure so the isolate
+    /// should give back as much heap as it can right now.
+    ///
+    /// Calls
+    /// `v8::Isolate::MemoryPressureNotification(MemoryPressureLevel::Critical)`
+    /// which triggers a major GC and asks V8 to release reclaimed
+    /// pages back to the OS - the only way for an idle Node-style
+    /// isolate to drop its working-set RSS below the high-water mark
+    /// reached during peak traffic. Combined with jemalloc decay (or
+    /// `malloc_trim` on glibc), this lets a long-idle worker shrink
+    /// from `100-150` MiB back down to the cold-boot baseline
+    /// (~`30-40` MiB) without restarting the isolate.
+    ///
+    /// Cheap to call (one virtual call into V8 + one major GC pause
+    /// of `~5-30` ms depending on heap size). The caller is
+    /// responsible for rate-limiting; the typical pattern is to
+    /// invoke this once after the dispatch queue has been empty for
+    /// `NEXIDE_IDLE_GC_MS` (default `30_000` ms - see
+    /// [`run_pump`](crate::pool::engine_pump) for the exact wiring).
+    pub fn notify_low_memory(&mut self) {
+        self.isolate
+            .memory_pressure_notification(v8::MemoryPressureLevel::Critical);
+        self.last_stats = capture_heap_stats(&mut self.isolate);
+    }
 }
 
 fn drain_napi_work<'s>(
@@ -431,6 +531,23 @@ fn run_polyfill_bootstrap<'s>(scope: &mut v8::PinScope<'s, '_>) -> Result<(), En
     Ok(())
 }
 
+const EDEN_WARMUP_SCRIPT: &str = r#"(function nexideEdenWarmup() {
+    let buf = [];
+    const target = 4096;
+    for (let i = 0; i < target; i++) {
+        buf.push({ k: 'wm-' + i, v: new Array(64).fill(i) });
+    }
+    buf = null;
+})();"#;
+
+fn run_eden_warmup<'s>(scope: &mut v8::PinScope<'s, '_>) -> Result<(), EngineError> {
+    if std::env::var("NEXIDE_DISABLE_EDEN_WARMUP").is_ok() {
+        return Ok(());
+    }
+    eval_script(scope, "[nexide:eden-warmup]", EDEN_WARMUP_SCRIPT)?;
+    Ok(())
+}
+
 fn eval_script<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     name: &str,
@@ -472,7 +589,7 @@ fn eval_script<'s>(
     Ok(())
 }
 
-fn load_and_run_entrypoint<'s>(
+pub(super) fn load_and_run_entrypoint<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     entry: &Path,
 ) -> Result<(), EngineError> {
@@ -506,7 +623,7 @@ fn load_and_run_entrypoint<'s>(
     Ok(())
 }
 
-fn compile_module<'s>(
+pub(super) fn compile_module<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     path: &Path,
 ) -> Result<v8::Local<'s, v8::Module>, EngineError> {
@@ -531,12 +648,43 @@ fn compile_module<'s>(
         true,
         None,
     );
-    let mut source = v8::script_compiler::Source::new(code, Some(&origin));
-    let module = v8::script_compiler::compile_module(scope, &mut source).ok_or_else(|| {
-        EngineError::JsRuntime {
-            message: format!("compile failed for {}", path.display()),
+
+    let cache = code_cache_from_isolate(scope);
+    let cached_bytes = cache
+        .as_ref()
+        .filter(|c| c.is_enabled())
+        .and_then(|c| c.lookup(&source_text));
+
+    let (mut source, options) = match cached_bytes {
+        Some(bytes) => {
+            let cached = v8::script_compiler::CachedData::new(&bytes);
+            (
+                v8::script_compiler::Source::new_with_cached_data(code, Some(&origin), cached),
+                v8::script_compiler::CompileOptions::ConsumeCodeCache,
+            )
         }
+        None => (
+            v8::script_compiler::Source::new(code, Some(&origin)),
+            v8::script_compiler::CompileOptions::NoCompileOptions,
+        ),
+    };
+
+    let module = v8::script_compiler::compile_module2(
+        scope,
+        &mut source,
+        options,
+        v8::script_compiler::NoCacheReason::NoReason,
+    )
+    .ok_or_else(|| EngineError::JsRuntime {
+        message: format!("compile failed for {}", path.display()),
     })?;
+
+    let fresh_blob = module
+        .get_unbound_module_script(scope)
+        .create_code_cache()
+        .map(|cd| cd.to_vec());
+
+    finalise_cache_after_compile(cache.as_ref(), &source, &source_text, options, fresh_blob);
 
     let hash = module.get_identity_hash().get();
     let module_global = v8::Global::new(scope, module);
@@ -546,13 +694,57 @@ fn compile_module<'s>(
     Ok(module)
 }
 
+/// Returns the [`code_cache::CodeCache`] attached to `isolate`, or
+/// `None` when no cache slot has been installed (e.g. in unit tests
+/// that bypass [`V8Engine::boot_internal`]).
+pub(super) fn code_cache_from_isolate<'s>(
+    scope: &v8::PinScope<'s, '_>,
+) -> Option<crate::engine::code_cache::CodeCache> {
+    scope
+        .get_slot::<crate::engine::code_cache::CodeCache>()
+        .cloned()
+}
+
+fn finalise_cache_after_compile(
+    cache: Option<&crate::engine::code_cache::CodeCache>,
+    source_obj: &v8::script_compiler::Source,
+    source_text: &str,
+    options: v8::script_compiler::CompileOptions,
+    fresh_blob: Option<Vec<u8>>,
+) {
+    let Some(cache) = cache else { return };
+    if !cache.is_enabled() {
+        return;
+    }
+
+    let consumed = options.contains(v8::script_compiler::CompileOptions::ConsumeCodeCache);
+    let rejected = source_obj
+        .get_cached_data()
+        .map(v8::CachedData::rejected)
+        .unwrap_or(false);
+
+    if consumed && !rejected {
+        return;
+    }
+
+    if consumed && rejected {
+        cache.metrics().record_reject();
+    }
+
+    if let Some(blob) = fresh_blob.filter(|b| !b.is_empty()) {
+        cache.store(source_text, blob);
+    }
+}
+
 /// Returns `Some(&mut ModuleMap)` from the isolate's slot store.
-fn get_module_map_mut<'s, 'a>(scope: &'a mut v8::PinScope<'s, '_>) -> Option<&'a mut ModuleMap> {
+pub(super) fn get_module_map_mut<'s, 'a>(
+    scope: &'a mut v8::PinScope<'s, '_>,
+) -> Option<&'a mut ModuleMap> {
     scope.get_slot_mut::<ModuleMap>()
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn resolve_module_callback<'s>(
+pub(super) fn resolve_module_callback<'s>(
     context: v8::Local<'s, v8::Context>,
     specifier: v8::Local<'s, v8::String>,
     _import_attributes: v8::Local<'s, v8::FixedArray>,
@@ -562,6 +754,21 @@ fn resolve_module_callback<'s>(
 
     let specifier_str = specifier.to_rust_string_lossy(scope);
     let referrer_hash = referrer.get_identity_hash().get();
+
+    // Fast path: ESM loader pre-resolved this dependency and stored
+    // the absolute key path in the module map.
+    let resolved_key: Option<PathBuf> = scope.get_slot::<ModuleMap>().and_then(|m| {
+        m.lookup_resolution(referrer_hash, &specifier_str)
+            .map(Path::to_path_buf)
+    });
+    if let Some(key) = resolved_key {
+        let cached: Option<v8::Global<v8::Module>> = scope
+            .get_slot::<ModuleMap>()
+            .and_then(|m: &ModuleMap| m.get(&key).cloned());
+        if let Some(g) = cached {
+            return Some(v8::Local::new(scope, &g));
+        }
+    }
 
     let parent_path: Option<PathBuf> = scope
         .get_slot::<ModuleMap>()
@@ -590,10 +797,45 @@ fn resolve_module_callback<'s>(
     }
 }
 
-fn throw_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
+pub(super) fn throw_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
     let msg = v8::String::new(scope, message).unwrap();
     let exc = v8::Exception::error(scope, msg);
     scope.throw_exception(exc);
+}
+
+/// V8 host hook for `import(specifier)` expressions. Bridges to the
+/// real ESM loader in [`super::esm`] which:
+///
+/// * resolves the specifier with ESM conditions,
+/// * compiles + instantiates real `.mjs` graphs,
+/// * wraps any CJS dependency as a synthetic V8 module (default
+///   export = `module.exports`),
+/// * settles the returned promise with the module namespace once the
+///   evaluate promise (top-level await aware) fulfils.
+///
+/// CJS-only callers fall through to `__nexideCjs.dynamicImport` via
+/// the `op_esm_dynamic_import` op the JS shim invokes.
+fn host_import_module_dynamically<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _host_defined_options: v8::Local<'s, v8::Data>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attributes: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let specifier_str = specifier.to_rust_string_lossy(scope);
+    let referrer_str = if resource_name.is_string() {
+        Some(resource_name.to_rust_string_lossy(scope))
+    } else {
+        None
+    };
+    tracing::trace!(
+        target: LOG_TARGET,
+        specifier = %specifier_str,
+        referrer = ?referrer_str,
+        "host_import_module_dynamically",
+    );
+    let promise = super::esm::do_esm_dynamic_import(scope, &specifier_str, referrer_str.as_deref());
+    Some(promise)
 }
 
 #[cfg(test)]
@@ -641,6 +883,34 @@ mod tests {
                 let mut engine = V8Engine::boot(file.path()).await.unwrap();
                 engine.pump().await.unwrap();
                 engine.pump().await.unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn text_decoder_streams_split_utf8() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let src = r#"
+                  const json = JSON.stringify({"hello":"świecie","poly":"łódź żółć","amount":"1 234 567,89"});
+                  const bytes = new TextEncoder().encode(json);
+                  for (const chunkSize of [1, 2, 3, 5, 7, 11, 13, 17]) {
+                    const td = new TextDecoder("utf-8");
+                    let out = "";
+                    for (let i = 0; i < bytes.length; i += chunkSize) {
+                      out += td.decode(bytes.subarray(i, Math.min(i + chunkSize, bytes.length)), { stream: true });
+                    }
+                    out += td.decode();
+                    if (out !== json) {
+                      throw new Error("mismatch at chunkSize=" + chunkSize + ":\nexpected: " + json + "\ngot:      " + out);
+                    }
+                    JSON.parse(out);
+                  }
+                "#;
+                let file = write_temp(src);
+                let result = V8Engine::boot(file.path()).await;
+                assert!(result.is_ok(), "TextDecoder streaming failed: {:?}", result.err());
             })
             .await;
     }

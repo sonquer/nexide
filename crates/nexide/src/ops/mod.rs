@@ -19,11 +19,13 @@ mod process_spawn;
 mod queue;
 mod request;
 mod response;
+mod signals;
 mod tls;
+pub mod upgrade_socket;
 mod zlib_stream;
 
 pub use dispatch_table::{
-    CompletionResult, DispatchError, DispatchTable, InFlight, RequestFailure, RequestId,
+    CompletionResult, DispatchError, DispatchTable, InFlight, RequestFailure, RequestId, StreamTaps,
 };
 pub use dns::{
     DnsError, LookupFamily, LookupResult, MxRecord, SrvRecord, lookup as dns_lookup,
@@ -54,9 +56,10 @@ pub use request::{
     HeaderPair, REQUEST_META_MAX_LEN, RequestMeta, RequestMetaError, RequestSlot, RequestSource,
 };
 pub use response::{ResponseError, ResponseHead, ResponsePayload, ResponseSink, ResponseSlot};
+pub use signals::{bind_termination_signals, drain as drain_signals, push as push_signal};
 pub use tls::{
     connect as tls_connect, read_chunk as tls_read_chunk, shutdown as tls_shutdown,
-    write_all as tls_write_all,
+    upgrade as tls_upgrade, write_all as tls_write_all,
 };
 pub use zlib_stream::{ZlibKind, ZlibStream, parse_kind as parse_zlib_kind};
 

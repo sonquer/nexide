@@ -11,7 +11,7 @@ use fast_image_resize::{
     images::{Image, ImageRef},
 };
 use image::codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder};
-use image::{DynamicImage, ImageEncoder, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageEncoder, ImageReader};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SourceFormat {
@@ -281,20 +281,6 @@ fn accept_contains(accept: &str, mime: &str) -> bool {
         .split(',')
         .map(|tok| tok.split(';').next().unwrap_or("").trim())
         .any(|t| t.eq_ignore_ascii_case(mime))
-}
-
-/// Maps an [`ImageFormat`] returned by the `image` crate into the
-/// matching [`SourceFormat`]; used when we have already decoded.
-#[allow(dead_code)]
-pub(crate) const fn from_image_format(fmt: ImageFormat) -> SourceFormat {
-    match fmt {
-        ImageFormat::Png => SourceFormat::Png,
-        ImageFormat::Jpeg => SourceFormat::Jpeg,
-        ImageFormat::Gif => SourceFormat::Gif,
-        ImageFormat::WebP => SourceFormat::Webp,
-        ImageFormat::Bmp => SourceFormat::Bmp,
-        _ => SourceFormat::Unknown,
-    }
 }
 
 #[cfg(test)]

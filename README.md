@@ -282,8 +282,8 @@ same instance.
 | `fs` + `fs/promises` | sandboxed   | path sandbox; only configured roots are admitted   |
 | `zlib`               | full        | gzip, deflate, brotli (sync + async wrappers)      |
 | `crypto`             | core        | sha1/256/512, md5, HMAC, AES-256-GCM, randomUUID   |
-| `http` / `https`     | server-side | enough for Next.js standalone server entrypoint    |
-| `http2`              | stub        | loads + constants; `createServer`/`connect` throw  |
+| `http` / `https`     | server-side | Next.js standalone entrypoint + raw `'upgrade'` event (WebSocket pass-through, `ws`/`socket.io` work) |
+| `http2`              | client      | `connect()` + `session.request()` over h2; `createServer`/`createSecureServer` throw |
 | `net` / `tls`        | client-side | enough for outbound `fetch` and DB drivers         |
 | `dns` / `dns/promises` | full      | uses Tokio's resolver via Rust ops                 |
 | `diagnostics_channel`| full        | `Channel` + `TracingChannel` (undici, OTel, APMs)  |
@@ -294,7 +294,8 @@ same instance.
 | `async_hooks`        | ALS only    | `AsyncLocalStorage` works; full hooks do not       |
 | `perf_hooks`         | core        | monotonic clock, basic marks                       |
 | `timers` / `timers/promises` | full | backed by Tokio                                    |
-| `inspector` / `tty` / `v8` / `module` / `constants` | core | enough surface for transitive deps |
+| `inspector`          | APM probes  | `Runtime.evaluate` / `getHeapUsage` / `getHeapStatistics`, `HeapProfiler.collectGarbage`; full DevTools wire protocol N/A |
+| `tty` / `v8` / `module` / `constants` | core | enough surface for transitive deps |
 
 | Global               | Status      | Notes                                              |
 |----------------------|-------------|----------------------------------------------------|
@@ -313,8 +314,8 @@ same instance.
 
 Nexide is a V8-only Next.js runtime; some Node platform surfaces are
 intentionally absent or partial. The full list — N-API/native addons,
-`http2`, worker threads, inspector, ESM at runtime, source maps,
-corporate proxies, log rotation, etc. — lives in
+`http2` server, worker threads, full inspector protocol, ESM at runtime,
+source maps, corporate proxies, log rotation, etc. — lives in
 [`docs/known-limitations.md`](docs/known-limitations.md).
 
 If you hit something that isn't on that list, open an issue with the

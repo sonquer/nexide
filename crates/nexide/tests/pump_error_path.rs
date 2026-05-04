@@ -18,10 +18,11 @@ const __nx = globalThis.__nexide;
 
 __nx.__dispatch = function (idx, gen) {
   const meta = __nx.getMeta(idx, gen);
-  if (meta.uri === '/sync-throw') {
+  const uri = meta[1];
+  if (uri === '/sync-throw') {
     throw new Error('handler exploded synchronously');
   }
-  if (meta.uri === '/async-reject') {
+  if (uri === '/async-reject') {
     return Promise.reject(new Error('handler rejected'));
   }
   __nx.sendHead(idx, gen, 200, []);

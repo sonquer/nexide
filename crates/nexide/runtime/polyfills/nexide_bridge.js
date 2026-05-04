@@ -24,12 +24,22 @@
   const bridge = {
     __nexideBridge: true,
 
-    /** Returns the request method, URL and remote address. */
+    /**
+     * Returns the request line as a flat 2-element array
+     * `[method, uri]`. The flat shape is the hot-path layout (no
+     * v8::Object allocation per request) - consumers index by
+     * position.
+     */
     getMeta(idx, gen) {
       return ops.op_nexide_get_meta(idx, gen);
     },
 
-    /** Returns the request headers as an array of `[name, value]` pairs. */
+    /**
+     * Returns the request headers as a flat array
+     * `[name, value, name, value, ...]` - the same shape Node's
+     * `IncomingMessage.rawHeaders` uses. Consumers iterate by stride
+     * 2.
+     */
     getHeaders(idx, gen) {
       return ops.op_nexide_get_headers(idx, gen);
     },

@@ -5,10 +5,12 @@
 
 pub mod accept_loop;
 pub mod config;
+mod error_page;
 pub mod fallback;
 mod next_bridge;
 mod prerender;
 mod static_assets;
+mod static_ram_cache;
 mod stream_listener;
 pub mod worker_runtime;
 
@@ -21,6 +23,9 @@ use axum::http::header::CACHE_CONTROL;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
+use tower_http::CompressionLevel;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
@@ -69,12 +74,15 @@ pub enum ServerError {
 /// from the historical handler implementation; tests inject [`NotImplementedHandler`] or a recording
 /// double.
 pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Router {
-    let dynamic = static_assets::dynamic_service(handler);
+    let dynamic = static_assets::dynamic_service(handler.clone());
     let prerender = prerender::prerender_with_fallback(cfg.app_dir().to_path_buf(), dynamic);
     let public = static_assets::public_with_fallback_service(cfg.public_dir(), prerender);
-    let next_image = crate::image::next_image_service(
+    let next_image = crate::image::next_image_service_with_dynamic(
         cfg.app_dir().to_path_buf(),
         cfg.public_dir().to_path_buf(),
+        cfg.next_static_dir().to_path_buf(),
+        cfg.bind(),
+        Some(handler),
     );
     let immutable_cache = ServiceBuilder::new().layer(SetResponseHeaderLayer::overriding(
         CACHE_CONTROL,
@@ -83,11 +91,59 @@ pub fn build_router(cfg: &ServerConfig, handler: Arc<dyn DynamicHandler>) -> Rou
     Router::new()
         .nest_service(
             "/_next/static",
-            immutable_cache.service(static_assets::next_static_only(cfg.next_static_dir())),
+            immutable_cache.service(static_ram_cache::RamCachedService::new(
+                static_assets::next_static_only(cfg.next_static_dir()),
+            )),
         )
         .nest_service("/_next/image", next_image)
         .fallback_service(public)
         .layer(TraceLayer::new_for_http())
+        .layer(response_compression_layer())
+}
+
+/// Builds the response compression layer used by the shield.
+///
+/// Negotiates `br` (preferred for text), `gzip` and `zstd` from the
+/// client's `Accept-Encoding`. The HTML payload Next.js returns is
+/// uncompressed by default once the standalone Node entrypoint is
+/// replaced by our shield, so without this layer 80 KiB pages travel
+/// the wire raw - both inflating content-download time and starving
+/// TCP slow-start of headroom (more round-trips before `cwnd` opens).
+/// Brotli q4 (the level used here) compresses HTML / JSON / RSC
+/// payloads ~5-7×, gzip ~3-4×, with sub-millisecond CPU per request
+/// for typical Next.js page sizes.
+///
+/// We deliberately avoid the maximum compression level: q11 brotli
+/// would shave another ~10% off the wire bytes but adds 30-100 ms of
+/// CPU per response, blowing the TTFB budget. q4 hits the sweet spot
+/// for dynamic responses; a future optimisation can bake brotli q11
+/// into the prerender RAM cache so static HTML pays the high CPU cost
+/// at warmup, not per request.
+///
+/// `SizeAbove(256)` skips compression for tiny bodies where the
+/// gzip / brotli framing overhead exceeds the savings (`Server-Timing`
+/// pings, 204s, redirects). `NotForContentType` blocks payloads that
+/// are already compressed by their encoder (`image/*`, `video/*`,
+/// `font/woff2`, `application/zip`, `application/wasm`), preventing
+/// wasted CPU and pathological "negative compression" for entropy-rich
+/// blobs.
+fn response_compression_layer() -> CompressionLayer<impl Predicate + Send + Sync + 'static> {
+    let predicate = SizeAbove::new(256)
+        .and(NotForContentType::IMAGES)
+        .and(NotForContentType::const_new("video/"))
+        .and(NotForContentType::const_new("audio/"))
+        .and(NotForContentType::const_new("font/woff2"))
+        .and(NotForContentType::const_new("application/zip"))
+        .and(NotForContentType::const_new("application/x-7z-compressed"))
+        .and(NotForContentType::const_new("application/x-rar-compressed"))
+        .and(NotForContentType::const_new("application/wasm"))
+        .and(NotForContentType::const_new("application/octet-stream"));
+    CompressionLayer::new()
+        .br(true)
+        .gzip(true)
+        .zstd(true)
+        .quality(CompressionLevel::Precise(4))
+        .compress_when(predicate)
 }
 
 /// Runs the HTTP shield until `shutdown` resolves.
@@ -400,6 +456,66 @@ mod tests {
         )
         .expect("valid config");
         (pub_dir, static_dir, app_dir, cfg)
+    }
+
+    #[tokio::test]
+    async fn router_compresses_large_html_with_brotli_when_accepted() {
+        let (_p, _s, app_dir, cfg) = fixture();
+        let html = format!("<html>{}</html>", "x".repeat(2048));
+        std::fs::write(app_dir.path().join("big.html"), html.as_bytes()).expect("write big");
+        let router = build_router(&cfg, Arc::new(NotImplementedHandler));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/big")
+                    .header("accept-encoding", "br, gzip")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-encoding")
+                .map(|h| h.to_str().unwrap()),
+            Some("br"),
+            "expected brotli encoding for large HTML body"
+        );
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        assert!(
+            bytes.len() < html.len() / 2,
+            "compressed body must be substantially smaller than the source ({} vs {})",
+            bytes.len(),
+            html.len(),
+        );
+    }
+
+    #[tokio::test]
+    async fn router_skips_compression_for_tiny_responses() {
+        let (_p, _s, _a, cfg) = fixture();
+        let router = build_router(&cfg, Arc::new(NotImplementedHandler));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/hello.txt")
+                    .header("accept-encoding", "br, gzip")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get("content-encoding").is_none(),
+            "5-byte response must not be compressed - framing overhead would dominate"
+        );
     }
 
     #[tokio::test]

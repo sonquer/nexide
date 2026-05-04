@@ -55,10 +55,46 @@
         return new Uint8Array(bytes);
       }
       encodeInto(source, dest) {
-        const enc = this.encode(source);
-        const n = Math.min(enc.length, dest.length);
-        dest.set(enc.subarray(0, n));
-        return { read: source.length, written: n };
+        const s = String(source);
+        const u = dest instanceof Uint8Array ? dest : new Uint8Array(dest.buffer, dest.byteOffset || 0, dest.byteLength);
+        const cap = u.length;
+        let read = 0;
+        let written = 0;
+        for (let i = 0; i < s.length; i++) {
+          let c = s.charCodeAt(i);
+          let advance = 1;
+          if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+            const c2 = s.charCodeAt(i + 1);
+            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+              c = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+              advance = 2;
+            }
+          }
+          let need;
+          if (c < 0x80) need = 1;
+          else if (c < 0x800) need = 2;
+          else if (c < 0x10000) need = 3;
+          else need = 4;
+          if (written + need > cap) break;
+          if (need === 1) {
+            u[written++] = c;
+          } else if (need === 2) {
+            u[written++] = 0xC0 | (c >> 6);
+            u[written++] = 0x80 | (c & 0x3F);
+          } else if (need === 3) {
+            u[written++] = 0xE0 | (c >> 12);
+            u[written++] = 0x80 | ((c >> 6) & 0x3F);
+            u[written++] = 0x80 | (c & 0x3F);
+          } else {
+            u[written++] = 0xF0 | (c >> 18);
+            u[written++] = 0x80 | ((c >> 12) & 0x3F);
+            u[written++] = 0x80 | ((c >> 6) & 0x3F);
+            u[written++] = 0x80 | (c & 0x3F);
+          }
+          read += advance;
+          if (advance === 2) i++;
+        }
+        return { read: read, written: written };
       }
     }
     globalThis.TextEncoder = TextEncoder;
@@ -85,7 +121,6 @@
         } else {
           u = new Uint8Array(input);
         }
-
         let bytes;
         if (this._pending && this._pending.length > 0) {
           bytes = new Uint8Array(this._pending.length + u.length);
@@ -271,6 +306,11 @@
       get(k) { return this._map.get(String(k).toLowerCase()) ?? null; }
       has(k) { return this._map.has(String(k).toLowerCase()); }
       set(k, v) { this._map.set(String(k).toLowerCase(), String(v)); }
+      getSetCookie() {
+        const v = this._map.get("set-cookie");
+        if (!v) return [];
+        return Array.isArray(v) ? v.slice() : String(v).split(/, (?=[^;]+=)/);
+      }
       forEach(cb, thisArg) { for (const [k, v] of this._map) cb.call(thisArg, v, k, this); }
       *entries() { yield* this._map.entries(); }
       *keys() { yield* this._map.keys(); }
@@ -295,15 +335,57 @@
     globalThis.AbortController = AbortController;
   }
 
-  function readBody(input) {
-    if (input == null) return new Uint8Array(0);
-    if (input instanceof Uint8Array) return input;
+  function extractBody(input) {
+    if (input == null) return { bytes: new Uint8Array(0), contentType: null };
+    if (input instanceof Uint8Array) return { bytes: input, contentType: null };
     if (typeof input === "string") {
-      const enc = new TextEncoder();
-      return enc.encode(input);
+      return {
+        bytes: new TextEncoder().encode(input),
+        contentType: "text/plain;charset=UTF-8",
+      };
     }
-    if (input.buffer instanceof ArrayBuffer) return new Uint8Array(input.buffer);
-    return new Uint8Array(0);
+    if (typeof globalThis.URLSearchParams !== "undefined" && input instanceof globalThis.URLSearchParams) {
+      return {
+        bytes: new TextEncoder().encode(input.toString()),
+        contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+      };
+    }
+    if (typeof globalThis.Blob !== "undefined" && input instanceof globalThis.Blob) {
+      return { bytes: null, blob: input, contentType: input.type || null };
+    }
+    if (input instanceof ArrayBuffer) return { bytes: new Uint8Array(input), contentType: null };
+    if (ArrayBuffer.isView(input)) {
+      return {
+        bytes: new Uint8Array(input.buffer, input.byteOffset, input.byteLength),
+        contentType: null,
+      };
+    }
+    if (typeof globalThis.FormData !== "undefined" && input instanceof globalThis.FormData) {
+      const boundary = "----nexide" + Math.random().toString(16).slice(2);
+      const enc = new TextEncoder();
+      const parts = [];
+      for (const [name, value] of input.entries()) {
+        parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n`));
+        parts.push(enc.encode(typeof value === "string" ? value : String(value)));
+        parts.push(enc.encode("\r\n"));
+      }
+      parts.push(enc.encode(`--${boundary}--\r\n`));
+      let total = 0;
+      for (const p of parts) total += p.byteLength;
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const p of parts) { out.set(p, off); off += p.byteLength; }
+      return {
+        bytes: out,
+        contentType: `multipart/form-data; boundary=${boundary}`,
+      };
+    }
+    return { bytes: new Uint8Array(0), contentType: null };
+  }
+
+  function readBody(input) {
+    const { bytes } = extractBody(input);
+    return bytes || new Uint8Array(0);
   }
 
   function isNodeReadable(value) {
@@ -410,7 +492,15 @@
         this.referrer = init.referrer || "";
         this.bodyUsed = false;
       }
-      get body() { return bodyToReadableStream(this._rawBody); }
+      get body() {
+        if (!this._bodyStream) {
+          Object.defineProperty(this, "_bodyStream", {
+            value: bodyToReadableStream(this._rawBody),
+            writable: true, configurable: true, enumerable: false,
+          });
+        }
+        return this._bodyStream;
+      }
       clone() { return new Request(this.url, this); }
       async arrayBuffer() { return (await consumeBody(this._rawBody)).buffer; }
       async text() { return new TextDecoder().decode(await consumeBody(this._rawBody)); }
@@ -432,7 +522,15 @@
         this.url = "";
         this.bodyUsed = false;
       }
-      get body() { return bodyToReadableStream(this._rawBody); }
+      get body() {
+        if (!this._bodyStream) {
+          Object.defineProperty(this, "_bodyStream", {
+            value: bodyToReadableStream(this._rawBody),
+            writable: true, configurable: true, enumerable: false,
+          });
+        }
+        return this._bodyStream;
+      }
       clone() { return new Response(this._rawBody, { status: this.status, statusText: this.statusText, headers: this.headers }); }
       static error() { const r = new Response(null, { status: 0 }); r.type = "error"; return r; }
       static redirect(url, status = 302) { return new Response(null, { status, headers: { location: url } }); }
@@ -501,7 +599,28 @@
         for (const [name, value] of Object.entries(headersIn)) headers.push([String(name), String(value)]);
       }
       const rawBody = init.body ?? (input && input._rawBody) ?? null;
-      const body = await collectBody(rawBody);
+      let body = null;
+      let derivedContentType = null;
+      if (rawBody != null) {
+        if (rawBody instanceof globalThis.ReadableStream || isNodeReadable(rawBody)) {
+          body = await collectBody(rawBody);
+        } else {
+          const extracted = extractBody(rawBody);
+          if (extracted.blob) {
+            body = new Uint8Array(await extracted.blob.arrayBuffer());
+          } else {
+            body = extracted.bytes && extracted.bytes.byteLength > 0 ? extracted.bytes : null;
+          }
+          derivedContentType = extracted.contentType;
+        }
+      }
+      if (derivedContentType) {
+        let hasCt = false;
+        for (const [n] of headers) {
+          if (n.toLowerCase() === "content-type") { hasCt = true; break; }
+        }
+        if (!hasCt) headers.push(["content-type", derivedContentType]);
+      }
 
       const resp = await httpOps.op_http_request({ method, url, headers, body });
 
@@ -593,6 +712,7 @@
         this._cancelled = false;
         this._locked = false;
         this._waiters = [];
+        this._byteStream = underlying && underlying.type === "bytes";
         const wakeWaiters = () => {
           const waiters = this._waiters;
           this._waiters = [];
@@ -600,13 +720,31 @@
         };
         const controller = {
           enqueue: (chunk) => {
-            if (this._closed || this._cancelled) return;
+            if (this._closed || this._cancelled) {
+              return;
+            }
+            if (chunk && typeof chunk === "object" && chunk instanceof Uint8Array) {
+              chunk = new Uint8Array(chunk);
+            } else if (
+              chunk &&
+              typeof chunk === "object" &&
+              chunk.buffer instanceof ArrayBuffer &&
+              typeof chunk.byteLength === "number"
+            ) {
+              const u = new Uint8Array(
+                chunk.buffer,
+                chunk.byteOffset || 0,
+                chunk.byteLength,
+              );
+              chunk = new Uint8Array(u);
+            }
             this._chunks.push(chunk);
             wakeWaiters();
           },
           close: () => { this._closed = true; wakeWaiters(); },
           error: (err) => { this._error = err; this._closed = true; wakeWaiters(); },
           get desiredSize() { return 1; },
+          get byobRequest() { return null; },
         };
         try {
           if (typeof underlying.start === "function") {
@@ -653,7 +791,8 @@
             }
             if (stream._error) throw stream._error;
             if (stream._chunks.length > 0) {
-              return { value: stream._chunks.shift(), done: false };
+              const v = stream._chunks.shift();
+              return { value: v, done: false };
             }
             return { value: undefined, done: true };
           },

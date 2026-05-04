@@ -172,3 +172,90 @@ async fn require_resolves_alias_for_bare_node_specifier() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn dynamic_import_returns_synthetic_namespace_for_cjs() {
+    assert_passes(
+        &[(
+            "addon.cjs",
+            "module.exports = { name: 'addon', add: (a, b) => a + b };",
+        )],
+        "let captured = null;\n\
+         let failed = null;\n\
+         import('./addon.cjs').then(\n\
+           ns => { captured = ns; },\n\
+           err => { failed = err; },\n\
+         );\n\
+         queueMicrotask(() => {\n\
+           if (failed) throw failed;\n\
+           if (!captured) throw new Error('dynamic import did not resolve');\n\
+           if (captured.name !== 'addon') throw new Error('name: ' + captured.name);\n\
+           if (captured.add(2, 3) !== 5) throw new Error('add: ' + captured.add(2, 3));\n\
+           if (!captured.default || captured.default.name !== 'addon') {\n\
+             throw new Error('default missing');\n\
+           }\n\
+         });\n",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dynamic_import_of_node_builtin_works() {
+    assert_passes(
+        &[],
+        "let captured = null;\n\
+         import('node:path').then(ns => { captured = ns; });\n\
+         queueMicrotask(() => {\n\
+           if (!captured) throw new Error('builtin import did not resolve');\n\
+           if (typeof captured.join !== 'function') throw new Error('no join');\n\
+           if (captured.join('a', 'b') !== 'a/b') throw new Error('join: ' + captured.join('a', 'b'));\n\
+         });\n",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dynamic_import_of_unknown_specifier_rejects() {
+    assert_passes(
+        &[],
+        "let rejected = null;\n\
+         import('node:does-not-exist').then(\n\
+           () => { rejected = false; },\n\
+           err => { rejected = err; },\n\
+         );\n\
+         queueMicrotask(() => {\n\
+           if (rejected === null) throw new Error('promise still pending');\n\
+           if (rejected === false) throw new Error('expected rejection');\n\
+           const msg = (rejected && rejected.message) || String(rejected);\n\
+           if (!msg.includes('MODULE_NOT_FOUND') && !msg.includes('does-not-exist')) {\n\
+             throw new Error('unexpected error: ' + msg);\n\
+           }\n\
+         });\n",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dynamic_import_resolves_relative_to_calling_module() {
+    assert_passes(
+        &[
+            (
+                "nested.cjs",
+                "let captured = null;\n\
+                 import('./addon.cjs').then(ns => { captured = ns; });\n\
+                 module.exports = { getCaptured: () => captured };",
+            ),
+            (
+                "addon.cjs",
+                "module.exports = { name: 'addon-from-sibling' };",
+            ),
+        ],
+        "const m = require('./nested.cjs');\n\
+         queueMicrotask(() => {\n\
+           const c = m.getCaptured();\n\
+           if (!c) throw new Error('sibling import did not resolve');\n\
+           if (c.name !== 'addon-from-sibling') throw new Error('name: ' + c.name);\n\
+         });\n",
+    )
+    .await;
+}

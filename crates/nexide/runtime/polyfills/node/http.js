@@ -28,7 +28,198 @@
 // end-of-stream.
 
 const EventEmitter = require("node:events");
-const { Readable, Writable } = require("node:stream");
+const { Readable, Writable, Duplex } = require("node:stream");
+const { Buffer } = require("node:buffer");
+
+const UPGRADE_SOCKET_ID_HEADER = "x-nexide-upgrade-socket-id";
+
+// Node-shaped raw TCP socket exposed to `'upgrade'` event listeners.
+//
+// Lifecycle:
+//
+//   - **pre-handshake**: the JS upgrade listener (typically the
+//     `ws` library's `WebSocketServer.handleUpgrade`) writes a
+//     complete HTTP/1.1 status + headers blob to the socket. We
+//     accumulate those bytes, parse them once `\r\n\r\n` arrives,
+//     and commit them as a real `synthRes.writeHead` + `synthRes.end`
+//     so the Rust shield emits the 101 on the wire. That 101 flush
+//     is what causes hyper's `OnUpgrade` to resolve and the Rust
+//     side to attach the upgraded TCP stream into the socket
+//     registry.
+//
+//   - **post-handshake**: subsequent `socket.write()` calls forward
+//     bytes through `op_upgrade_socket_write_async`, which queues
+//     them onto the upgraded stream (with a Rust-side buffer in
+//     case `attach_upgraded` has not run yet). The reader pump
+//     continuously calls `op_upgrade_socket_read_async`, parking
+//     in Rust until the upgrade has resolved.
+//
+// The Duplex superclass takes care of `'data'` listener
+// dispatching, backpressure, `pipe()`, and graceful `end()`.
+class UpgradeSocket extends Duplex {
+  constructor(socketId, synthRes) {
+    super({
+      allowHalfOpen: true,
+      write: (chunk, enc, cb) => this._write(chunk, enc, cb),
+    });
+    this._socketId = socketId;
+    this._synthRes = synthRes;
+    this._state = "pre-handshake";
+    this._headBuffer = [];
+    this._headBufferLen = 0;
+    this._pumping = false;
+    this.readable = true;
+    this.writable = true;
+    this.encrypted = false;
+    this.remoteAddress = "127.0.0.1";
+    this.remotePort = 0;
+    this.localAddress = "127.0.0.1";
+    this.localPort = 0;
+  }
+
+  setNoDelay() { return this; }
+  setKeepAlive() { return this; }
+  setTimeout(_ms, cb) {
+    if (typeof cb === "function") this.once("timeout", cb);
+    return this;
+  }
+  ref() { return this; }
+  unref() { return this; }
+  address() { return { port: this.localPort, family: "IPv4", address: this.localAddress }; }
+
+  _write(chunk, _enc, cb) {
+    if (this._state === "destroyed") {
+      cb(new Error("socket has been destroyed"));
+      return;
+    }
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (this._state === "pre-handshake") {
+      this._handlePreHandshakeWrite(buf, cb);
+      return;
+    }
+    this._sendPostHandshake(buf, cb);
+  }
+
+  _handlePreHandshakeWrite(buf, cb) {
+    this._headBuffer.push(buf);
+    this._headBufferLen += buf.length;
+    const concat = this._headBufferLen === buf.length
+      ? buf
+      : Buffer.concat(this._headBuffer, this._headBufferLen);
+    const headEnd = concat.indexOf("\r\n\r\n");
+    if (headEnd < 0) {
+      // Soft cap to avoid unbounded buffering on malformed input.
+      if (this._headBufferLen > 64 * 1024) {
+        cb(new Error("upgrade handshake exceeds 64 KiB without CRLFCRLF"));
+        return;
+      }
+      cb();
+      return;
+    }
+    const headBytes = concat.slice(0, headEnd);
+    const tail = concat.slice(headEnd + 4);
+    let parsed;
+    try {
+      parsed = parseHttpResponseHead(headBytes);
+    } catch (err) {
+      cb(err);
+      return;
+    }
+    try {
+      this._synthRes.writeHead(parsed.status, parsed.headers);
+      this._synthRes.end();
+    } catch (err) {
+      cb(err);
+      return;
+    }
+    this._state = "post-handshake";
+    this._headBuffer = null;
+    this.emit("handshake-committed");
+    this._startReaderPump();
+    if (tail.length > 0) {
+      this._sendPostHandshake(tail, cb);
+      return;
+    }
+    cb();
+  }
+
+  _sendPostHandshake(buf, cb) {
+    Nexide.core.ops
+      .op_upgrade_socket_write_async(this._socketId, buf)
+      .then(() => cb(), (err) => cb(err));
+  }
+
+  _read() { /* reader pump drives push() */ }
+
+  _startReaderPump() {
+    if (this._pumping) return;
+    this._pumping = true;
+    const loop = async () => {
+      while (this._state === "post-handshake") {
+        let chunk;
+        try {
+          chunk = await Nexide.core.ops.op_upgrade_socket_read_async(this._socketId);
+        } catch (err) {
+          this.destroy(err);
+          return;
+        }
+        if (chunk === null) {
+          this._state = "ended";
+          this.push(null);
+          return;
+        }
+        if (!this.push(Buffer.from(chunk))) {
+          // backpressure — wait for _read to be called again
+          await new Promise((resolve) => this.once("drain-resume", resolve));
+        }
+      }
+    };
+    loop().catch((err) => this.destroy(err));
+  }
+
+  _final(cb) {
+    if (this._state === "post-handshake" || this._state === "ended") {
+      try { Nexide.core.ops.op_upgrade_socket_close(this._socketId); } catch { /* noop */ }
+    }
+    this._state = "destroyed";
+    cb();
+  }
+
+  _destroy(err, cb) {
+    if (this._state !== "destroyed") {
+      try { Nexide.core.ops.op_upgrade_socket_close(this._socketId); } catch { /* noop */ }
+      this._state = "destroyed";
+    }
+    cb(err);
+  }
+}
+
+function parseHttpResponseHead(buf) {
+  // Accept either a full status line + headers or just headers.
+  // `ws` always writes `HTTP/1.1 101 ...` first. We parse the status
+  // line if present; otherwise default to 101.
+  const text = buf.toString("latin1");
+  const lines = text.split("\r\n");
+  let statusCode = 101;
+  let firstHeaderLine = 0;
+  if (lines.length > 0 && /^HTTP\//.test(lines[0])) {
+    const m = /^HTTP\/\d\.\d\s+(\d{3})/.exec(lines[0]);
+    if (!m) throw new Error("malformed HTTP status line in upgrade write");
+    statusCode = Number(m[1]);
+    firstHeaderLine = 1;
+  }
+  const headers = [];
+  for (let i = firstHeaderLine; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === "") continue;
+    const idx = line.indexOf(":");
+    if (idx < 0) throw new Error(`malformed header in upgrade write: ${line}`);
+    const name = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    headers.push([name, value]);
+  }
+  return { status: statusCode, headers };
+}
 
 const STATUS_CODES = {
   100: "Continue",
@@ -91,7 +282,17 @@ class IncomingMessage extends Readable {
     this.trailers = Object.create(null);
     this.rawTrailers = [];
     this.complete = false;
-    this.socket = { remoteAddress: undefined, remotePort: undefined };
+    this.socket = {
+      remoteAddress: undefined,
+      remotePort: undefined,
+      setTimeout(_ms, cb) { if (typeof cb === "function") this._timeoutCb = cb; return this; },
+      setNoDelay(_enable) { return this; },
+      setKeepAlive(_enable, _initialDelay) { return this; },
+      ref() { return this; },
+      unref() { return this; },
+      destroy() {},
+      end() {},
+    };
     this.connection = this.socket;
 
     synth.on("data", (chunk) => this.push(chunk));
@@ -340,17 +541,100 @@ class Server extends EventEmitter {
     this._address = { port, family: "IPv4", address: host };
     this._listening = true;
 
-    const adapter = async (synthReq, synthRes) => {
+    const adapter = (synthReq, synthRes) => {
       const req = new IncomingMessage(synthReq);
       const res = new ServerResponse(synthRes);
       res.req = req;
-      const listeners = this.listeners("request");
-      for (const fn of listeners) {
-        const ret = fn(req, res);
-        if (ret && typeof ret.then === "function") {
-          await ret;
+      const upgradeHeader = req.headers && req.headers.upgrade;
+      const upgradeSocketIdRaw = req.headers && req.headers[UPGRADE_SOCKET_ID_HEADER];
+      const upgradeSocketId = upgradeSocketIdRaw === undefined
+        ? null
+        : Number(upgradeSocketIdRaw);
+      if (upgradeHeader) {
+        const upgradeListeners = this.listeners("upgrade");
+        if (upgradeListeners.length > 0 && upgradeSocketId !== null
+            && Number.isFinite(upgradeSocketId)) {
+          // Strip the synthetic header so user code does not see it.
+          if (req.headers) delete req.headers[UPGRADE_SOCKET_ID_HEADER];
+          if (Array.isArray(req.rawHeaders)) {
+            for (let i = req.rawHeaders.length - 2; i >= 0; i -= 2) {
+              if (String(req.rawHeaders[i]).toLowerCase() === UPGRADE_SOCKET_ID_HEADER) {
+                req.rawHeaders.splice(i, 2);
+              }
+            }
+          }
+          const socket = new UpgradeSocket(upgradeSocketId, synthRes);
+          req.socket = socket;
+          req.connection = socket;
+          // The dispatch promise resolves once the user has either
+          // committed the 101 (via socket.write of the head) or torn
+          // the socket down. We resolve when synthRes finishes so the
+          // Rust shield can flush headers; subsequent socket I/O is
+          // independent of this promise.
+          const ready = new Promise((resolve) => {
+            let settled = false;
+            const settle = () => { if (!settled) { settled = true; resolve(); } };
+            if (typeof synthRes.__isEnded === "function" && synthRes.__isEnded()) {
+              settle();
+              return;
+            }
+            socket.once("handshake-committed", settle);
+            socket.once("close", settle);
+            socket.once("error", settle);
+            // Safety net: if no head is written within a long window
+            // we still let the response complete so hyper sends a
+            // sane status.
+            setTimeout(() => {
+              if (!settled && !(typeof synthRes.__isEnded === "function" && synthRes.__isEnded())) {
+                try {
+                  res.statusCode = 500;
+                  res.setHeader("Connection", "close");
+                  res.end("upgrade listener did not commit a handshake");
+                } catch { /* noop */ }
+                settle();
+              }
+            }, 30_000).unref?.();
+          });
+          for (const fn of upgradeListeners) {
+            try { fn(req, socket, Buffer.alloc(0)); } catch (e) { this.emit("error", e); }
+          }
+          return ready;
+        }
+        if (upgradeListeners.length > 0) {
+          // Listener present but no socket id (e.g. transport that
+          // does not support hyper upgrade). Best-effort fallback:
+          // emit with a null socket and let the listener decide.
+          for (const fn of upgradeListeners) {
+            try { fn(req, null, Buffer.alloc(0)); } catch (e) { this.emit("error", e); }
+          }
+          if (!res._ended && !res._destroyed) {
+            res.statusCode = 501;
+            res.setHeader("Connection", "close");
+            res.end("Upgrade not supported on this connection");
+          }
+          return Promise.resolve();
+        }
+        if (this.listenerCount("request") === 0) {
+          res.statusCode = 501;
+          res.setHeader("Connection", "close");
+          res.end("Upgrade not supported by this nexide build");
+          return Promise.resolve();
         }
       }
+      const listeners = this.listeners("request");
+      const pending = [];
+      for (const fn of listeners) {
+        const ret = fn(req, res);
+        if (ret && typeof ret.then === "function") pending.push(ret);
+      }
+      return Promise.all(pending).then(
+        () => new Promise((resolve) => {
+          if (res._ended || res._destroyed) { resolve(); return; }
+          const done = () => resolve();
+          res.once("finish", done);
+          res.once("close", done);
+        }),
+      );
     };
     this._token = globalThis.__nexide.pushHandler(adapter);
 
@@ -467,21 +751,48 @@ class ClientRequest extends Writable {
     this._headers = this._headers.filter(([k]) => k.toLowerCase() !== lower);
   }
 
-  _write(chunk, _encoding, callback) {
-    if (chunk === null || chunk === undefined) {
-      callback();
-      return;
+  setTimeout(_ms, cb) {
+    if (typeof cb === "function") this.once("timeout", cb);
+    return this;
+  }
+
+  setNoDelay(_enable) { return this; }
+
+  setSocketKeepAlive(_enable, _initialDelay) { return this; }
+
+  write(chunk, encoding, callback) {
+    if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
+    if (chunk == null) { if (callback) callback(); return true; }
+    let buf;
+    if (chunk instanceof Uint8Array) {
+      buf = chunk;
+    } else if (chunk instanceof ArrayBuffer) {
+      buf = new Uint8Array(chunk);
+    } else if (ArrayBuffer.isView(chunk)) {
+      buf = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    } else if (typeof chunk === "string") {
+      buf = new TextEncoder().encode(chunk);
+    } else {
+      buf = new TextEncoder().encode(String(chunk));
     }
-    const buf = chunk instanceof Uint8Array ? chunk : new TextEncoder().encode(String(chunk));
     this._chunks.push(buf);
+    if (callback) callback();
+    return true;
+  }
+
+  _write(chunk, _encoding, callback) {
+    this.write(chunk);
     callback();
   }
 
   end(chunk, encoding, callback) {
+    if (typeof chunk === "function") { callback = chunk; chunk = undefined; encoding = undefined; }
+    else if (typeof encoding === "function") { callback = encoding; encoding = undefined; }
     if (chunk !== undefined && chunk !== null) {
       this.write(chunk, encoding);
     }
-    super.end(undefined, undefined, callback);
+    this._ended = true;
+    if (callback) callback();
     this._sent = true;
     this._dispatchIfReady();
   }

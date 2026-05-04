@@ -9,6 +9,8 @@
 
 globalThis.__nexideRunHandler = function (idx, gen) {
   const meta = globalThis.__nexide.getMeta(idx, gen);
+  const method = meta[0];
+  const uri = meta[1];
 
   const buf = new Uint8Array(64);
   const n = globalThis.__nexide.readBody(idx, gen, buf);
@@ -16,8 +18,8 @@ globalThis.__nexideRunHandler = function (idx, gen) {
 
   globalThis.__nexide.sendHead(idx, gen, 200, [
     ["content-type", "text/plain"],
-    ["x-method", meta.method],
-    ["x-uri", meta.uri],
+    ["x-method", method],
+    ["x-uri", uri],
   ]);
 
   const prefix = new Uint8Array([0x70, 0x6f, 0x6e, 0x67, 0x3a]);

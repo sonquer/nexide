@@ -12,13 +12,33 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
+use parking_lot::RwLock;
+
 use axum::body::Body;
-use axum::http::header::{HeaderName, HeaderValue};
-use axum::http::{Method, Request, Response, StatusCode};
+use axum::http::header::{
+    ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, ETAG,
+    HeaderName, HeaderValue, VARY,
+};
+use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
+
+const HV_VARY_RSC: HeaderValue =
+    HeaderValue::from_static("rsc, next-router-state-tree, next-router-prefetch, accept-encoding");
+const HV_CACHE_CONTROL_PRERENDER: HeaderValue = HeaderValue::from_static("s-maxage=31536000");
+const HV_X_NEXTJS_CACHE_HIT: HeaderValue = HeaderValue::from_static("HIT");
+const HV_TIMING_ALLOW_ORIGIN_ANY: HeaderValue = HeaderValue::from_static("*");
+const HV_ENCODING_BR: HeaderValue = HeaderValue::from_static("br");
+const HV_ENCODING_GZIP: HeaderValue = HeaderValue::from_static("gzip");
+const HN_X_NEXTJS_CACHE: HeaderName = HeaderName::from_static("x-nextjs-cache");
+const HN_SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
+const HN_TIMING_ALLOW_ORIGIN: HeaderName = HeaderName::from_static("timing-allow-origin");
+
+const PRECOMPRESS_MIN_BYTES: usize = 256;
+use brotli::enc::BrotliEncoderParams;
 use bytes::Bytes;
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
@@ -48,6 +68,14 @@ pub(super) fn prerender_with_fallback(
     fallback: DynamicService,
 ) -> PrerenderService {
     let inner = Arc::new(PrerenderInner::new(app_dir));
+    {
+        let weak = Arc::downgrade(&inner);
+        crate::pool::idle_shrink::register(move || {
+            if let Some(strong) = weak.upgrade() {
+                strong.shrink();
+            }
+        });
+    }
     let svc = service_fn(move |req: Request<Body>| {
         let inner = inner.clone();
         let mut fallback = fallback.clone();
@@ -69,6 +97,18 @@ pub(super) fn prerender_with_fallback(
 struct PrerenderInner {
     root: PathBuf,
     cache: RwLock<HashMap<String, CachedAsset>>,
+    total_bytes: std::sync::atomic::AtomicU64,
+    byte_cap: u64,
+}
+
+const DEFAULT_PRERENDER_RAM_MB: u64 = 32;
+
+fn prerender_byte_cap() -> u64 {
+    std::env::var("NEXIDE_PRERENDER_RAM_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PRERENDER_RAM_MB)
+        .saturating_mul(1024 * 1024)
 }
 
 impl PrerenderInner {
@@ -76,8 +116,28 @@ impl PrerenderInner {
         Self {
             root,
             cache: RwLock::new(HashMap::with_capacity(64)),
+            total_bytes: std::sync::atomic::AtomicU64::new(0),
+            byte_cap: prerender_byte_cap(),
         }
     }
+
+    fn shrink(&self) {
+        let mut guard = self.cache.write();
+        guard.clear();
+        self.total_bytes
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn entry_bytes(asset: &CachedAsset) -> u64 {
+    let mut n = asset.bytes.len() as u64;
+    if let Some(b) = asset.br_q11.as_ref() {
+        n += b.len() as u64;
+    }
+    if let Some(g) = asset.gzip9.as_ref() {
+        n += g.len() as u64;
+    }
+    n
 }
 
 /// Stamps `Server-Timing` on the outbound response. The canonical
@@ -99,7 +159,7 @@ fn stamp_server_timing(
     let ms = micros as f64 / 1000.0;
     let mut value = format!("srv;desc=\"{desc}\";dur={ms:.3}");
     let existing = headers
-        .get("server-timing")
+        .get(&HN_SERVER_TIMING)
         .and_then(|v| v.to_str().ok())
         .map(ToOwned::to_owned);
     if let Some(rest) = existing
@@ -109,15 +169,16 @@ fn stamp_server_timing(
         value.push_str(&rest);
     }
     if let Ok(v) = HeaderValue::from_str(&value) {
-        headers.insert("server-timing", v);
+        headers.insert(&HN_SERVER_TIMING, v);
     }
-    headers.insert("timing-allow-origin", HeaderValue::from_static("*"));
+    headers.insert(&HN_TIMING_ALLOW_ORIGIN, HV_TIMING_ALLOW_ORIGIN_ANY);
 }
 
-/// Cached payload plus the metadata required to detect ISR rewrites.
 #[derive(Clone)]
 struct CachedAsset {
     bytes: Bytes,
+    br_q11: Option<Bytes>,
+    gzip9: Option<Bytes>,
     etag: String,
     content_type: &'static str,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
@@ -141,7 +202,12 @@ fn try_serve(inner: &PrerenderInner, req: &Request<Body>) -> Option<Response<Bod
     let is_rsc = req.headers().get("rsc").is_some_and(|v| v == "1");
     let key = lookup_key(req.uri().path(), is_rsc)?;
     let asset = resolve_asset(inner, &key, is_rsc)?;
-    Some(build_response(&asset, req.method() == Method::HEAD))
+    let encoding = pick_encoding(req.headers());
+    Some(build_response(
+        &asset,
+        encoding,
+        req.method() == Method::HEAD,
+    ))
 }
 
 /// Translates a request path into the relative file path that Next.js
@@ -164,18 +230,81 @@ fn lookup_key(path: &str, is_rsc: bool) -> Option<String> {
 /// Cache lookup with mtime/size revalidation. On miss or staleness,
 /// reloads from disk and inserts the fresh entry.
 fn resolve_asset(inner: &PrerenderInner, key: &str, is_rsc: bool) -> Option<CachedAsset> {
-    if let Ok(guard) = inner.cache.read()
-        && let Some(hit) = guard.get(key)
-        && file_matches(&inner.root, key, hit)
     {
-        return Some(hit.clone());
+        let guard = match inner.cache.try_read() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::PRERENDER_READ_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::PRERENDER_READ_CONTENDED,
+                );
+                inner.cache.read()
+            }
+        };
+        if let Some(hit) = guard.get(key)
+            && file_matches(&inner.root, key, hit)
+        {
+            return Some(hit.clone());
+        }
     }
     let fresh = load_asset(&inner.root, key, is_rsc)?;
-    if let Ok(mut guard) = inner.cache.write() {
+    let fresh_bytes = entry_bytes(&fresh);
+    {
+        let mut guard = match inner.cache.try_write() {
+            Some(g) => {
+                crate::diagnostics::contention::record_fast(
+                    &crate::diagnostics::contention::PRERENDER_WRITE_FAST,
+                );
+                g
+            }
+            None => {
+                crate::diagnostics::contention::record_contended(
+                    &crate::diagnostics::contention::PRERENDER_WRITE_CONTENDED,
+                );
+                inner.cache.write()
+            }
+        };
         if guard.len() >= CACHE_CAPACITY {
+            inner
+                .total_bytes
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             guard.clear();
         }
-        guard.insert(key.to_owned(), fresh.clone());
+        let cap = inner.byte_cap;
+        if cap > 0 {
+            let mut current = inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
+            if current.saturating_add(fresh_bytes) > cap && !guard.is_empty() {
+                let mut by_mtime: Vec<(SystemTime, String, u64)> = guard
+                    .iter()
+                    .map(|(k, v)| (v.mtime, k.clone(), entry_bytes(v)))
+                    .collect();
+                by_mtime.sort_by_key(|t| t.0);
+                let target = cap / 2;
+                for (_, k, sz) in by_mtime {
+                    if current.saturating_add(fresh_bytes) <= target {
+                        break;
+                    }
+                    if guard.remove(&k).is_some() {
+                        current = current.saturating_sub(sz);
+                    }
+                }
+                inner
+                    .total_bytes
+                    .store(current, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if let Some(prev) = guard.insert(key.to_owned(), fresh.clone()) {
+            inner
+                .total_bytes
+                .fetch_sub(entry_bytes(&prev), std::sync::atomic::Ordering::Relaxed);
+        }
+        inner
+            .total_bytes
+            .fetch_add(fresh_bytes, std::sync::atomic::Ordering::Relaxed);
     }
     Some(fresh)
 }
@@ -210,13 +339,95 @@ fn load_asset(root: &Path, key: &str, is_rsc: bool) -> Option<CachedAsset> {
     } else {
         "text/html; charset=utf-8"
     };
+    let (br_q11, gzip9) = if bytes.len() >= PRECOMPRESS_MIN_BYTES {
+        (brotli_q11(&bytes), gzip_q9(&bytes))
+    } else {
+        (None, None)
+    };
     Some(CachedAsset {
         bytes,
+        br_q11,
+        gzip9,
         etag,
         content_type,
         extra_headers,
         mtime,
         size: meta.len(),
+    })
+}
+
+fn brotli_q11(data: &[u8]) -> Option<Bytes> {
+    let params = BrotliEncoderParams {
+        quality: 11,
+        ..Default::default()
+    };
+    let mut out = Vec::with_capacity(data.len() / 2);
+    let mut cursor = data;
+    if brotli::BrotliCompress(&mut cursor, &mut out, &params).is_err() {
+        return None;
+    }
+    if out.len() >= data.len() {
+        return None;
+    }
+    Some(Bytes::from(out))
+}
+
+fn gzip_q9(data: &[u8]) -> Option<Bytes> {
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(data.len() / 2),
+        flate2::Compression::new(9),
+    );
+    if encoder.write_all(data).is_err() {
+        return None;
+    }
+    let out = encoder.finish().ok()?;
+    if out.len() >= data.len() {
+        return None;
+    }
+    Some(Bytes::from(out))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickedEncoding {
+    Br,
+    Gzip,
+    Identity,
+}
+
+fn pick_encoding(headers: &HeaderMap) -> PickedEncoding {
+    let Some(v) = headers.get(ACCEPT_ENCODING) else {
+        return PickedEncoding::Identity;
+    };
+    let Ok(text) = v.to_str() else {
+        return PickedEncoding::Identity;
+    };
+    let lower = text.to_ascii_lowercase();
+    if accepts_token(&lower, "br") {
+        PickedEncoding::Br
+    } else if accepts_token(&lower, "gzip") {
+        PickedEncoding::Gzip
+    } else {
+        PickedEncoding::Identity
+    }
+}
+
+fn accepts_token(header: &str, token: &str) -> bool {
+    header.split(',').any(|part| {
+        let part = part.trim();
+        let name = part.split(';').next().unwrap_or("").trim();
+        if name != token {
+            return false;
+        }
+        for attr in part.split(';').skip(1) {
+            let attr = attr.trim();
+            if let Some(rest) = attr.strip_prefix("q=") {
+                if let Ok(q) = rest.parse::<f32>() {
+                    return q > 0.0;
+                }
+                return true;
+            }
+        }
+        true
     })
 }
 
@@ -259,32 +470,53 @@ fn compute_etag(bytes: &[u8]) -> String {
 /// Assembles the outbound HTTP response. `head_only` returns the
 /// header set with an empty body (HEAD requests / 304s out-of-scope
 /// for MVP).
-fn build_response(asset: &CachedAsset, head_only: bool) -> Response<Body> {
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", asset.content_type)
-        .header("etag", asset.etag.as_str())
-        .header("vary", "rsc, next-router-state-tree, next-router-prefetch")
-        .header("cache-control", "s-maxage=31536000")
-        .header("x-nextjs-cache", "HIT")
-        .header("content-length", asset.size.to_string());
-    for (name, value) in &asset.extra_headers {
-        builder = builder.header(name.clone(), value.clone());
-    }
+fn build_response(
+    asset: &CachedAsset,
+    encoding: PickedEncoding,
+    head_only: bool,
+) -> Response<Body> {
+    let (chosen_bytes, encoding_header): (Bytes, Option<HeaderValue>) = match encoding {
+        PickedEncoding::Br => match &asset.br_q11 {
+            Some(b) => (b.clone(), Some(HV_ENCODING_BR)),
+            None => (asset.bytes.clone(), None),
+        },
+        PickedEncoding::Gzip => match &asset.gzip9 {
+            Some(g) => (g.clone(), Some(HV_ENCODING_GZIP)),
+            None => (asset.bytes.clone(), None),
+        },
+        PickedEncoding::Identity => (asset.bytes.clone(), None),
+    };
+    let len = chosen_bytes.len() as u64;
     let body = if head_only {
         Body::empty()
     } else {
-        Body::from(asset.bytes.clone())
+        Body::from(chosen_bytes)
     };
-    builder
-        .body(body)
-        .expect("static response builder cannot fail")
+    let mut resp = Response::new(body);
+    *resp.status_mut() = StatusCode::OK;
+    let headers = resp.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(asset.content_type));
+    if let Ok(v) = HeaderValue::try_from(asset.etag.as_str()) {
+        headers.insert(ETAG, v);
+    }
+    headers.insert(VARY, HV_VARY_RSC);
+    headers.insert(CACHE_CONTROL, HV_CACHE_CONTROL_PRERENDER);
+    headers.insert(HN_X_NEXTJS_CACHE, HV_X_NEXTJS_CACHE_HIT);
+    headers.insert(CONTENT_LENGTH, HeaderValue::from(len));
+    if let Some(enc) = encoding_header {
+        headers.insert(CONTENT_ENCODING, enc);
+    }
+    for (name, value) in &asset.extra_headers {
+        headers.append(name.clone(), value.clone());
+    }
+    resp
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedAsset, compute_etag, file_matches, load_asset, lookup_key, prerender_with_fallback,
+        CachedAsset, PrerenderInner, compute_etag, entry_bytes, file_matches, load_asset,
+        lookup_key, prerender_with_fallback, resolve_asset,
     };
     use crate::server::fallback::NotImplementedHandler;
     use crate::server::static_assets::dynamic_service;
@@ -395,6 +627,8 @@ mod tests {
     fn file_matches_returns_false_when_payload_disappeared() {
         let asset = CachedAsset {
             bytes: Bytes::from_static(b"x"),
+            br_q11: None,
+            gzip9: None,
             etag: "\"deadbeef\"".into(),
             content_type: "text/html; charset=utf-8",
             extra_headers: Vec::new(),
@@ -448,6 +682,36 @@ mod tests {
         );
         let body = resp.into_body().collect().await.expect("body").to_bytes();
         assert_eq!(body.as_ref(), b"<html>about</html>");
+    }
+
+    #[tokio::test]
+    async fn service_returns_brotli_when_accept_encoding_br() {
+        let tmp = TempDir::new().expect("tempdir");
+        let html = "<html>".to_owned() + &"hello world".repeat(200) + "</html>";
+        write_prerender(tmp.path(), "big", &html, None);
+        let svc = prerender_with_fallback(
+            tmp.path().to_path_buf(),
+            dynamic_service(Arc::new(NotImplementedHandler)),
+        );
+        let resp = svc
+            .oneshot(
+                Request::builder()
+                    .uri("/big")
+                    .header("accept-encoding", "br, gzip")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-encoding")
+                .map(|h| h.to_str().unwrap()),
+            Some("br"),
+        );
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        assert!(body.len() < html.len());
     }
 
     #[tokio::test]
@@ -544,5 +808,61 @@ mod tests {
         );
         let body = resp.into_body().collect().await.expect("body").to_bytes();
         assert!(body.is_empty());
+    }
+
+    #[test]
+    fn entry_bytes_sums_all_compressed_variants() {
+        let asset = CachedAsset {
+            bytes: Bytes::from_static(b"hello"),
+            br_q11: Some(Bytes::from_static(b"abc")),
+            gzip9: Some(Bytes::from_static(b"de")),
+            etag: "\"x\"".into(),
+            content_type: "text/html; charset=utf-8",
+            extra_headers: Vec::new(),
+            mtime: SystemTime::UNIX_EPOCH,
+            size: 5,
+        };
+        assert_eq!(entry_bytes(&asset), 10);
+    }
+
+    #[test]
+    fn resolve_asset_evicts_when_byte_cap_exceeded() {
+        let tmp = TempDir::new().expect("tempdir");
+        let big = "x".repeat(4096);
+        for i in 0..16 {
+            write_prerender(tmp.path(), &format!("p{i}"), &big, None);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut inner = PrerenderInner::new(tmp.path().to_path_buf());
+        inner.byte_cap = 16 * 1024;
+        for i in 0..16 {
+            let _ = resolve_asset(&inner, &format!("p{i}.html"), false);
+        }
+        let total = inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            total <= 16 * 1024,
+            "total {total} must stay within cap after evictions",
+        );
+        let len = inner.cache.read().len();
+        assert!(
+            len < 16,
+            "cache must be smaller than full set after evictions, got {len}"
+        );
+    }
+
+    #[test]
+    fn shrink_drops_all_cached_entries_and_resets_total() {
+        let tmp = TempDir::new().expect("tempdir");
+        write_prerender(tmp.path(), "about", "<html>about</html>", None);
+        let inner = PrerenderInner::new(tmp.path().to_path_buf());
+        let _ = resolve_asset(&inner, "about.html", false);
+        assert_eq!(inner.cache.read().len(), 1);
+        assert!(inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        inner.shrink();
+        assert_eq!(inner.cache.read().len(), 0);
+        assert_eq!(
+            inner.total_bytes.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 }

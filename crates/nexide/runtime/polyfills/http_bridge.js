@@ -36,59 +36,83 @@
   const stack = [];
   let nextToken = 1;
 
+  // Hot-path optimisation: most Next.js API routes that read only
+  // `req.method`/`req.url`/`req.headers` never call `.on('data'/'end')`.
+  // We avoid eagerly allocating the four listener arrays + chunk
+  // buffer per request and instead allocate them on first `.on()`
+  // touch. Combined with the deferred watchdog (see `__dispatch`) this
+  // removes ~6 allocations and 1 hidden-class transition from every
+  // simple JSON GET handler.
   function buildIncoming(idx, gen) {
     const meta = ops.op_nexide_get_meta(idx, gen);
+    const method = meta[0];
+    const url = meta[1];
 
-    let cachedRawHeaders = null;
-    let cachedHeaders = null;
     let cachedRawHeadersFlat = null;
+    let cachedRawHeadersPairs = null;
+    let cachedHeaders = null;
 
-    function rawHeaders() {
-      if (cachedRawHeaders === null) {
-        cachedRawHeaders = ops.op_nexide_get_headers(idx, gen);
+    function rawHeadersFlat() {
+      if (cachedRawHeadersFlat === null) {
+        cachedRawHeadersFlat = ops.op_nexide_get_headers(idx, gen);
       }
-      return cachedRawHeaders;
+      return cachedRawHeadersFlat;
     }
 
-    const dataListeners = [];
-    const endListeners = [];
-    const errorListeners = [];
-    const bufferedChunks = [];
+    let dataListeners = null;
+    let endListeners = null;
+    let errorListeners = null;
+    let bufferedChunks = null;
     let pumped = false;
     let ended = false;
 
     const incoming = {
-      method: meta.method,
-      url: meta.uri,
+      method,
+      url,
       httpVersion: "1.1",
 
       get headers() {
         if (cachedHeaders === null) {
           cachedHeaders = Object.create(null);
-          const raw = rawHeaders();
-          for (let i = 0; i < raw.length; i++) {
-            cachedHeaders[raw[i].name] = raw[i].value;
+          const flat = rawHeadersFlat();
+          for (let i = 0; i + 1 < flat.length; i += 2) {
+            cachedHeaders[flat[i]] = flat[i + 1];
           }
         }
         return cachedHeaders;
       },
 
       get rawHeaders() {
-        if (cachedRawHeadersFlat === null) {
-          const raw = rawHeaders();
-          cachedRawHeadersFlat = new Array(raw.length * 2);
-          for (let i = 0; i < raw.length; i++) {
-            cachedRawHeadersFlat[i * 2] = raw[i].name;
-            cachedRawHeadersFlat[i * 2 + 1] = raw[i].value;
+        return rawHeadersFlat().slice();
+      },
+
+      // Internal accessor used by `node:http`'s IncomingMessage adapter
+      // to consume the same flat array as Node's
+      // `[name, value, name, value, ...]` shape without an extra copy.
+      get __nexideRawHeadersFlat() {
+        return rawHeadersFlat();
+      },
+
+      // Internal accessor exposing pair-form
+      // `[[name, value], [name, value], ...]` for legacy adapters that
+      // expect that shape. Materialised once and cached.
+      get __nexideHeaderPairs() {
+        if (cachedRawHeadersPairs === null) {
+          const flat = rawHeadersFlat();
+          const out = new Array(flat.length >> 1);
+          for (let i = 0, j = 0; i + 1 < flat.length; i += 2, j++) {
+            out[j] = [flat[i], flat[i + 1]];
           }
+          cachedRawHeadersPairs = out;
         }
-        return cachedRawHeadersFlat;
+        return cachedRawHeadersPairs;
       },
 
       on(event, cb) {
         if (event === "data") {
+          if (dataListeners === null) dataListeners = [];
           dataListeners.push(cb);
-          if (bufferedChunks.length) {
+          if (bufferedChunks !== null && bufferedChunks.length) {
             const replay = bufferedChunks.slice();
             queueMicrotask(() => {
               for (const chunk of replay) cb(chunk);
@@ -96,6 +120,7 @@
           }
           if (!pumped) queueMicrotask(() => incoming.__pump());
         } else if (event === "end") {
+          if (endListeners === null) endListeners = [];
           endListeners.push(cb);
           if (ended) {
             queueMicrotask(() => cb());
@@ -103,6 +128,7 @@
             queueMicrotask(() => incoming.__pump());
           }
         } else if (event === "error") {
+          if (errorListeners === null) errorListeners = [];
           errorListeners.push(cb);
         }
         return incoming;
@@ -140,11 +166,16 @@
           const n = ops.op_nexide_read_body(idx, gen, buf);
           if (n === 0) break;
           const slice = buf.slice(0, n);
+          if (bufferedChunks === null) bufferedChunks = [];
           bufferedChunks.push(slice);
-          for (const cb of dataListeners.slice()) cb(slice);
+          if (dataListeners !== null) {
+            for (const cb of dataListeners.slice()) cb(slice);
+          }
         }
         ended = true;
-        for (const cb of endListeners.slice()) cb();
+        if (endListeners !== null) {
+          for (const cb of endListeners.slice()) cb();
+        }
       },
     };
 
@@ -256,8 +287,7 @@
             ops.op_nexide_send_response(
               idx,
               gen,
-              pendingHead.status,
-              pendingHead.headers,
+              { status: pendingHead.status, headers: pendingHead.headers },
               body,
             );
             headSent = true;
@@ -313,6 +343,21 @@
     }
   };
 
+  function readTimeoutMs() {
+    try {
+      const env = (typeof process === "object" && process && process.env) || {};
+      const raw = env.NEXIDE_HANDLER_TIMEOUT_MS;
+      if (raw === undefined || raw === null || raw === "") return 0;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return 0;
+      return n | 0;
+    } catch (_e) {
+      return 0;
+    }
+  }
+
+  const HANDLER_TIMEOUT_MS = readTimeoutMs();
+
   nexide.__dispatch = function (idx, gen) {
     const top = stack[stack.length - 1];
     if (!top) {
@@ -348,7 +393,55 @@
       handlerPromise = Promise.resolve(ret);
     }
 
-    return handlerPromise.then(
+    let timeoutHandle = null;
+    let timedOut = false;
+    let settled = false;
+
+    const guarded = HANDLER_TIMEOUT_MS > 0
+      ? new Promise((resolve, reject) => {
+          handlerPromise.then(
+            (v) => {
+              settled = true;
+              if (timeoutHandle) clearTimeout(timeoutHandle);
+              resolve(v);
+            },
+            (e) => {
+              settled = true;
+              if (timeoutHandle) clearTimeout(timeoutHandle);
+              reject(e);
+            },
+          );
+          queueMicrotask(() => {
+            if (settled) return;
+            timeoutHandle = setTimeout(() => {
+              if (res.__isEnded()) {
+                resolve(undefined);
+                return;
+              }
+              timedOut = true;
+              const url = (req && typeof req.url === "string") ? req.url : "?";
+              const method = (req && typeof req.method === "string") ? req.method : "?";
+              try {
+                ops.op_nexide_log(
+                  4,
+                  `nexide handler watchdog: ${method} ${url} did not settle within ${HANDLER_TIMEOUT_MS}ms; closing slot`,
+                );
+              } catch (_e) { /* logging op may be gone during shutdown */ }
+              try {
+                if (typeof res.statusCode === "number") res.statusCode = 504;
+                res.end("Gateway Timeout");
+              } catch (_e) { /* res may be in inconsistent state */ }
+              const err = new Error(
+                `nexide handler watchdog: ${method} ${url} timed out after ${HANDLER_TIMEOUT_MS}ms`,
+              );
+              err.code = "ERR_HANDLER_TIMEOUT";
+              reject(err);
+            }, HANDLER_TIMEOUT_MS);
+          });
+        })
+      : handlerPromise;
+
+    return guarded.then(
       () => {
         if (!res.__isEnded()) {
           try { res.end(); } catch { }
@@ -357,6 +450,9 @@
       (err) => {
         if (!res.__isEnded()) {
           try { res.end(); } catch { }
+        }
+        if (timedOut) {
+          return;
         }
         throw err;
       },

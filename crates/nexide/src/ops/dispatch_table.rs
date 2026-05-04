@@ -1,9 +1,9 @@
 //! Generational, per-isolate table of in-flight HTTP request slots.
 //!
-//! Multiplexed dispatch (TASK Plan-B / B-3) requires that every
-//! `op_nexide_*` op be parameterised by a `RequestId` so that several
-//! handlers can run concurrently inside the same V8 isolate without
-//! stomping on each other's [`RequestSlot`] / [`ResponseSlot`].
+//! Multiplexed dispatch requires that every `op_nexide_*` op be
+//! parameterised by a `RequestId` so that several handlers can run
+//! concurrently inside the same V8 isolate without stomping on each
+//! other's [`RequestSlot`] / [`ResponseSlot`].
 //!
 //! The table uses an arena-style backing store with explicit
 //! generation counters so a stale id (e.g. an op invoked after a
@@ -16,11 +16,12 @@
 //! No internal locking is needed; access is serialised by the
 //! `Rc<RefCell<OpState>>` style table held in the engine.
 
+use bytes::Bytes;
 use thiserror::Error;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use super::request::RequestSlot;
-use super::response::{ResponsePayload, ResponseSlot};
+use super::response::{ResponseHead, ResponsePayload, ResponseSlot};
 
 /// Outcome returned to the dispatcher's awaiter when a request
 /// completes.
@@ -70,6 +71,90 @@ pub struct InFlight {
     request: RequestSlot,
     response: ResponseSlot,
     completion: Option<Completion>,
+    stream_taps: Option<StreamTaps>,
+}
+
+/// Optional streaming hooks attached to an in-flight request.
+///
+/// When present, `op_nexide_send_head` fires `head_tx` and
+/// `op_nexide_send_chunk` forwards chunks via `body_tx` so the HTTP
+/// shield can stream bytes to the client immediately, instead of
+/// waiting for the full `ResponsePayload` to be assembled. Closing
+/// `body_tx` (drop) signals end-of-stream; sending `Err(...)` carries
+/// a mid-stream handler error to the consumer.
+#[derive(Debug)]
+pub struct StreamTaps {
+    head_tx: Option<oneshot::Sender<ResponseHead>>,
+    body_tx: Option<mpsc::UnboundedSender<Result<Bytes, RequestFailure>>>,
+}
+
+/// Reason a streaming chunk failed to flow.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum StreamTapError {
+    /// Receiver was dropped (client gone) before the chunk could be sent.
+    #[error("response stream receiver dropped")]
+    ReceiverDropped,
+}
+
+impl StreamTaps {
+    /// Builds a tap pair from the channel halves owned by the HTTP
+    /// shield.
+    #[must_use]
+    pub const fn new(
+        head_tx: oneshot::Sender<ResponseHead>,
+        body_tx: mpsc::UnboundedSender<Result<Bytes, RequestFailure>>,
+    ) -> Self {
+        Self {
+            head_tx: Some(head_tx),
+            body_tx: Some(body_tx),
+        }
+    }
+
+    /// Fires the head channel (no-op if already fired or dropped).
+    pub fn fire_head(&mut self, head: ResponseHead) {
+        if let Some(tx) = self.head_tx.take() {
+            let _ = tx.send(head);
+        }
+    }
+
+    /// Returns `true` when the body sender is still open. Used to
+    /// gate buffering on the response slot - once we have a live tap
+    /// we forward every chunk and skip the `Vec<Bytes>` aggregation.
+    #[must_use]
+    pub const fn body_open(&self) -> bool {
+        self.body_tx.is_some()
+    }
+
+    /// Pushes a chunk through the streaming tap.
+    ///
+    /// # Errors
+    ///
+    /// [`StreamTapError::ReceiverDropped`] if the receiver has been
+    /// dropped (client gone) so the caller can surface the
+    /// cancellation to V8.
+    pub fn push_chunk(&mut self, chunk: Bytes) -> Result<(), StreamTapError> {
+        let Some(tx) = self.body_tx.as_ref() else {
+            return Err(StreamTapError::ReceiverDropped);
+        };
+        if tx.send(Ok(chunk)).is_err() {
+            self.body_tx = None;
+            return Err(StreamTapError::ReceiverDropped);
+        }
+        Ok(())
+    }
+
+    /// Closes the body channel cleanly (end-of-stream).
+    pub fn finish(&mut self) {
+        self.body_tx = None;
+    }
+
+    /// Pushes an error and closes the body channel.
+    pub fn finish_error(&mut self, err: RequestFailure) {
+        if let Some(tx) = self.body_tx.take() {
+            let _ = tx.send(Err(err));
+        }
+        self.head_tx = None;
+    }
 }
 
 impl InFlight {
@@ -89,6 +174,17 @@ impl InFlight {
         &mut self.response
     }
 
+    /// Returns the streaming tap if attached at insertion time.
+    pub const fn stream_taps_mut(&mut self) -> Option<&mut StreamTaps> {
+        self.stream_taps.as_mut()
+    }
+
+    /// Attaches streaming taps to an existing slot. Used by the
+    /// engine's `enqueue_streaming` path right after `insert`.
+    pub fn attach_taps(&mut self, taps: StreamTaps) {
+        self.stream_taps = Some(taps);
+    }
+
     /// Removes the completion sender so the caller can resolve the
     /// awaiter exactly once. Subsequent calls return `None`.
     pub const fn take_completion(&mut self) -> Option<Completion> {
@@ -101,6 +197,7 @@ impl InFlight {
             request,
             response: ResponseSlot::new(),
             completion: Some(completion),
+            stream_taps: None,
         }
     }
 }
@@ -146,6 +243,7 @@ impl RequestId {
 }
 
 /// Internal slot states for the arena.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum Slot {
     /// Free slot ready to receive a new request. `generation` is the
@@ -373,6 +471,9 @@ impl DispatchTable {
             };
             self.free_head = Some(u32::try_from(raw_index).expect("slot index fits in u32"));
             let mut inflight = inflight;
+            if let Some(taps) = inflight.stream_taps_mut() {
+                taps.finish_error(failure());
+            }
             if let Some(completion) = inflight.take_completion() {
                 let _ = completion.send(Err(failure()));
                 failed += 1;
@@ -434,6 +535,7 @@ mod tests {
     use super::*;
     use crate::ops::request::RequestMeta;
     use bytes::Bytes;
+    use tokio::sync::mpsc;
 
     fn slot() -> RequestSlot {
         RequestSlot::new(
@@ -653,5 +755,69 @@ mod tests {
             table.get(id),
             Err(DispatchError::Stale(_, _) | DispatchError::Released(_))
         ));
+    }
+
+    #[test]
+    fn stream_taps_fire_head_once_then_no_op() {
+        let (head_tx, head_rx) = oneshot::channel();
+        let (body_tx, _body_rx) = mpsc::unbounded_channel();
+        let mut taps = StreamTaps::new(head_tx, body_tx);
+        let head = ResponseHead {
+            status: 200,
+            headers: vec![("x-test".to_owned(), "1".to_owned())],
+        };
+        taps.fire_head(head.clone());
+        taps.fire_head(ResponseHead {
+            status: 500,
+            headers: vec![],
+        });
+        let received = head_rx.blocking_recv().expect("head delivered");
+        assert_eq!(received.status, 200);
+    }
+
+    #[test]
+    fn stream_taps_push_chunk_forwards_until_receiver_drops() {
+        let (head_tx, _head_rx) = oneshot::channel();
+        let (body_tx, mut body_rx) = mpsc::unbounded_channel();
+        let mut taps = StreamTaps::new(head_tx, body_tx);
+        assert!(taps.push_chunk(Bytes::from_static(b"a")).is_ok());
+        assert!(taps.push_chunk(Bytes::from_static(b"b")).is_ok());
+        let first = body_rx.blocking_recv().expect("first chunk");
+        assert_eq!(first.unwrap(), Bytes::from_static(b"a"));
+        drop(body_rx);
+        assert_eq!(
+            taps.push_chunk(Bytes::from_static(b"c")),
+            Err(StreamTapError::ReceiverDropped)
+        );
+        assert!(!taps.body_open());
+    }
+
+    #[test]
+    fn stream_taps_finish_error_closes_with_error_payload() {
+        let (head_tx, _head_rx) = oneshot::channel();
+        let (body_tx, mut body_rx) = mpsc::unbounded_channel();
+        let mut taps = StreamTaps::new(head_tx, body_tx);
+        taps.finish_error(RequestFailure::Handler("boom".to_owned()));
+        let received = body_rx.blocking_recv().expect("err frame delivered");
+        assert!(matches!(received, Err(RequestFailure::Handler(_))));
+        assert!(body_rx.blocking_recv().is_none());
+    }
+
+    #[test]
+    fn dispatch_table_attach_taps_routes_through_inflight() {
+        let mut table = DispatchTable::new();
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let id = table.insert(slot(), reply_tx);
+        let (head_tx, head_rx) = oneshot::channel();
+        let (body_tx, _body_rx) = mpsc::unbounded_channel();
+        let taps = StreamTaps::new(head_tx, body_tx);
+        let inflight = table.get_mut(id).expect("freshly inserted");
+        inflight.attach_taps(taps);
+        let taps_ref = inflight.stream_taps_mut().expect("attached");
+        taps_ref.fire_head(ResponseHead {
+            status: 201,
+            headers: vec![],
+        });
+        assert_eq!(head_rx.blocking_recv().expect("head").status, 201);
     }
 }

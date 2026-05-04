@@ -69,13 +69,36 @@ For pure-JS swap-ins still recommended where they exist:
 - **`better-sqlite3`** / `sqlite3` → use `@prisma/client` (works,
   see above), an HTTP-fronted SQLite (Turso, D1), or a pure-JS driver.
 
-## HTTP/2 server / client
+## HTTP/2 server
 
-`require('node:http2')` loads, exposes `constants`, but `createServer`
-and `connect` throw. Most deps probe via
-`try { require('http2') } catch {}` and fall back to HTTP/1.1, so this
-is usually transparent. gRPC clients that hard-require HTTP/2 will not
-work.
+`require('node:http2')` exposes a working **client** subset:
+`http2.connect(authority)` opens a real h2 session via Rust ops, and
+`session.request(headers)` returns a `Http2Stream` you can write/read
+like a Duplex (enough for gRPC clients that go through `@grpc/grpc-js`'s
+HTTP/2 channel, REST clients that opportunistically upgrade, etc.).
+
+The **server** side (`http2.createServer`, `createSecureServer`) is not
+implemented — nexide's shield terminates HTTP/1.1 + h2 itself and hands
+requests to JS as a Node-shaped `IncomingMessage`/`ServerResponse`
+regardless of the wire protocol, so user code does not need a separate
+h2 server. Most deps probe via `try { require('http2') } catch {}` and
+fall back, so this is usually transparent.
+
+## Inspector / debugger protocol
+
+`require('node:inspector')` ships a small APM-probe shim: a
+`Session` whose `post(method, params, cb)` answers a curated set of
+calls that Datadog / Sentry / Elastic agents issue at startup —
+`Runtime.evaluate` (via `vm.runInThisContext`), `Runtime.getHeapUsage`,
+`Runtime.getHeapStatistics`, `HeapProfiler.collectGarbage`, plus
+acknowledged-but-no-op `Profiler.enable`/`disable`. Every other method
+rejects with the standard `-32601` "Method not found" error, mirroring
+the Inspector wire format.
+
+The full DevTools protocol (live debugger, sampling CPU profiler,
+incremental heap snapshots) is **not** implemented. Capture profiles
+and heap snapshots externally — e.g. via `kill -USR1` on stock Node
+during local repro, or via the host process / sidecar in production.
 
 ## Worker threads
 
@@ -84,12 +107,6 @@ Next.js uses workers for ISR background revalidation; in nexide that
 path is serialised onto the request loop. For most workloads this is
 invisible; if you have heavy CPU-bound revalidation, scale horizontally
 instead.
-
-## Inspector / debugger protocol
-
-`require('node:inspector')` loads (so deps probing it don't crash) but
-the DevTools wire protocol is not implemented. CPU profiles and heap
-snapshots must be captured externally (e.g. via the host process).
 
 ## `cluster`, `dgram`, `repl`, `domain`, `wasi`, `trace_events`
 

@@ -405,6 +405,515 @@ webcrypto.CryptoKey = CryptoKey;
 webcrypto.SubtleCrypto = SubtleCrypto;
 webcrypto.Crypto = Crypto;
 
+const KEY_GATE = Symbol("nexide.crypto.KeyObjectGate");
+
+function base64UrlEncode(buf) {
+  return Buffer.from(buf).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function base64UrlDecode(s) {
+  const pad = (4 - (s.length % 4)) % 4;
+  return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat(pad), "base64");
+}
+
+function curveToNamed(curve) {
+  switch (curve) {
+    case "P-256": case "p-256": case "prime256v1": case "secp256r1": return "prime256v1";
+    case "P-384": case "p-384": case "secp384r1": return "secp384r1";
+    case "P-521": case "p-521": case "secp521r1": return "secp521r1";
+    default: return curve;
+  }
+}
+
+function namedToJoseCurve(name) {
+  switch (name) {
+    case "prime256v1": case "secp256r1": return "P-256";
+    case "secp384r1": return "P-384";
+    case "secp521r1": return "P-521";
+    default: return name;
+  }
+}
+
+function pemLabelForKind(kind) {
+  switch (kind) {
+    case "private-pkcs8": return "PRIVATE KEY";
+    case "public-spki": return "PUBLIC KEY";
+    case "pkcs1-priv": return "RSA PRIVATE KEY";
+    case "pkcs1-pub": return "RSA PUBLIC KEY";
+    case "ec-sec1": return "EC PRIVATE KEY";
+    default: throw new Error(`unknown kind: ${kind}`);
+  }
+}
+
+function kindForPemLabel(label) {
+  switch (label) {
+    case "PRIVATE KEY": return "private-pkcs8";
+    case "PUBLIC KEY": return "public-spki";
+    case "RSA PRIVATE KEY": return "pkcs1-priv";
+    case "RSA PUBLIC KEY": return "pkcs1-pub";
+    case "EC PRIVATE KEY": return "ec-sec1";
+    default: return null;
+  }
+}
+
+class KeyObject {
+  constructor(gate, fields) {
+    if (gate !== KEY_GATE) {
+      const err = new TypeError("Illegal constructor");
+      err.code = "ERR_INVALID_THIS";
+      throw err;
+    }
+    this._type = fields.type;
+    this._kind = fields.kind || null;
+    this._der = fields.der || null;
+    this._info = fields.info || {};
+    this._secret = fields.secret || null;
+  }
+
+  get type() { return this._type; }
+
+  get asymmetricKeyType() {
+    if (this._type === "secret") return undefined;
+    return this._info.asymmetricKeyType;
+  }
+
+  get asymmetricKeyDetails() {
+    if (this._type === "secret") return undefined;
+    const details = {};
+    if (this._info.modulusLength != null) details.modulusLength = this._info.modulusLength;
+    if (this._info.publicExponent != null) details.publicExponent = BigInt(this._info.publicExponent);
+    if (this._info.namedCurve != null) details.namedCurve = this._info.namedCurve;
+    return details;
+  }
+
+  get symmetricKeySize() {
+    return this._type === "secret" && this._secret ? this._secret.length : undefined;
+  }
+
+  export(options = {}) {
+    if (this._type === "secret") {
+      if (options.format === "jwk") {
+        return { kty: "oct", k: base64UrlEncode(this._secret) };
+      }
+      return Buffer.from(this._secret);
+    }
+    const format = options.format || "pem";
+    if (format === "jwk") {
+      const json = ops.op_crypto_der_to_jwk(this._der, this._kind);
+      return JSON.parse(json);
+    }
+    let outKind = this._kind;
+    if (this._type === "private") {
+      const t = options.type || "pkcs8";
+      if (t === "pkcs8") outKind = "private-pkcs8";
+      else if (t === "pkcs1") outKind = "pkcs1-priv";
+      else if (t === "sec1") outKind = "ec-sec1";
+      else throw new Error(`unsupported private export type: ${t}`);
+    } else {
+      const t = options.type || "spki";
+      if (t === "spki") outKind = "public-spki";
+      else if (t === "pkcs1") outKind = "pkcs1-pub";
+      else throw new Error(`unsupported public export type: ${t}`);
+    }
+    let der = this._der;
+    if (outKind !== this._kind) {
+      const hint = this._info.namedCurve || "";
+      der = ops.op_crypto_key_convert(this._kind, outKind, this._der, hint);
+    }
+    if (options.cipher || options.passphrase) {
+      const err = new Error("Encrypted key export with passphrase is not supported in nexide");
+      err.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+      throw err;
+    }
+    if (format === "der") return Buffer.from(der);
+    if (format === "pem") return ops.op_crypto_pem_encode(pemLabelForKind(outKind), der);
+    throw new Error(`unsupported export format: ${format}`);
+  }
+
+  equals(other) {
+    if (!(other instanceof KeyObject)) return false;
+    if (this._type !== other._type) return false;
+    if (this._type === "secret") {
+      if (!this._secret || !other._secret) return false;
+      if (this._secret.length !== other._secret.length) return false;
+      let diff = 0;
+      for (let i = 0; i < this._secret.length; i++) diff |= this._secret[i] ^ other._secret[i];
+      return diff === 0;
+    }
+    if (this._kind !== other._kind || this._der.length !== other._der.length) return false;
+    let diff = 0;
+    for (let i = 0; i < this._der.length; i++) diff |= this._der[i] ^ other._der[i];
+    return diff === 0;
+  }
+
+  static from(cryptoKey) {
+    const err = new Error("KeyObject.from(CryptoKey) is not supported");
+    err.code = "ERR_METHOD_NOT_IMPLEMENTED";
+    throw err;
+  }
+}
+
+function makeKeyObject(fields) { return new KeyObject(KEY_GATE, fields); }
+
+function inspectAndBuild(type, kind, der) {
+  const info = JSON.parse(ops.op_crypto_key_inspect(der, kind));
+  return makeKeyObject({ type, kind, der, info });
+}
+
+function createSecretKey(key, encoding) {
+  let buf;
+  if (typeof key === "string") buf = Buffer.from(key, encoding || "utf8");
+  else if (key instanceof Uint8Array) buf = Buffer.from(key);
+  else if (key && typeof key === "object" && key.type === "Buffer" && Array.isArray(key.data)) buf = Buffer.from(key.data);
+  else throw new TypeError("createSecretKey: key must be Buffer/Uint8Array/string");
+  return makeKeyObject({ type: "secret", secret: new Uint8Array(buf) });
+}
+
+function jwkToKeyObject(jwk, wantPublic) {
+  if (jwk.kty === "oct") {
+    return createSecretKey(base64UrlDecode(jwk.k));
+  }
+  const wantKind = wantPublic ? "public-spki" : "private-pkcs8";
+  const der = ops.op_crypto_jwk_to_der(JSON.stringify(jwk), wantKind);
+  return inspectAndBuild(wantPublic ? "public" : "private", wantKind, der);
+}
+
+function normalizeKeyInput(input) {
+  if (input instanceof KeyObject) return { kind: "keyobject", value: input };
+  if (typeof input === "string") return { kind: "pem", value: input };
+  if (input instanceof Uint8Array) return { kind: "der", value: input, type: "pkcs8" };
+  if (input && typeof input === "object") {
+    if (input.kty) return { kind: "jwk", value: input };
+    if (input.format === "jwk" && input.key) return { kind: "jwk", value: input.key };
+    if (typeof input.key === "string") return { kind: "pem", value: input.key };
+    if (input.key instanceof Uint8Array || (input.key && input.key.type === "Buffer")) {
+      const der = input.key instanceof Uint8Array ? input.key : Buffer.from(input.key.data);
+      return { kind: "der", value: der, type: input.type || "pkcs8" };
+    }
+  }
+  throw new TypeError("invalid key input");
+}
+
+function pemToDer(pem) {
+  const decoded = ops.op_crypto_pem_decode(pem);
+  return { label: decoded.label, der: decoded.der };
+}
+
+function createPrivateKey(input) {
+  const norm = normalizeKeyInput(input);
+  if (norm.kind === "keyobject") {
+    if (norm.value._type !== "private") throw new Error("expected private KeyObject");
+    return norm.value;
+  }
+  if (norm.kind === "jwk") return jwkToKeyObject(norm.value, false);
+  let der, kind;
+  if (norm.kind === "pem") {
+    const { label, der: rawDer } = pemToDer(norm.value);
+    kind = kindForPemLabel(label);
+    if (!kind) throw new Error(`unsupported PEM label for private key: ${label}`);
+    der = rawDer;
+  } else {
+    der = norm.value;
+    if (norm.type === "pkcs1") kind = "pkcs1-priv";
+    else if (norm.type === "sec1") kind = "ec-sec1";
+    else kind = "private-pkcs8";
+  }
+  if (kind !== "private-pkcs8") {
+    const hint = "";
+    der = ops.op_crypto_key_convert(kind, "private-pkcs8", der, hint);
+    kind = "private-pkcs8";
+  }
+  return inspectAndBuild("private", kind, der);
+}
+
+function createPublicKey(input) {
+  if (input instanceof KeyObject && input._type === "private") {
+    const der = ops.op_crypto_key_convert("private-pkcs8", "public-spki", input._der, "");
+    return inspectAndBuild("public", "public-spki", der);
+  }
+  const norm = normalizeKeyInput(input);
+  if (norm.kind === "keyobject") {
+    if (norm.value._type === "public") return norm.value;
+    if (norm.value._type === "private") {
+      const der = ops.op_crypto_key_convert("private-pkcs8", "public-spki", norm.value._der, "");
+      return inspectAndBuild("public", "public-spki", der);
+    }
+    throw new Error("cannot derive public key from secret KeyObject");
+  }
+  if (norm.kind === "jwk") return jwkToKeyObject(norm.value, true);
+  let der, kind;
+  if (norm.kind === "pem") {
+    const { label, der: rawDer } = pemToDer(norm.value);
+    kind = kindForPemLabel(label);
+    if (!kind) throw new Error(`unsupported PEM label for public key: ${label}`);
+    der = rawDer;
+    if (kind === "private-pkcs8" || kind === "pkcs1-priv" || kind === "ec-sec1") {
+      if (kind !== "private-pkcs8") der = ops.op_crypto_key_convert(kind, "private-pkcs8", der, "");
+      der = ops.op_crypto_key_convert("private-pkcs8", "public-spki", der, "");
+      kind = "public-spki";
+    }
+  } else {
+    der = norm.value;
+    if (norm.type === "pkcs1") kind = "pkcs1-pub";
+    else kind = "public-spki";
+  }
+  if (kind === "pkcs1-pub") {
+    der = ops.op_crypto_key_convert("pkcs1-pub", "public-spki", der, "");
+    kind = "public-spki";
+  }
+  return inspectAndBuild("public", kind, der);
+}
+
+function generateKeyPairSync(type, options = {}) {
+  const optsJson = JSON.stringify(options || {});
+  const result = ops.op_crypto_generate_key_pair(type, optsJson);
+  const info = JSON.parse(result.info_json);
+  const pubKO = makeKeyObject({ type: "public", kind: "public-spki", der: result.publicKey, info });
+  const privKO = makeKeyObject({ type: "private", kind: "private-pkcs8", der: result.privateKey, info });
+  const pubEnc = options.publicKeyEncoding;
+  const privEnc = options.privateKeyEncoding;
+  return {
+    publicKey: pubEnc ? pubKO.export(pubEnc) : pubKO,
+    privateKey: privEnc ? privKO.export(privEnc) : privKO,
+  };
+}
+
+function generateKeyPair(type, options, callback) {
+  if (typeof options === "function") { callback = options; options = {}; }
+  queueMicrotask(() => {
+    try {
+      const r = generateKeyPairSync(type, options);
+      callback(null, r.publicKey, r.privateKey);
+    } catch (err) {
+      callback(err);
+    }
+  });
+}
+
+function generateKeySync(type, options = {}) {
+  let length = options.length;
+  if (type === "hmac") {
+    if (length == null) length = 256;
+    if (length < 8 || length > 65536 || length % 8 !== 0) throw new RangeError("hmac length out of range");
+  } else if (type === "aes") {
+    if (length !== 128 && length !== 192 && length !== 256) throw new RangeError("aes length must be 128/192/256");
+  } else {
+    throw new Error(`generateKey: unsupported type ${type}`);
+  }
+  const bytes = Buffer.from(ops.op_crypto_random_bytes(length / 8));
+  return createSecretKey(bytes);
+}
+
+function generateKey(type, options, callback) {
+  if (typeof options === "function") { callback = options; options = {}; }
+  queueMicrotask(() => {
+    try { callback(null, generateKeySync(type, options)); } catch (err) { callback(err); }
+  });
+}
+
+function rsaPaddingName(p) {
+  if (p == null || p === 4) return "oaep";
+  if (p === 1) return "pkcs1";
+  throw new Error(`unsupported RSA padding: ${p}`);
+}
+
+function rsaCryptOptions(input, defaultPadding) {
+  let key, padding, oaepHash, oaepLabel;
+  if (input instanceof KeyObject || typeof input === "string" || input instanceof Uint8Array) {
+    key = input;
+    padding = defaultPadding;
+    oaepHash = "sha1";
+    oaepLabel = null;
+  } else if (input && typeof input === "object") {
+    if (input.kty) {
+      key = input;
+    } else {
+      key = input.key !== undefined ? input.key : input;
+    }
+    padding = input.padding != null ? input.padding : defaultPadding;
+    oaepHash = (input.oaepHash || "sha1").toLowerCase();
+    oaepLabel = input.oaepLabel ? asBytes(input.oaepLabel) : null;
+  } else {
+    throw new TypeError("invalid RSA key argument");
+  }
+  return { key, padding: rsaPaddingName(padding), oaepHash, oaepLabel };
+}
+
+function publicEncrypt(input, buffer) {
+  const { key, padding, oaepHash, oaepLabel } = rsaCryptOptions(input, 4);
+  const ko = createPublicKey(key);
+  const data = asBytes(buffer);
+  const out = ops.op_crypto_rsa_encrypt(ko._der, data, padding, oaepHash, oaepLabel || new Uint8Array(0));
+  return Buffer.from(out);
+}
+
+function privateDecrypt(input, buffer) {
+  const { key, padding, oaepHash, oaepLabel } = rsaCryptOptions(input, 4);
+  const ko = createPrivateKey(key);
+  const data = asBytes(buffer);
+  const out = ops.op_crypto_rsa_decrypt(ko._der, data, padding, oaepHash, oaepLabel || new Uint8Array(0));
+  return Buffer.from(out);
+}
+
+function privateEncrypt(_input, _buffer) {
+  const err = new Error("privateEncrypt is not supported in nexide");
+  err.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+  throw err;
+}
+
+function publicDecrypt(_input, _buffer) {
+  const err = new Error("publicDecrypt is not supported in nexide");
+  err.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+  throw err;
+}
+
+function digestForAlgo(algorithm) {
+  if (!algorithm) return null;
+  return normalizeDigestName(algorithm);
+}
+
+function chooseSignAlgo(keyObject, algorithm, padding) {
+  const akt = keyObject.asymmetricKeyType;
+  const digest = digestForAlgo(algorithm);
+  if (akt === "ed25519") return { algo: "ed25519" };
+  if (akt === "rsa" || akt === "rsa-pss") {
+    if (!digest) throw new Error("RSA sign requires a digest algorithm");
+    const isPss = padding === 6 || akt === "rsa-pss";
+    return { algo: `${isPss ? "rsa-pss-" : "rsa-"}${digest}` };
+  }
+  if (akt === "ec") {
+    const curve = curveToNamed(keyObject._info.namedCurve);
+    if (curve === "prime256v1") return { algo: "ecdsa-p256-sha256" };
+    if (curve === "secp384r1") return { algo: "ecdsa-p384-sha384" };
+    if (curve === "secp521r1") return { algo: "ecdsa-p521-sha512" };
+    throw new Error(`unsupported EC curve: ${curve}`);
+  }
+  throw new Error(`unsupported asymmetricKeyType: ${akt}`);
+}
+
+function signOneShot(algorithm, data, key) {
+  const ko = key instanceof KeyObject ? key : createPrivateKey(key);
+  const padding = (key && typeof key === "object" && !(key instanceof KeyObject)) ? key.padding : null;
+  const { algo } = chooseSignAlgo(ko, algorithm, padding);
+  const dsaEncoding = (key && typeof key === "object" && !(key instanceof KeyObject) && key.dsaEncoding) || "der";
+  const format = algo.startsWith("ecdsa-") ? dsaEncoding : "der";
+  const sig = ops.op_crypto_sign_der(algo, "private-pkcs8", ko._der, asBytes(data), format);
+  return Buffer.from(sig);
+}
+
+function verifyOneShot(algorithm, data, key, signature) {
+  const ko = key instanceof KeyObject ? key : createPublicKey(key);
+  const padding = (key && typeof key === "object" && !(key instanceof KeyObject)) ? key.padding : null;
+  const { algo } = chooseSignAlgo(ko, algorithm, padding);
+  const dsaEncoding = (key && typeof key === "object" && !(key instanceof KeyObject) && key.dsaEncoding) || "auto";
+  const format = algo.startsWith("ecdsa-") ? dsaEncoding : "der";
+  return ops.op_crypto_verify_der(algo, "public-spki", ko._der, asBytes(data), asBytes(signature), format);
+}
+
+function diffieHellman(opts) {
+  if (!opts || !(opts.privateKey instanceof KeyObject) || !(opts.publicKey instanceof KeyObject)) {
+    throw new TypeError("diffieHellman requires {privateKey, publicKey} KeyObjects");
+  }
+  const priv = opts.privateKey;
+  const pub = opts.publicKey;
+  const akt = priv.asymmetricKeyType;
+  if (akt !== pub.asymmetricKeyType) {
+    const err = new Error("diffieHellman: incompatible key types");
+    err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY";
+    throw err;
+  }
+  if (akt === "x25519") {
+    return Buffer.from(ops.op_crypto_x25519_derive(priv._der, pub._der));
+  }
+  if (akt === "ec") {
+    const curveJose = namedToJoseCurve(priv._info.namedCurve);
+    return Buffer.from(ops.op_crypto_ecdh_derive(curveJose, priv._der, pub._der));
+  }
+  throw new Error(`diffieHellman not supported for type: ${akt}`);
+}
+
+class ECDH {
+  constructor(curve) {
+    const named = curveToNamed(curve);
+    if (!["prime256v1", "secp384r1", "secp521r1"].includes(named)) {
+      throw new Error(`unsupported ECDH curve: ${curve}`);
+    }
+    this._curve = named;
+    this._joseCurve = namedToJoseCurve(named);
+    this._privDer = null;
+    this._pubDer = null;
+    this._privRaw = null;
+    this._pubRaw = null;
+  }
+  generateKeys(encoding, format) {
+    const r = ops.op_crypto_ecdh_generate(this._joseCurve);
+    this._privDer = r.privateKey;
+    this._pubDer = r.publicKey;
+    this._privRaw = r.privateRaw;
+    this._pubRaw = r.publicRaw;
+    return this.getPublicKey(encoding, format);
+  }
+  getPublicKey(encoding, _format) {
+    if (!this._pubRaw) throw new Error("ECDH: keys not generated");
+    const buf = Buffer.from(this._pubRaw);
+    return encoding ? buf.toString(encoding) : buf;
+  }
+  getPrivateKey(encoding) {
+    if (!this._privRaw) throw new Error("ECDH: keys not generated");
+    const buf = Buffer.from(this._privRaw);
+    return encoding ? buf.toString(encoding) : buf;
+  }
+  setPrivateKey(priv, encoding) {
+    const raw = typeof priv === "string" ? Buffer.from(priv, encoding || "hex") : asBytes(priv);
+    const r = ops.op_crypto_ecdh_from_raw(this._joseCurve, raw);
+    this._privDer = r.privateKey;
+    this._pubDer = r.publicKey;
+    this._privRaw = r.privateRaw;
+    this._pubRaw = r.publicRaw;
+    return this;
+  }
+  computeSecret(otherPub, inEnc, outEnc) {
+    if (!this._privRaw) throw new Error("ECDH: keys not generated");
+    let pubRaw;
+    if (typeof otherPub === "string") pubRaw = Buffer.from(otherPub, inEnc || "hex");
+    else pubRaw = asBytes(otherPub);
+    const secret = Buffer.from(ops.op_crypto_ecdh_compute_raw(this._joseCurve, this._privRaw, pubRaw));
+    return outEnc ? secret.toString(outEnc) : secret;
+  }
+}
+
+function createECDH(curve) { return new ECDH(curve); }
+
+function createDiffieHellman(_a, _b, _c, _d) {
+  const err = new Error("createDiffieHellman is not supported in nexide");
+  err.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+  throw err;
+}
+
+function createDiffieHellmanGroup(_name) {
+  const err = new Error("createDiffieHellmanGroup is not supported in nexide");
+  err.code = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+  throw err;
+}
+
+function hkdfSync(digest, ikm, salt, info, keylen) {
+  const ikmBuf = ikm instanceof KeyObject && ikm._type === "secret" ? ikm._secret : asBytes(ikm);
+  const out = ops.op_crypto_hkdf(
+    normalizeDigestName(digest),
+    ikmBuf,
+    asBytes(salt || new Uint8Array(0)),
+    asBytes(info || new Uint8Array(0)),
+    keylen,
+  );
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+}
+
+function hkdf(digest, ikm, salt, info, keylen, callback) {
+  queueMicrotask(() => {
+    try { callback(null, hkdfSync(digest, ikm, salt, info, keylen)); } catch (err) { callback(err); }
+  });
+}
+
 module.exports = {
   createHash,
   createHmac,
@@ -430,7 +939,40 @@ module.exports = {
   Crypto,
   CryptoKey,
   SubtleCrypto,
-  constants: {},
+  KeyObject,
+  createPrivateKey,
+  createPublicKey,
+  createSecretKey,
+  generateKeyPair,
+  generateKeyPairSync,
+  generateKey,
+  generateKeySync,
+  diffieHellman,
+  createDiffieHellman,
+  createDiffieHellmanGroup,
+  createECDH,
+  ECDH,
+  privateDecrypt,
+  publicEncrypt,
+  privateEncrypt,
+  publicDecrypt,
+  sign: signOneShot,
+  verify: verifyOneShot,
+  hkdf,
+  hkdfSync,
+  getCipherInfo: () => null,
+  getCurves: () => ["prime256v1", "secp384r1", "secp521r1"],
+  getFips: () => 0,
+  setFips: () => {},
+  constants: {
+    RSA_PKCS1_PADDING: 1,
+    RSA_NO_PADDING: 3,
+    RSA_PKCS1_OAEP_PADDING: 4,
+    RSA_PKCS1_PSS_PADDING: 6,
+    RSA_PSS_SALTLEN_DIGEST: -1,
+    RSA_PSS_SALTLEN_MAX_SIGN: -2,
+    RSA_PSS_SALTLEN_AUTO: -2,
+  },
   getCiphers: () => [
     "aes-128-cbc", "aes-192-cbc", "aes-256-cbc",
     "aes-128-ctr", "aes-256-ctr",
@@ -438,4 +980,3 @@ module.exports = {
   ],
   getHashes: () => ["sha1", "sha256", "sha384", "sha512", "md5"],
 };
-

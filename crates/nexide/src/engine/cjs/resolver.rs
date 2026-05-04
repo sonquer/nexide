@@ -14,6 +14,8 @@ use std::sync::Arc;
 use super::errors::CjsError;
 use super::registry::BuiltinRegistry;
 
+const LOG_TARGET: &str = "nexide::engine::cjs";
+
 /// Sentinel parent value used by the JS loader for top-level
 /// `require` calls. The resolver treats it as the project root.
 pub const ROOT_PARENT: &str = "<root>";
@@ -86,6 +88,17 @@ pub trait CjsResolver: Send + Sync + 'static {
     /// configured roots.
     fn resolve(&self, parent: &str, request: &str) -> Result<Resolved, CjsError>;
 
+    /// Resolves `request` using ESM conditions (`["node", "import",
+    /// "default"]`). Defaults to [`Self::resolve`] for resolvers that
+    /// do not distinguish CJS vs ESM exports.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::resolve`].
+    fn resolve_esm(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
+        self.resolve(parent, request)
+    }
+
     /// Returns the source of a `node:*` builtin, or `None` if no
     /// builtin with that name is registered.
     fn builtin_source(&self, name: &str) -> Option<&'static str>;
@@ -101,6 +114,52 @@ pub trait CjsResolver: Send + Sync + 'static {
     fn is_path_admitted(&self, _path: &Path) -> bool {
         true
     }
+
+    /// Returns `true` when `path` should be evaluated as ESM.
+    ///
+    /// Default implementation inspects the file extension and the
+    /// nearest `package.json#type` field.
+    #[must_use]
+    fn is_esm_path(&self, path: &Path) -> bool {
+        is_esm_path(path)
+    }
+}
+
+/// Walks up from `path`, looking for the closest `package.json`, and
+/// reports whether the file should be parsed as ESM.
+///
+/// Rules (mirror Node):
+/// * `.mjs` / `.mts` → always ESM.
+/// * `.cjs` / `.cts` → never ESM.
+/// * `.js` / `.jsx` → defer to `package.json#type` (`"module"` ⇒ ESM).
+/// * everything else → CJS.
+#[must_use]
+pub fn is_esm_path(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("mjs" | "mts") => return true,
+        Some("cjs" | "cts" | "json" | "node") => return false,
+        Some("js" | "jsx" | "ts" | "tsx") => {}
+        _ => return false,
+    }
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        let pkg = dir.join("package.json");
+        if pkg.is_file()
+            && let Ok(text) = std::fs::read_to_string(&pkg)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+        {
+            if let Some(t) = json.get("type").and_then(serde_json::Value::as_str) {
+                return t == "module";
+            }
+            return false;
+        }
+        current = dir.parent();
+    }
+    false
 }
 
 /// File-system-backed resolver scoped to a list of project roots.
@@ -231,13 +290,18 @@ impl FsResolver {
         Ok(Self::classify(path))
     }
 
-    fn resolve_node_modules(&self, base_dir: &Path, request: &str) -> Result<Resolved, CjsError> {
+    fn resolve_node_modules(
+        &self,
+        base_dir: &Path,
+        request: &str,
+        conditions: &[&str],
+    ) -> Result<Resolved, CjsError> {
         let (pkg_name, subpath) = split_package_name(request);
         let mut current = Some(base_dir.to_path_buf());
         while let Some(dir) = current {
             let pkg_dir = dir.join("node_modules").join(&pkg_name);
             if pkg_dir.is_dir()
-                && let Some(found) = Self::resolve_in_package(&pkg_dir, subpath)
+                && let Some(found) = Self::resolve_in_package(&pkg_dir, subpath, conditions)
                 && self.within_roots(&found)
             {
                 return Ok(Self::classify(found));
@@ -254,6 +318,7 @@ impl FsResolver {
         &self,
         base_dir: &Path,
         request: &str,
+        conditions: &[&str],
     ) -> Result<Resolved, CjsError> {
         let mut current = Some(base_dir.to_path_buf());
         while let Some(dir) = current {
@@ -262,9 +327,9 @@ impl FsResolver {
                 && let Ok(text) = std::fs::read_to_string(&pkg_path)
                 && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
                 && let Some(imports) = json.get("imports")
-                && let Some(rel) = match_exports(imports, request)
+                && let Some(rel) = match_exports(imports, request, conditions)
             {
-                return self.resolve_imports_target(&dir, &rel, request, base_dir);
+                return self.resolve_imports_target(&dir, &rel, request, base_dir, conditions);
             }
             current = dir.parent().map(Path::to_path_buf);
         }
@@ -280,6 +345,7 @@ impl FsResolver {
         target: &str,
         request: &str,
         base_dir: &Path,
+        conditions: &[&str],
     ) -> Result<Resolved, CjsError> {
         if target.starts_with("./") || target.starts_with("../") {
             let candidate = pkg_dir.join(target.trim_start_matches("./"));
@@ -297,12 +363,12 @@ impl FsResolver {
                 });
         }
         if target.starts_with('#') {
-            return self.resolve_subpath_imports(pkg_dir, target);
+            return self.resolve_subpath_imports(pkg_dir, target, conditions);
         }
-        self.resolve_node_modules(pkg_dir, target)
+        self.resolve_node_modules(pkg_dir, target, conditions)
     }
 
-    fn resolve_in_package(pkg_dir: &Path, subpath: &str) -> Option<PathBuf> {
+    fn resolve_in_package(pkg_dir: &Path, subpath: &str, conditions: &[&str]) -> Option<PathBuf> {
         let pkg_path = pkg_dir.join("package.json");
         let pkg_json = if pkg_path.is_file() {
             std::fs::read_to_string(&pkg_path)
@@ -320,7 +386,7 @@ impl FsResolver {
             } else {
                 format!("./{subpath}")
             };
-            if let Some(rel) = match_exports(exports, &key) {
+            if let Some(rel) = match_exports(exports, &key, conditions) {
                 let candidate = pkg_dir.join(rel.trim_start_matches("./"));
                 if candidate.is_file() {
                     return Some(candidate);
@@ -371,10 +437,10 @@ fn split_package_name(request: &str) -> (String, &str) {
     )
 }
 
-fn match_exports(exports: &serde_json::Value, key: &str) -> Option<String> {
+fn match_exports(exports: &serde_json::Value, key: &str, conditions: &[&str]) -> Option<String> {
     if let Some(obj) = exports.as_object() {
         if let Some(direct) = obj.get(key)
-            && let Some(s) = pick_condition(direct)
+            && let Some(s) = pick_condition(direct, conditions)
         {
             return Some(s);
         }
@@ -384,7 +450,7 @@ fn match_exports(exports: &serde_json::Value, key: &str) -> Option<String> {
                 let suffix = &suffix[1..];
                 if key.starts_with(prefix) && key.ends_with(suffix) && key.len() >= pat.len() - 1 {
                     let middle = &key[prefix.len()..key.len() - suffix.len()];
-                    if let Some(template) = pick_condition(val) {
+                    if let Some(template) = pick_condition(val, conditions) {
                         return Some(template.replacen('*', middle, 1));
                     }
                 }
@@ -400,13 +466,13 @@ fn match_exports(exports: &serde_json::Value, key: &str) -> Option<String> {
     None
 }
 
-fn pick_condition(value: &serde_json::Value) -> Option<String> {
+fn pick_condition(value: &serde_json::Value, conditions: &[&str]) -> Option<String> {
     match value {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(map) => {
-            for cond in ["require", "node", "default"] {
-                if let Some(v) = map.get(cond)
-                    && let Some(s) = pick_condition(v)
+            for cond in conditions {
+                if let Some(v) = map.get(*cond)
+                    && let Some(s) = pick_condition(v, conditions)
                 {
                     return Some(s);
                 }
@@ -417,8 +483,16 @@ fn pick_condition(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-impl CjsResolver for FsResolver {
-    fn resolve(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
+const CJS_CONDITIONS: &[&str] = &["require", "node", "default"];
+const ESM_CONDITIONS: &[&str] = &["node", "import", "default"];
+
+impl FsResolver {
+    fn resolve_with(
+        &self,
+        parent: &str,
+        request: &str,
+        conditions: &[&str],
+    ) -> Result<Resolved, CjsError> {
         if let Some(name) = request.strip_prefix("node:") {
             if self.registry.contains(name) {
                 return Ok(Resolved::Builtin(name.to_owned()));
@@ -442,14 +516,32 @@ impl CjsResolver for FsResolver {
         let base_dir = self.parent_dir(parent);
 
         if request.starts_with('#') {
-            return self.resolve_subpath_imports(&base_dir, request);
+            return self.resolve_subpath_imports(&base_dir, request, conditions);
         }
 
         if is_relative {
             self.resolve_file_path(&base_dir, request)
         } else {
-            self.resolve_node_modules(&base_dir, request)
+            self.resolve_node_modules(&base_dir, request, conditions)
         }
+    }
+}
+
+impl CjsResolver for FsResolver {
+    fn resolve(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
+        let result = self.resolve_with(parent, request, CJS_CONDITIONS);
+        if tracing::enabled!(target: LOG_TARGET, tracing::Level::DEBUG) {
+            log_resolution(parent, request, "cjs", &result);
+        }
+        result
+    }
+
+    fn resolve_esm(&self, parent: &str, request: &str) -> Result<Resolved, CjsError> {
+        let result = self.resolve_with(parent, request, ESM_CONDITIONS);
+        if tracing::enabled!(target: LOG_TARGET, tracing::Level::DEBUG) {
+            log_resolution(parent, request, "esm", &result);
+        }
+        result
     }
 
     fn builtin_source(&self, name: &str) -> Option<&'static str> {
@@ -458,6 +550,60 @@ impl CjsResolver for FsResolver {
 
     fn is_path_admitted(&self, path: &Path) -> bool {
         self.within_roots_pub(path)
+    }
+}
+
+fn log_resolution(
+    parent: &str,
+    request: &str,
+    mode: &'static str,
+    result: &Result<Resolved, CjsError>,
+) {
+    match result {
+        Ok(Resolved::Builtin(name)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "builtin",
+            name = %name,
+            "resolved",
+        ),
+        Ok(Resolved::File(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "file",
+            path = %path.display(),
+            "resolved",
+        ),
+        Ok(Resolved::Json(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "json",
+            path = %path.display(),
+            "resolved",
+        ),
+        Ok(Resolved::Native(path)) => tracing::trace!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            kind = "native",
+            path = %path.display(),
+            "resolved",
+        ),
+        Err(err) => tracing::debug!(
+            target: LOG_TARGET,
+            parent,
+            request,
+            mode,
+            error = %err,
+            "resolution failed",
+        ),
     }
 }
 
@@ -586,6 +732,21 @@ mod tests {
         fs::write(nm.join("index.js"), "module.exports = 7;").expect("write");
         let resolver = FsResolver::new(vec![dir.path().to_path_buf()], registry_with(&[]));
         let r = resolver.resolve(ROOT_PARENT, "lib").expect("ok");
+        assert!(matches!(r, Resolved::File(p) if p.ends_with("index.js")));
+    }
+
+    #[test]
+    fn root_resolves_relative_to_first_root_when_node_modules_live_in_subdir() {
+        let sandbox = tmp_root();
+        let app = sandbox.path().join("web-ui");
+        let pkg = app.join("node_modules").join("firebase-admin");
+        fs::create_dir_all(&pkg).expect("mkdirs");
+        fs::write(pkg.join("index.js"), "module.exports = 'fb';").expect("entry");
+        let resolver = FsResolver::new(
+            vec![app.clone(), sandbox.path().to_path_buf()],
+            registry_with(&[]),
+        );
+        let r = resolver.resolve(ROOT_PARENT, "firebase-admin").expect("ok");
         assert!(matches!(r, Resolved::File(p) if p.ends_with("index.js")));
     }
 

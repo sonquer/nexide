@@ -37,14 +37,38 @@ pub(crate) type NextImageService = BoxCloneSyncService<Request<Body>, Response<B
 struct Ctx {
     app_dir: PathBuf,
     public_dir: PathBuf,
+    next_static_dir: PathBuf,
+    bind_addr: std::net::SocketAddr,
     config: ImageConfig,
     http: reqwest::Client,
     mem: super::memory::MemCache,
+    dynamic: Option<Arc<dyn crate::server::fallback::DynamicHandler>>,
 }
 
 /// Builds the `/_next/image` handler service.
 #[must_use]
-pub fn next_image_service(app_dir: PathBuf, public_dir: PathBuf) -> NextImageService {
+pub fn next_image_service(
+    app_dir: PathBuf,
+    public_dir: PathBuf,
+    next_static_dir: PathBuf,
+    bind_addr: std::net::SocketAddr,
+) -> NextImageService {
+    next_image_service_with_dynamic(app_dir, public_dir, next_static_dir, bind_addr, None)
+}
+
+/// Same as [`next_image_service`] but also receives the dynamic
+/// (Next.js bridge) handler so internal `/_next/image?url=/api/...`
+/// fetches resolve in-process instead of looping through TCP. Avoids
+/// connection-pool deadlocks and the 7-second timeout penalty when
+/// the Next bridge is busy.
+#[must_use]
+pub fn next_image_service_with_dynamic(
+    app_dir: PathBuf,
+    public_dir: PathBuf,
+    next_static_dir: PathBuf,
+    bind_addr: std::net::SocketAddr,
+    dynamic: Option<Arc<dyn crate::server::fallback::DynamicHandler>>,
+) -> NextImageService {
     let config = ImageConfig::from_app_dir(&app_dir);
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(7))
@@ -54,9 +78,12 @@ pub fn next_image_service(app_dir: PathBuf, public_dir: PathBuf) -> NextImageSer
     let ctx = Arc::new(Ctx {
         app_dir,
         public_dir,
+        next_static_dir,
+        bind_addr,
         config,
         http,
         mem: super::memory::MemCache::new(),
+        dynamic,
     });
     let svc = service_fn(move |req: Request<Body>| {
         let ctx = ctx.clone();
@@ -138,7 +165,7 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
         }
     }
 
-    let source = resolve_source(ctx, &params).await?;
+    let source = resolve_source(ctx, &params, &accept).await?;
     let detected = pipeline::detect_format(&source.bytes);
     if !detected.is_image() {
         return Err(HandlerError::new(
@@ -187,7 +214,12 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
         } else {
             "STALE"
         };
-        let hot = Arc::new(super::memory::HotEntry::from_disk(&hit));
+        let hot = Arc::new(super::memory::HotEntry::from_disk(
+            &hit,
+            chosen.mime(),
+            &params.url,
+            &ctx.config,
+        ));
         ctx.mem.put(key.clone(), Arc::clone(&hot));
         return Ok(serve_hot(
             &hot,
@@ -203,11 +235,11 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
     let url_owned = params.url.clone();
     let width = params.width;
     let quality = params.quality;
-    let optimized = tokio::task::spawn_blocking(move || {
-        produce_optimized(&bytes_owned, width, quality, chosen)
-    })
-    .await
-    .map_err(|_| {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rayon::spawn(move || {
+        let _ = tx.send(produce_optimized(&bytes_owned, width, quality, chosen));
+    });
+    let optimized = rx.await.map_err(|_| {
         HandlerError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "image pipeline join failed",
@@ -230,7 +262,12 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
     } else {
         debug!(target: "nexide::image", url = %url_owned, "cached optimized image");
     }
-    let hot = Arc::new(super::memory::HotEntry::from_disk(&entry));
+    let hot = Arc::new(super::memory::HotEntry::from_disk(
+        &entry,
+        chosen.mime(),
+        &params.url,
+        &ctx.config,
+    ));
     ctx.mem.put(key, Arc::clone(&hot));
 
     Ok(serve_hot(
@@ -295,7 +332,7 @@ fn serve_hot(
     chosen: OutputFormat,
     cache_state: &'static str,
     if_none_match: &Option<String>,
-    url: &str,
+    _url: &str,
     cfg: &ImageConfig,
 ) -> Response<Body> {
     if let Some(client_etag) = if_none_match
@@ -303,31 +340,14 @@ fn serve_hot(
     {
         let mut resp = Response::new(Body::empty());
         *resp.status_mut() = StatusCode::NOT_MODIFIED;
-        attach_headers(
-            resp.headers_mut(),
-            chosen.mime(),
-            entry.max_age,
-            &entry.etag,
-            cache_state,
-            url,
-            cfg,
-        );
+        attach_headers_from_hot(resp.headers_mut(), chosen.mime(), cache_state, entry, cfg);
         return resp;
     }
     let len = entry.bytes.len();
     let mut resp = Response::new(Body::from(entry.bytes.clone()));
-    attach_headers(
-        resp.headers_mut(),
-        chosen.mime(),
-        entry.max_age,
-        &entry.etag,
-        cache_state,
-        url,
-        cfg,
-    );
-    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
-        resp.headers_mut().insert(CONTENT_LENGTH, v);
-    }
+    attach_headers_from_hot(resp.headers_mut(), chosen.mime(), cache_state, entry, cfg);
+    resp.headers_mut()
+        .insert(CONTENT_LENGTH, HeaderValue::from(len as u64));
     resp
 }
 
@@ -352,9 +372,8 @@ fn serve_bypass(
         &params.url,
         &source.config_snapshot,
     );
-    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
-        resp.headers_mut().insert(CONTENT_LENGTH, v);
-    }
+    resp.headers_mut()
+        .insert(CONTENT_LENGTH, HeaderValue::from(len as u64));
     resp
 }
 
@@ -367,19 +386,18 @@ fn attach_headers(
     url: &str,
     cfg: &ImageConfig,
 ) {
-    headers.insert(VARY, HeaderValue::from_static("Accept"));
-    if let Ok(v) = HeaderValue::from_str(mime) {
-        headers.insert(CONTENT_TYPE, v);
-    }
+    const HV_VARY_ACCEPT: HeaderValue = HeaderValue::from_static("Accept");
+    const HN_X_NEXTJS_CACHE_K: axum::http::HeaderName =
+        axum::http::HeaderName::from_static(X_NEXTJS_CACHE);
+    headers.insert(VARY, HV_VARY_ACCEPT);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
     if let Ok(v) = HeaderValue::from_str(&format!("public, max-age={max_age}, must-revalidate")) {
         headers.insert(CACHE_CONTROL, v);
     }
     if let Ok(v) = HeaderValue::from_str(&format!("\"{etag}\"")) {
         headers.insert(ETAG, v);
     }
-    if let Ok(v) = HeaderValue::from_str(cache_state) {
-        let _ = headers.insert(axum::http::HeaderName::from_static(X_NEXTJS_CACHE), v);
-    }
+    headers.insert(HN_X_NEXTJS_CACHE_K, HeaderValue::from_static(cache_state));
     if let Ok(v) = HeaderValue::from_str(&cfg.content_security_policy) {
         headers.insert(CONTENT_SECURITY_POLICY, v);
     }
@@ -389,7 +407,28 @@ fn attach_headers(
     }
 }
 
-fn build_content_disposition(url: &str, mime: &str, disposition_type: &str) -> String {
+fn attach_headers_from_hot(
+    headers: &mut HeaderMap,
+    mime: &'static str,
+    cache_state: &'static str,
+    entry: &super::memory::HotEntry,
+    cfg: &ImageConfig,
+) {
+    const HV_VARY_ACCEPT: HeaderValue = HeaderValue::from_static("Accept");
+    const HN_X_NEXTJS_CACHE_K: axum::http::HeaderName =
+        axum::http::HeaderName::from_static(X_NEXTJS_CACHE);
+    headers.insert(VARY, HV_VARY_ACCEPT);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    headers.insert(CACHE_CONTROL, entry.cache_control_hv.clone());
+    headers.insert(ETAG, entry.etag_hv.clone());
+    headers.insert(HN_X_NEXTJS_CACHE_K, HeaderValue::from_static(cache_state));
+    if let Ok(v) = HeaderValue::from_str(&cfg.content_security_policy) {
+        headers.insert(CONTENT_SECURITY_POLICY, v);
+    }
+    headers.insert(CONTENT_DISPOSITION, entry.disposition_hv.clone());
+}
+
+pub(super) fn build_content_disposition(url: &str, mime: &str, disposition_type: &str) -> String {
     let filename = filename_from_url(url, mime);
     format!("{disposition_type}; filename=\"{filename}\"")
 }
@@ -548,7 +587,11 @@ struct Source {
     config_snapshot: ImageConfig,
 }
 
-async fn resolve_source(ctx: &Arc<Ctx>, params: &ValidatedParams) -> Result<Source, HandlerError> {
+async fn resolve_source(
+    ctx: &Arc<Ctx>,
+    params: &ValidatedParams,
+    accept: &str,
+) -> Result<Source, HandlerError> {
     if params.url.starts_with("http://") || params.url.starts_with("https://") {
         return fetch_remote(ctx, &params.url).await;
     }
@@ -562,24 +605,226 @@ async fn resolve_source(ctx: &Arc<Ctx>, params: &ValidatedParams) -> Result<Sour
     if !local_pattern_matches(&ctx.config.local_patterns, path, search) {
         return Err(bad_request("\"url\" parameter is not allowed"));
     }
+
+    // 1. /_next/static/* → resolve directly from the build static dir.
+    if let Some(rel) = path.strip_prefix("/_next/static/") {
+        let candidate = ctx.next_static_dir.join(rel);
+        let canonical_root = ctx
+            .next_static_dir
+            .canonicalize()
+            .unwrap_or_else(|_| ctx.next_static_dir.clone());
+        let canonical_candidate = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if !canonical_candidate.starts_with(&canonical_root) {
+            return Err(bad_request("\"url\" parameter is not allowed"));
+        }
+        if let Ok(bytes) = std::fs::read(&canonical_candidate) {
+            return Ok(Source {
+                bytes,
+                upstream_etag: String::new(),
+                upstream_max_age: 0,
+                config_snapshot: ctx.config.clone(),
+            });
+        }
+        return Err(HandlerError::new(StatusCode::NOT_FOUND, "source not found"));
+    }
+
+    // 2. public/ on disk: prefer zero-cost filesystem read when present.
     let rel = path.trim_start_matches('/');
     let candidate = ctx.public_dir.join(rel);
-    let canonical_root = ctx
-        .public_dir
-        .canonicalize()
-        .unwrap_or_else(|_| ctx.public_dir.clone());
-    let canonical_candidate = candidate
-        .canonicalize()
-        .unwrap_or_else(|_| candidate.clone());
-    if !canonical_candidate.starts_with(&canonical_root) {
-        return Err(bad_request("\"url\" parameter is not allowed"));
+    if candidate.is_file() {
+        let canonical_root = ctx
+            .public_dir
+            .canonicalize()
+            .unwrap_or_else(|_| ctx.public_dir.clone());
+        let canonical_candidate = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if !canonical_candidate.starts_with(&canonical_root) {
+            return Err(bad_request("\"url\" parameter is not allowed"));
+        }
+        if let Ok(bytes) = std::fs::read(&canonical_candidate) {
+            return Ok(Source {
+                bytes,
+                upstream_etag: String::new(),
+                upstream_max_age: 0,
+                config_snapshot: ctx.config.clone(),
+            });
+        }
     }
-    let bytes = std::fs::read(&canonical_candidate)
-        .map_err(|_| HandlerError::new(StatusCode::NOT_FOUND, "source not found"))?;
+
+    // 3. Otherwise, treat as an internal Next.js route (e.g. `/api/...`,
+    //    rewrites, dynamic handlers) and fetch back through the same
+    //    HTTP shield - mirrors `fetchInternalImage` in upstream
+    //    `next/dist/server/image-optimizer.js`.
+    fetch_internal(ctx, &params.url, accept).await
+}
+
+async fn fetch_internal(ctx: &Arc<Ctx>, href: &str, accept: &str) -> Result<Source, HandlerError> {
+    if let Some(handler) = ctx.dynamic.as_ref() {
+        return fetch_via_handler(ctx, handler.as_ref(), href, accept).await;
+    }
+    fetch_via_loopback(ctx, href, accept).await
+}
+
+async fn fetch_via_handler(
+    ctx: &Arc<Ctx>,
+    handler: &dyn crate::server::fallback::DynamicHandler,
+    href: &str,
+    accept: &str,
+) -> Result<Source, HandlerError> {
+    let mut builder = Request::builder().method(Method::GET).uri(href).header(
+        axum::http::header::USER_AGENT,
+        "nexide-image-optimizer/1 (internal)",
+    );
+    if !accept.is_empty() {
+        builder = builder.header(ACCEPT, accept);
+    }
+    let req = builder.body(Body::empty()).map_err(|err| {
+        warn!(target: "nexide::image", url = %href, error = %err, "internal request build failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    let resp = handler.handle(req).await.map_err(|err| {
+        warn!(target: "nexide::image", url = %href, error = %err, "internal handler failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        let mapped = if status == StatusCode::NOT_FOUND {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::from_u16(508).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        };
+        return Err(HandlerError::new(
+            mapped,
+            "\"url\" parameter is valid but upstream response is invalid",
+        ));
+    }
+    let upstream_etag = resp
+        .headers()
+        .get(ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    let upstream_max_age = resp
+        .headers()
+        .get(CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(parse_cache_control_max_age)
+        .unwrap_or(0);
+    let limit = ctx.config.maximum_response_body;
+    let bytes_full = match axum::body::to_bytes(resp.into_body(), limit as usize).await {
+        Ok(b) => b,
+        Err(err) => {
+            warn!(target: "nexide::image", error = %err, "internal handler body read failed");
+            return Err(HandlerError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "\"url\" parameter is valid but upstream response is invalid",
+            ));
+        }
+    };
+    if (bytes_full.len() as u64) > limit {
+        return Err(HandlerError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "\"url\" parameter is valid but upstream response is too large",
+        ));
+    }
     Ok(Source {
-        bytes,
-        upstream_etag: String::new(),
-        upstream_max_age: 0,
+        bytes: bytes_full.to_vec(),
+        upstream_etag,
+        upstream_max_age,
+        config_snapshot: ctx.config.clone(),
+    })
+}
+
+async fn fetch_via_loopback(
+    ctx: &Arc<Ctx>,
+    href: &str,
+    accept: &str,
+) -> Result<Source, HandlerError> {
+    let host = match ctx.bind_addr {
+        std::net::SocketAddr::V4(v4) => {
+            let ip = v4.ip();
+            if ip.is_unspecified() {
+                "127.0.0.1".to_owned()
+            } else {
+                ip.to_string()
+            }
+        }
+        std::net::SocketAddr::V6(v6) => {
+            let ip = v6.ip();
+            if ip.is_unspecified() {
+                "[::1]".to_owned()
+            } else {
+                format!("[{ip}]")
+            }
+        }
+    };
+    let url = format!("http://{}:{}{}", host, ctx.bind_addr.port(), href);
+    let mut req = ctx.http.get(&url);
+    if !accept.is_empty() {
+        req = req.header(reqwest::header::ACCEPT, accept);
+    }
+    req = req.header(
+        reqwest::header::USER_AGENT,
+        "nexide-image-optimizer/1 (internal)",
+    );
+    let resp = req.send().await.map_err(|err| {
+        warn!(target: "nexide::image", url = %url, error = %err, "internal fetch failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        let mapped = if status == reqwest::StatusCode::NOT_FOUND {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::from_u16(508).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        };
+        return Err(HandlerError::new(
+            mapped,
+            "\"url\" parameter is valid but upstream response is invalid",
+        ));
+    }
+    let upstream_etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    let upstream_max_age = resp
+        .headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(parse_cache_control_max_age)
+        .unwrap_or(0);
+    let limit = ctx.config.maximum_response_body;
+    let bytes_full = resp.bytes().await.map_err(|err| {
+        warn!(target: "nexide::image", error = %err, "internal fetch body read failed");
+        HandlerError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "\"url\" parameter is valid but upstream response is invalid",
+        )
+    })?;
+    if (bytes_full.len() as u64) > limit {
+        return Err(HandlerError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "\"url\" parameter is valid but upstream response is too large",
+        ));
+    }
+    Ok(Source {
+        bytes: bytes_full.to_vec(),
+        upstream_etag,
+        upstream_max_age,
         config_snapshot: ctx.config.clone(),
     })
 }

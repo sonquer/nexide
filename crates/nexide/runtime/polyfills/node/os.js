@@ -35,7 +35,11 @@ module.exports = {
     }
     return out;
   },
-  networkInterfaces() { return {}; },
+  networkInterfaces() {
+    const op = (typeof Nexide !== "undefined" && Nexide.core && Nexide.core.ops
+      && Nexide.core.ops.op_os_network_interfaces);
+    return typeof op === "function" ? op() : {};
+  },
   loadavg() { return [0, 0, 0]; },
   userInfo() {
     return {

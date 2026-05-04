@@ -21,6 +21,8 @@ use crate::engine::EngineError;
 pub(super) struct ModuleMap {
     by_path: HashMap<PathBuf, v8::Global<v8::Module>>,
     by_hash: HashMap<i32, PathBuf>,
+    resolution: HashMap<(i32, String), PathBuf>,
+    synthetic_exports: HashMap<i32, v8::Global<v8::Value>>,
 }
 
 impl ModuleMap {
@@ -55,6 +57,43 @@ impl ModuleMap {
     #[must_use]
     pub(super) fn path_of_hash(&self, hash: i32) -> Option<&Path> {
         self.by_hash.get(&hash).map(PathBuf::as_path)
+    }
+
+    /// Records the resolution `(referrer, specifier) -> abs_key` so
+    /// that V8's resolve callback can map module requests back to
+    /// modules pre-compiled by the ESM loader.
+    pub(super) fn set_resolution(&mut self, referrer_hash: i32, specifier: &str, key: PathBuf) {
+        self.resolution
+            .insert((referrer_hash, specifier.to_owned()), key);
+    }
+
+    /// Looks up a previously recorded resolution.
+    #[must_use]
+    pub(super) fn lookup_resolution(&self, referrer_hash: i32, specifier: &str) -> Option<&Path> {
+        self.resolution
+            .get(&(referrer_hash, specifier.to_owned()))
+            .map(PathBuf::as_path)
+    }
+
+    /// Stashes the CJS exports object for later consumption by the
+    /// synthetic-module evaluation steps callback.
+    pub(super) fn stash_synthetic_exports(
+        &mut self,
+        module_hash: i32,
+        exports: v8::Global<v8::Value>,
+    ) {
+        self.synthetic_exports.insert(module_hash, exports);
+    }
+
+    /// Pops the stashed exports object for `module_hash`. The callback
+    /// only needs them once - V8 invokes evaluation steps a single
+    /// time per synthetic module.
+    #[must_use]
+    pub(super) fn take_synthetic_exports(
+        &mut self,
+        module_hash: i32,
+    ) -> Option<v8::Global<v8::Value>> {
+        self.synthetic_exports.remove(&module_hash)
     }
 }
 

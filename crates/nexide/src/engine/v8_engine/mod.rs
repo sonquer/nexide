@@ -23,6 +23,7 @@ mod async_ops;
 mod bootstrap;
 mod bridge;
 mod engine;
+mod esm;
 mod handle_table;
 mod modules;
 mod ops_bridge;

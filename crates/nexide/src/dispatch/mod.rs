@@ -10,5 +10,5 @@
 mod dispatcher;
 mod errors;
 
-pub use dispatcher::{EngineDispatcher, IsolateDispatcher, ProtoRequest};
+pub use dispatcher::{EngineDispatcher, IsolateDispatcher, ProtoRequest, StreamingResponse};
 pub use errors::DispatchError;

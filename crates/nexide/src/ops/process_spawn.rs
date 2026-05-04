@@ -18,6 +18,8 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use super::net::NetError;
 
+const LOG_TARGET: &str = "nexide::ops::process";
+
 /// Stdio routing requested by the JS caller.
 #[derive(Debug, Clone, Copy)]
 pub enum StdioMode {
@@ -134,11 +136,32 @@ pub fn spawn(req: SpawnRequest) -> Result<ChildHandle, NetError> {
     cmd.stderr(req.stdio[2].into_stdio());
     cmd.kill_on_drop(false);
 
-    let mut child = cmd.spawn().map_err(map_io_err)?;
+    let mut child = cmd.spawn().map_err(|e| {
+        let mapped = map_io_err(e);
+        tracing::warn!(
+            target: LOG_TARGET,
+            command = %req.command,
+            argc = req.args.len(),
+            code = mapped.code,
+            message = %mapped.message,
+            "child spawn failed",
+        );
+        mapped
+    })?;
     let pid = child.id().unwrap_or(0);
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    tracing::debug!(
+        target: LOG_TARGET,
+        command = %req.command,
+        argc = req.args.len(),
+        pid,
+        stdin = stdin.is_some(),
+        stdout = stdout.is_some(),
+        stderr = stderr.is_some(),
+        "child spawned",
+    );
     Ok(ChildHandle {
         pid,
         child,
@@ -192,14 +215,23 @@ pub struct ExitInfo {
 /// # Errors
 /// Returns a `NetError` if the OS reports a wait failure.
 pub async fn wait(child: &mut Child) -> Result<ExitInfo, NetError> {
+    let pid = child.id().unwrap_or(0);
     let status = child.wait().await.map_err(map_io_err)?;
-    Ok(ExitInfo {
+    let info = ExitInfo {
         code: status.code(),
         #[cfg(unix)]
         signal: std::os::unix::process::ExitStatusExt::signal(&status),
         #[cfg(not(unix))]
         signal: None,
-    })
+    };
+    tracing::debug!(
+        target: LOG_TARGET,
+        pid,
+        code = ?info.code,
+        signal = ?info.signal,
+        "child exited",
+    );
+    Ok(info)
 }
 
 /// Sends a signal-equivalent kill to the child.

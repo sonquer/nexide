@@ -11,6 +11,11 @@
 //! All TLS verification flows through the rustls trust store
 //! configured in [`super::tls`]. Plain HTTP works on the same code
 //! path because reqwest auto-selects the scheme from the URL.
+//!
+//! `tracing` records emit on `nexide::ops::http`. Request lifecycle
+//! (dispatch, response headers received, body completed) logs at
+//! `debug`; per-chunk delivery at `trace`; transport / decode
+//! failures at `warn`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -19,6 +24,8 @@ use reqwest::Client;
 use tokio::sync::mpsc;
 
 use super::net::NetError;
+
+const LOG_TARGET: &str = "nexide::ops::http";
 
 fn shared_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
@@ -80,6 +87,14 @@ pub struct HttpRequest {
 /// Returns `NetError` when URL parsing, header construction, or
 /// the request itself fail. Body chunk errors are surfaced through
 /// the `body` channel rather than returned synchronously.
+#[tracing::instrument(
+    target = "nexide::ops::http",
+    level = "debug",
+    name = "http_request",
+    skip_all,
+    fields(method = %req.method, url = %req.url, body_bytes = req.body.len()),
+    err(level = "warn", Display),
+)]
 pub async fn request(req: HttpRequest) -> Result<ResponseHandle, NetError> {
     use reqwest::Method;
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -108,15 +123,18 @@ pub async fn request(req: HttpRequest) -> Result<ResponseHandle, NetError> {
         headers.append(name, value);
     }
 
+    let url_for_body = req.url.clone();
     let mut builder = shared_client().request(method, &req.url).headers(headers);
     if !req.body.is_empty() {
         builder = builder.body(req.body);
     }
 
-    let response = builder
-        .send()
-        .await
-        .map_err(|e| NetError::new(reqwest_error_code(&e), e.to_string()))?;
+    tracing::trace!(target: LOG_TARGET, "request dispatched to transport");
+
+    let response = builder.send().await.map_err(|e| {
+        let code = reqwest_error_code(&e);
+        NetError::new(code, e.to_string())
+    })?;
 
     let status = response.status().as_u16();
     let status_text = response
@@ -134,8 +152,15 @@ pub async fn request(req: HttpRequest) -> Result<ResponseHandle, NetError> {
         }
     }
 
+    tracing::debug!(
+        target: LOG_TARGET,
+        status,
+        headers = response_headers.len(),
+        "response head received",
+    );
+
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_local(stream_body(response, tx));
+    tokio::task::spawn_local(stream_body(response, tx, url_for_body));
 
     Ok(ResponseHandle {
         status,
@@ -148,20 +173,57 @@ pub async fn request(req: HttpRequest) -> Result<ResponseHandle, NetError> {
 async fn stream_body(
     mut response: reqwest::Response,
     tx: mpsc::UnboundedSender<Result<Vec<u8>, NetError>>,
+    url: String,
 ) {
+    let trace_enabled = tracing::enabled!(target: LOG_TARGET, tracing::Level::TRACE);
+    let mut chunks: u32 = 0;
+    let mut bytes: u64 = 0;
     loop {
         match response.chunk().await {
-            Ok(Some(bytes)) => {
-                if tx.send(Ok(bytes.to_vec())).is_err() {
+            Ok(Some(buf)) => {
+                if trace_enabled {
+                    chunks = chunks.saturating_add(1);
+                    bytes = bytes.saturating_add(buf.len() as u64);
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        chunk_bytes = buf.len(),
+                        chunk_index = chunks,
+                        "response body chunk",
+                    );
+                }
+                if tx.send(Ok(buf.to_vec())).is_err() {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        url = %url,
+                        chunks,
+                        bytes,
+                        "response body receiver dropped; aborting stream",
+                    );
                     return;
                 }
             }
-            Ok(None) => return,
+            Ok(None) => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    url = %url,
+                    chunks,
+                    bytes,
+                    "response body stream completed",
+                );
+                return;
+            }
             Err(err) => {
-                let _ = tx.send(Err(NetError::new(
-                    reqwest_error_code(&err),
-                    err.to_string(),
-                )));
+                let code = reqwest_error_code(&err);
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    url = %url,
+                    code,
+                    error = %err,
+                    chunks,
+                    bytes,
+                    "response body transport error",
+                );
+                let _ = tx.send(Err(NetError::new(code, err.to_string())));
                 return;
             }
         }

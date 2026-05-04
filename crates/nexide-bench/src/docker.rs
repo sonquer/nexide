@@ -18,15 +18,15 @@ use anyhow::{Context, Result, anyhow, bail};
 use bollard::Docker;
 use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StartContainerOptions,
-    StatsOptionsBuilder, StopContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+    StartContainerOptions, StatsOptionsBuilder, StopContainerOptionsBuilder,
 };
 use futures::StreamExt;
 use tokio::sync::Mutex;
 use tokio::time::{Instant, sleep};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::load::{LoadSpec, run_load};
+use crate::load::{LoadOutcome, LoadSpec, run_load};
 use crate::runner::{BenchResult, RouteSpec};
 use crate::sample::SampleStats;
 use crate::target::TargetKind;
@@ -360,6 +360,127 @@ async fn await_ready(host_port: u16, timeout: Duration) -> Result<()> {
     bail!("container at host:{host_port} never responded within {timeout:?}");
 }
 
+/// Snapshot of a container's runtime state plus the tail of its stdout/stderr.
+///
+/// Captured when a route returns a catastrophic error rate or readiness
+/// fails so the operator can immediately see *why* (OOM kill, panic,
+/// non-zero exit) without re-running the bench under `docker logs`.
+#[derive(Debug, Default)]
+struct ContainerDiagnostics {
+    status: String,
+    running: bool,
+    oom_killed: bool,
+    exit_code: Option<i64>,
+    error: String,
+    logs: String,
+}
+
+/// Pull `docker inspect` state + last ~200 log lines for `id`.
+///
+/// Best-effort: any individual API failure is swallowed so the caller
+/// still gets at least a partial picture (e.g. logs even if inspect
+/// raced container removal). Returns a default-filled struct on full
+/// failure rather than erroring — the caller is already in an error
+/// path and we don't want to mask the original failure.
+async fn collect_container_diagnostics(docker: &Docker, id: &str) -> ContainerDiagnostics {
+    let mut diag = ContainerDiagnostics {
+        status: "<unknown>".to_string(),
+        ..ContainerDiagnostics::default()
+    };
+
+    if let Ok(inspect) = docker.inspect_container(id, None).await
+        && let Some(state) = inspect.state.as_ref()
+    {
+        if let Some(s) = state.status {
+            diag.status = format!("{s:?}");
+        }
+        diag.running = state.running.unwrap_or(false);
+        diag.oom_killed = state.oom_killed.unwrap_or(false);
+        diag.exit_code = state.exit_code;
+        diag.error = state.error.clone().unwrap_or_default();
+    }
+
+    let opts = LogsOptionsBuilder::default()
+        .stdout(true)
+        .stderr(true)
+        .tail("200")
+        .build();
+    let mut stream = docker.logs(id, Some(opts));
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(out) => buf.extend_from_slice(out.as_ref()),
+            Err(err) => {
+                warn!(%err, "logs stream error during diagnostics");
+                break;
+            }
+        }
+        // Cap at ~256 KiB so a runaway log stream cannot stall the bench.
+        if buf.len() > 256 * 1024 {
+            break;
+        }
+    }
+    diag.logs = String::from_utf8_lossy(&buf).into_owned();
+    diag
+}
+
+/// Heuristic: does this `LoadOutcome` indicate the container is dead
+/// or so broken that subsequent routes will produce garbage?
+///
+/// - `ok == 0` → fully unresponsive (connection refused / hung)
+/// - `errors > 10 * ok` → catastrophic degradation (e.g. 1.26M errors
+///   vs 9k successes seen on `1cpu-256mb` when the runtime crashed
+///   mid-run). Anything more lenient still lets transient errors slip
+///   through; anything stricter would flag healthy presets that just
+///   happen to hit a couple of refused connections.
+fn route_run_failed(load: &LoadOutcome) -> bool {
+    load.ok == 0 || load.errors > load.ok.saturating_mul(10)
+}
+
+fn format_diagnostics_block(label: &str, diag: &ContainerDiagnostics) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        ">>> container status={} running={} oom_killed={} exit_code={:?} error={:?}",
+        diag.status, diag.running, diag.oom_killed, diag.exit_code, diag.error
+    );
+    let log_tail = if diag.logs.trim().is_empty() {
+        "<empty>"
+    } else {
+        diag.logs.as_str()
+    };
+    let _ = writeln!(s, ">>> {label} container logs (tail):\n{log_tail}");
+    s
+}
+
+fn eprintln_label_err(label: &str, err: &anyhow::Error) {
+    error!(target: "nexide_bench::docker::fatal", %label, %err, "container failed");
+}
+
+fn eprintln_label_load(label: &str, load: &LoadOutcome) {
+    let p95_ms = load.p95.as_secs_f64() * 1000.0;
+    error!(
+        target: "nexide_bench::docker::fatal",
+        %label,
+        ok = load.ok,
+        errors = load.errors,
+        http_errors = load.http_errors,
+        transport_errors = load.transport_errors,
+        timeout_errors = load.timeout_errors,
+        rps = load.rps,
+        p95_ms,
+        "route returned catastrophic error rate"
+    );
+}
+
+fn eprintln_diag(label: &str, diag: &ContainerDiagnostics) {
+    let block = format_diagnostics_block(label, diag);
+    for line in block.lines() {
+        error!(target: "nexide_bench::docker::fatal", "{line}");
+    }
+}
+
 async fn warmup_route(url: &str, duration: Duration) {
     if duration.is_zero() {
         return;
@@ -392,7 +513,6 @@ fn build_create_body(
     let exposed_ports = vec![port_key];
     let env = match kind {
         TargetKind::Nexide => Some(vec![
-            format!("NEXIDE_POOL_MEMORY_BUDGET_MB={}", preset.memory_mb),
             "HOSTNAME=0.0.0.0".to_owned(),
             "PORT=3000".to_owned(),
             "RUST_LOG=info".to_owned(),
@@ -443,7 +563,24 @@ async fn run_cell(
             .start_container(&id, None::<StartContainerOptions>)
             .await
             .context("start container")?;
-        await_ready(host_port, spec.ready_timeout).await?;
+        if let Err(err) = await_ready(host_port, spec.ready_timeout).await {
+            let label = format!(
+                "preset={} runtime={} (readiness)",
+                preset.label(),
+                kind.label()
+            );
+            let diag = collect_container_diagnostics(&docker, &id).await;
+            eprintln_label_err(&label, &err);
+            eprintln_diag(&label, &diag);
+            return Err(err.context(format!(
+                "preset={} runtime={} container failed readiness (running={}, oom_killed={}, exit_code={:?})",
+                preset.label(),
+                kind.label(),
+                diag.running,
+                diag.oom_killed,
+                diag.exit_code
+            )));
+        }
 
         for route in &spec.routes {
             let url = format!("http://127.0.0.1:{host_port}{}", route.path);
@@ -492,6 +629,32 @@ async fn run_cell(
                 .map(Mutex::into_inner)
                 .unwrap_or_default()
                 .finalize();
+
+            // Fail-fast on catastrophic error rate: capture container
+            // state + last log lines BEFORE the cleanup path stops/removes
+            // the container, then bail so subsequent routes don't generate
+            // 0-RPS/error-flood rows that hide the real cause.
+            if route_run_failed(&load) {
+                let label = format!(
+                    "preset={} runtime={} route={}",
+                    preset.label(),
+                    kind.label(),
+                    route.id
+                );
+                let diag = collect_container_diagnostics(&docker, &id).await;
+                eprintln_label_load(&label, &load);
+                eprintln_diag(&label, &diag);
+                bail!(
+                    "{label} returned ok={} errors={} (running={}, oom_killed={}, exit_code={:?}, status={})",
+                    load.ok,
+                    load.errors,
+                    diag.running,
+                    diag.oom_killed,
+                    diag.exit_code,
+                    diag.status
+                );
+            }
+
             results.push(BenchResult {
                 route: route.id.clone(),
                 runtime: kind,

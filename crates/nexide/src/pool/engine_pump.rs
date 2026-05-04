@@ -49,14 +49,26 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use std::sync::OnceLock;
+
 use tokio::sync::Notify;
 
 use super::pump_strategy::pump_strategy_from_env;
 use super::worker::{DispatchJob, WorkerError, WorkerHealth};
 use crate::engine::cjs::{FsResolver, ROOT_PARENT};
-use crate::engine::{BootContext, IsolateHandle, V8Engine};
-use crate::ops::{RequestMeta, RequestSlot};
+use crate::engine::{BootContext, CodeCache, IsolateHandle, V8Engine};
+use crate::ops::{OsEnv, ProcessConfig, RequestMeta, RequestSlot};
 use crate::sandbox_root_for;
+
+/// Process-wide V8 bytecode cache shared across every worker isolate.
+///
+/// Lazily built from environment on first reference. Keeping a single
+/// instance means counters aggregate across workers and on-disk
+/// writes share the same atomic-rename rendezvous.
+fn process_code_cache() -> CodeCache {
+    static CACHE: OnceLock<CodeCache> = OnceLock::new();
+    CACHE.get_or_init(CodeCache::from_env).clone()
+}
 
 /// Boots a fresh [`V8Engine`], starts the JS pump matching the
 /// configured strategy, and wraps the engine for shared
@@ -85,7 +97,10 @@ pub(super) async fn boot_engine(
             .with_cjs(resolver)
             .with_cjs_root(ROOT_PARENT)
             .with_worker_id(worker_id)
-            .with_fs(crate::ops::FsHandle::real(vec![project_root]));
+            .with_fs(crate::ops::FsHandle::real(vec![project_root]))
+            .with_process(ProcessConfig::builder(Arc::new(OsEnv)).build())
+            .with_code_cache(process_code_cache())
+            .with_heap_limit(crate::effective_heap_limit());
         V8Engine::boot_with(entrypoint, ctx)
             .await
             .map_err(|err| WorkerError::Engine(err.to_string()))?
@@ -117,11 +132,25 @@ pub(super) async fn boot_engine(
 /// enqueue new slots, and parks on `pump_signal` once V8 reports the
 /// event loop drained - avoids spinning on an idle isolate.
 ///
+/// While parked the pump arms a single-shot `idle GC` timer
+/// configured by [`idle_gc_threshold`]: if no request arrives within
+/// the threshold the worker calls
+/// [`V8Engine::notify_low_memory`](super::V8Engine::notify_low_memory)
+/// (and on Linux/jemalloc also nudges the allocator to return dirty
+/// pages to the OS via [`purge_jemalloc_arenas`]). The timer rearms
+/// only after the next request - so we pay *at most one* major GC per
+/// idle period regardless of how long the silence lasts. The default
+/// (`30_000` ms) keeps the GC out of the hot path while letting an
+/// idle worker shed `~80-120` MiB of reclaimable heap before the
+/// container scaler ever observes the pressure.
+///
 /// Returns when V8 reports an event-loop error (the supervisor is
 /// expected to recycle/rebuild the worker in that case) or the task
 /// is cancelled.
 pub(super) async fn run_pump(engine: Rc<RefCell<V8Engine>>, pump_signal: Rc<Notify>) {
     let napi_wakeup = engine.borrow().napi_wakeup();
+    let idle_threshold = idle_gc_threshold();
+    let mut idle_gc_armed = true;
     loop {
         engine.borrow_mut().pump_once();
         let queue_empty = {
@@ -129,13 +158,107 @@ pub(super) async fn run_pump(engine: Rc<RefCell<V8Engine>>, pump_signal: Rc<Noti
             e.queue_is_empty()
         };
         if queue_empty {
+            let woken_by_request = wait_for_work(&pump_signal, &napi_wakeup, idle_threshold).await;
+            if woken_by_request {
+                idle_gc_armed = true;
+            } else if idle_gc_armed {
+                run_idle_reclaim(&engine);
+                idle_gc_armed = false;
+            }
+        } else {
+            tokio::task::yield_now().await;
+            idle_gc_armed = true;
+        }
+    }
+}
+
+/// Awaits either a pump signal (new request enqueued) or a NAPI
+/// wakeup, optionally with an idle-GC deadline. Returns `true` when a
+/// real wakeup arrived, `false` when the deadline elapsed (caller
+/// should run the idle-reclaim path).
+async fn wait_for_work(
+    pump_signal: &Notify,
+    napi_wakeup: &Notify,
+    idle_threshold: Option<std::time::Duration>,
+) -> bool {
+    match idle_threshold {
+        Some(d) => {
+            let work = async {
+                tokio::select! {
+                    () = pump_signal.notified() => {},
+                    () = napi_wakeup.notified() => {},
+                }
+            };
+            tokio::time::timeout(d, work).await.is_ok()
+        }
+        None => {
             tokio::select! {
                 () = pump_signal.notified() => {},
                 () = napi_wakeup.notified() => {},
             }
-        } else {
-            tokio::task::yield_now().await;
+            true
         }
+    }
+}
+
+/// Asks V8 to free reclaimable heap. Called at most once per idle
+/// period from the pump task.
+///
+/// We intentionally do not poke jemalloc / glibc directly here: the
+/// `jemalloc` feature already configures aggressive decay
+/// (`dirty_decay_ms` / `muzzy_decay_ms`), which returns pages to the
+/// OS within a few seconds of being freed without any explicit
+/// `purge` call. The V8 notification triggers a major GC that
+/// *frees* the pages in the first place, so the allocator decay can
+/// follow up naturally - one notification, two layers of reclaim.
+fn run_idle_reclaim(engine: &Rc<RefCell<V8Engine>>) {
+    let before = engine.borrow().heap_stats();
+    engine.borrow_mut().notify_low_memory();
+    let after = engine.borrow().heap_stats();
+    let cache = process_code_cache();
+    let evicted = if cache.is_enabled() {
+        cache.evict_to_quota()
+    } else {
+        0
+    };
+    let snap = cache.metrics().snapshot();
+    let shrunk = super::idle_shrink::shrink_all();
+    tracing::debug!(
+        heap_before = before.used_heap_size,
+        heap_after = after.used_heap_size,
+        reclaimed = before.used_heap_size.saturating_sub(after.used_heap_size),
+        cache_hits = snap.hits,
+        cache_misses = snap.misses,
+        cache_rejects = snap.rejects,
+        cache_writes = snap.writes,
+        cache_evicted = evicted,
+        ram_shrinkers = shrunk,
+        "idle reclaim: V8 low-memory notification"
+    );
+}
+
+/// Resolves the idle-GC threshold from `NEXIDE_IDLE_GC_MS`.
+///
+/// `0` (or any unparseable value) disables the idle-GC path entirely
+/// for operators who would rather spend RSS on a hot path that needs
+/// it. Default `30_000` ms - long enough that the GC pause never
+/// lands on a real request after the bench harness's 2-second
+/// cooldown, short enough that idle deployments shed memory before
+/// the autoscaler reads RSS.
+fn idle_gc_threshold() -> Option<std::time::Duration> {
+    parse_idle_gc_threshold(std::env::var("NEXIDE_IDLE_GC_MS").ok().as_deref())
+}
+
+/// Pure parser for the `NEXIDE_IDLE_GC_MS` env value, exposed for
+/// unit tests so we can pin the precedence rules without poking
+/// process-global state.
+fn parse_idle_gc_threshold(raw: Option<&str>) -> Option<std::time::Duration> {
+    let trimmed = raw.map(str::trim).filter(|s| !s.is_empty());
+    let ms: u64 = trimmed.and_then(|s| s.parse().ok()).unwrap_or(30_000);
+    if ms == 0 {
+        None
+    } else {
+        Some(std::time::Duration::from_millis(ms))
     }
 }
 
@@ -222,5 +345,50 @@ mod tests {
         };
         let result = build_slot(good);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn idle_gc_threshold_defaults_to_thirty_seconds_when_unset_or_blank() {
+        assert_eq!(
+            parse_idle_gc_threshold(None),
+            Some(std::time::Duration::from_millis(30_000))
+        );
+        assert_eq!(
+            parse_idle_gc_threshold(Some("")),
+            Some(std::time::Duration::from_millis(30_000))
+        );
+        assert_eq!(
+            parse_idle_gc_threshold(Some("   ")),
+            Some(std::time::Duration::from_millis(30_000))
+        );
+    }
+
+    #[test]
+    fn idle_gc_threshold_zero_disables_path() {
+        assert_eq!(parse_idle_gc_threshold(Some("0")), None);
+    }
+
+    #[test]
+    fn idle_gc_threshold_parses_explicit_millis() {
+        assert_eq!(
+            parse_idle_gc_threshold(Some("1500")),
+            Some(std::time::Duration::from_millis(1500))
+        );
+        assert_eq!(
+            parse_idle_gc_threshold(Some("  60000  ")),
+            Some(std::time::Duration::from_millis(60_000))
+        );
+    }
+
+    #[test]
+    fn idle_gc_threshold_falls_back_to_default_when_unparseable() {
+        assert_eq!(
+            parse_idle_gc_threshold(Some("not-a-number")),
+            Some(std::time::Duration::from_millis(30_000))
+        );
+        assert_eq!(
+            parse_idle_gc_threshold(Some("-5")),
+            Some(std::time::Duration::from_millis(30_000))
+        );
     }
 }

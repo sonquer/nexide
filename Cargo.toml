@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.29"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -35,6 +35,20 @@ dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
 module_name_repetitions = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+
+[profile.release-with-debug]
+inherits = "release"
+strip = "none"
+debug = "limited"
 
 [workspace.dependencies]
 anyhow = "1"

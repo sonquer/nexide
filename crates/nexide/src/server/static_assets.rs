@@ -55,9 +55,10 @@ pub(super) fn dynamic_service(handler: Arc<dyn DynamicHandler>) -> DynamicServic
     let inner = service_fn(move |req: Request<Body>| {
         let handler = handler.clone();
         async move {
+            let accept = req.headers().get(axum::http::header::ACCEPT).cloned();
             let response = match handler.handle(req).await {
                 Ok(response) => response,
-                Err(error) => bad_gateway(&error.to_string()),
+                Err(error) => bad_gateway(&error.to_string(), accept.as_ref()),
             };
             Ok::<_, Infallible>(response)
         }
@@ -65,12 +66,8 @@ pub(super) fn dynamic_service(handler: Arc<dyn DynamicHandler>) -> DynamicServic
     BoxCloneSyncService::new(inner)
 }
 
-fn bad_gateway(message: &str) -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::BAD_GATEWAY)
-        .header("content-type", "text/plain; charset=utf-8")
-        .body(Body::from(message.to_owned()))
-        .expect("static builder cannot fail")
+fn bad_gateway(message: &str, accept: Option<&axum::http::HeaderValue>) -> Response<Body> {
+    super::error_page::render(StatusCode::BAD_GATEWAY, accept, Some(message))
 }
 
 #[cfg(test)]
@@ -86,7 +83,7 @@ mod tests {
 
     #[test]
     fn bad_gateway_carries_status() {
-        let response = bad_gateway("boom");
+        let response = bad_gateway("boom", None);
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 

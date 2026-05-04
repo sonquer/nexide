@@ -14,6 +14,7 @@
 
   const ops = Nexide.core.ops;
   const cache = new Map();
+  const moduleStack = [];
 
   function dirnameOf(spec) {
     if (typeof spec !== "string" || spec.length === 0) return "";
@@ -32,12 +33,23 @@
   }
 
   function compileWrapper(source, specifier) {
-    const wrapper =
-      "(function (exports, require, module, __filename, __dirname) {\n" +
-      source +
-      "\n})\n//# sourceURL=" +
-      specifier;
-    return (0, eval)(wrapper);
+    let fn;
+    try {
+      fn = ops.op_cjs_compile_function(source, specifier);
+    } catch (err) {
+      if (err && typeof err.message === "string") {
+        err.message = err.message + " (compiling " + specifier + ")";
+      }
+      throw err;
+    }
+    return function (exports, require, module, __filename, __dirname) {
+      moduleStack.push(specifier);
+      try {
+        return fn(exports, require, module, __filename, __dirname);
+      } finally {
+        moduleStack.pop();
+      }
+    };
   }
 
   function makeRequire(parent) {
@@ -100,6 +112,59 @@
     }
   }
 
+  function buildNamespace(exports) {
+    if (exports && typeof exports === "object" && exports.__esModule) {
+      return exports;
+    }
+    const ns = Object.create(null);
+    if (exports !== null && exports !== undefined) {
+      if (typeof exports === "object" || typeof exports === "function") {
+        for (const k of Object.keys(exports)) {
+          try { ns[k] = exports[k]; } catch (_) {}
+        }
+      }
+    }
+    ns.default = exports;
+    return ns;
+  }
+
+  function dynamicImport(specifier, referrer) {
+    let parent;
+    if (typeof referrer === "string" && referrer.length > 0) {
+      parent = referrer;
+    } else if (moduleStack.length > 0) {
+      parent = moduleStack[moduleStack.length - 1];
+    } else {
+      parent = ops.op_cjs_root_parent();
+    }
+    if (typeof ops.op_esm_dynamic_import === "function") {
+      try {
+        return ops.op_esm_dynamic_import(specifier, parent);
+      } catch (err) {
+        return Promise.reject(tagError(err));
+      }
+    }
+    try {
+      const exports = loadModule(parent, specifier);
+      return Promise.resolve(buildNamespace(exports));
+    } catch (err) {
+      return Promise.reject(tagError(err));
+    }
+  }
+
+  Object.defineProperty(globalThis, "__nexideEsm", {
+    value: Object.freeze({
+      chain: function (evalPromise, namespace) {
+        return Promise.resolve(evalPromise).then(function () {
+          return namespace;
+        });
+      },
+    }),
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+
   Object.defineProperty(globalThis, "__nexideCjs", {
     value: {
       load: loadModule,
@@ -107,6 +172,7 @@
       makeRequire,
       dirnameOf,
       basenameOf,
+      dynamicImport,
     },
     enumerable: false,
     writable: false,

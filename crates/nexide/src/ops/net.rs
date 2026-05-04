@@ -5,12 +5,19 @@
 //! free of I/O details. Errors are mapped to Node-canonical codes
 //! (`ECONNREFUSED`, `ETIMEDOUT`, …) so JavaScript can pattern-match
 //! on `err.code`.
+//!
+//! All public entry points emit structured `tracing` records on the
+//! `nexide::ops::net` target. Lifecycle events (connect, listen,
+//! accept, close) are logged at `debug`; per-chunk I/O at `trace`;
+//! recoverable failures at `warn`; transport corruption at `error`.
 
+use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+const LOG_TARGET: &str = "nexide::ops::net";
 
 /// Node-shaped error: a string code (`ECONNREFUSED`, `ENOTFOUND`,
 /// …) plus a human-readable message.
@@ -64,6 +71,14 @@ impl From<io::Error> for NetError {
     }
 }
 
+impl fmt::Display for NetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for NetError {}
+
 /// Address summary (`host`, `port`, `family`) returned by the
 /// `address()` and connection-establishment ops.
 #[derive(Debug, Clone)]
@@ -86,55 +101,189 @@ impl From<SocketAddr> for AddressInfo {
     }
 }
 
+impl fmt::Display for AddressInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.family == 6 {
+            write!(f, "[{}]:{}", self.address, self.port)
+        } else {
+            write!(f, "{}:{}", self.address, self.port)
+        }
+    }
+}
+
 /// Opens an outbound TCP connection.
 ///
 /// `host` is resolved through the OS resolver; the first address
 /// reachable is used. Returns `(stream, local, remote)` so the caller
 /// can populate the JS-facing socket properties immediately.
+#[tracing::instrument(
+    target = "nexide::ops::net",
+    level = "debug",
+    name = "tcp_connect",
+    skip_all,
+    fields(host = %host, port),
+    err(level = "warn", Display),
+)]
 pub async fn connect(
     host: &str,
     port: u16,
 ) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
     let target = format!("{host}:{port}");
+    tracing::trace!(target: LOG_TARGET, target_addr = %target, "dialing");
     let stream = TcpStream::connect(&target).await?;
     let local = stream.local_addr()?;
     let remote = stream.peer_addr()?;
+    tracing::debug!(
+        target: LOG_TARGET,
+        local = %local,
+        remote = %remote,
+        "tcp connection established",
+    );
     Ok((stream, local.into(), remote.into()))
 }
 
 /// Binds a TCP listener on `host:port`. Use `host = "0.0.0.0"` for
 /// dual-stack semantics that mirror Node's defaults.
+#[tracing::instrument(
+    target = "nexide::ops::net",
+    level = "debug",
+    name = "tcp_listen",
+    skip_all,
+    fields(host = %host, port),
+    err(level = "warn", Display),
+)]
 pub async fn listen(host: &str, port: u16) -> Result<(TcpListener, AddressInfo), NetError> {
     let target = format!("{host}:{port}");
     let listener = TcpListener::bind(&target).await?;
     let local = listener.local_addr()?;
+    tracing::debug!(target: LOG_TARGET, local = %local, "tcp listener bound");
     Ok((listener, local.into()))
 }
 
 /// Awaits the next inbound connection on `listener`.
+#[tracing::instrument(
+    target = "nexide::ops::net",
+    level = "trace",
+    name = "tcp_accept",
+    skip_all,
+    err(level = "warn", Display)
+)]
 pub async fn accept(
     listener: &TcpListener,
 ) -> Result<(TcpStream, AddressInfo, AddressInfo), NetError> {
     let (stream, peer) = listener.accept().await?;
     let local = stream.local_addr()?;
+    tracing::debug!(
+        target: LOG_TARGET,
+        local = %local,
+        remote = %peer,
+        "tcp connection accepted",
+    );
     Ok((stream, local.into(), peer.into()))
 }
 
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on
 /// EOF - JavaScript can detect the half-close by checking `len === 0`.
-pub async fn read_chunk(stream: &mut TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
+///
+/// Uses `readable().await` + `try_read` so reading does not require
+/// exclusive ownership of the stream and concurrent writes can make
+/// progress on the same FD (Node's net.Socket semantics).
+pub async fn read_chunk(stream: &TcpStream, max: usize) -> Result<Vec<u8>, NetError> {
     let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];
-    let n = stream.read(&mut buf).await?;
-    buf.truncate(n);
-    Ok(buf)
+    let trace_enabled = tracing::enabled!(target: LOG_TARGET, tracing::Level::TRACE);
+    let mut spurious_wakeups: u32 = 0;
+    loop {
+        stream.readable().await?;
+        match stream.try_read(&mut buf) {
+            Ok(n) => {
+                buf.truncate(n);
+                if n == 0 {
+                    tracing::debug!(target: LOG_TARGET, "tcp peer half-closed");
+                } else if trace_enabled {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        bytes = n,
+                        capacity = cap,
+                        spurious_wakeups,
+                        "tcp read",
+                    );
+                }
+                return Ok(buf);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if trace_enabled {
+                    spurious_wakeups = spurious_wakeups.saturating_add(1);
+                }
+                continue;
+            }
+            Err(e) => {
+                let mapped = NetError::from_io(&e);
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    code = mapped.code,
+                    error = %e,
+                    "tcp read failed",
+                );
+                return Err(mapped);
+            }
+        }
+    }
 }
 
 /// Writes `data` to `stream`, flushing the kernel send buffer. Node
 /// callers only ever observe a successful write or a definitive
 /// failure; partial writes are masked by the loop.
-pub async fn write_all(stream: &mut TcpStream, data: &[u8]) -> Result<(), NetError> {
-    stream.write_all(data).await?;
+///
+/// Uses `writable().await` + `try_write` so writing does not require
+/// exclusive ownership of the stream and concurrent reads can make
+/// progress on the same FD.
+pub async fn write_all(stream: &TcpStream, data: &[u8]) -> Result<(), NetError> {
+    let total = data.len();
+    let mut written = 0usize;
+    let trace_enabled = tracing::enabled!(target: LOG_TARGET, tracing::Level::TRACE);
+    let mut iterations: u32 = 0;
+    while written < total {
+        stream.writable().await?;
+        match stream.try_write(&data[written..]) {
+            Ok(0) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    written,
+                    total,
+                    "tcp write returned 0 bytes; treating as EPIPE",
+                );
+                return Err(NetError::new("EPIPE", "tcp write returned 0 bytes"));
+            }
+            Ok(n) => written += n,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if trace_enabled {
+                    iterations = iterations.saturating_add(1);
+                }
+                continue;
+            }
+            Err(e) => {
+                let mapped = NetError::from_io(&e);
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    code = mapped.code,
+                    written,
+                    total,
+                    error = %e,
+                    "tcp write failed",
+                );
+                return Err(mapped);
+            }
+        }
+    }
+    if trace_enabled {
+        tracing::trace!(
+            target: LOG_TARGET,
+            bytes = total,
+            iterations,
+            "tcp write completed",
+        );
+    }
     Ok(())
 }
 
@@ -147,11 +296,11 @@ mod tests {
         let (listener, addr) = listen("127.0.0.1", 0).await.expect("listen");
         let port = addr.port;
         let server = tokio::spawn(async move {
-            let (mut s, _, _) = accept(&listener).await.expect("accept");
-            write_all(&mut s, b"hello").await.expect("write");
+            let (s, _, _) = accept(&listener).await.expect("accept");
+            write_all(&s, b"hello").await.expect("write");
         });
-        let (mut client, _, _) = connect("127.0.0.1", port).await.expect("connect");
-        let chunk = read_chunk(&mut client, 64).await.expect("read");
+        let (client, _, _) = connect("127.0.0.1", port).await.expect("connect");
+        let chunk = read_chunk(&client, 64).await.expect("read");
         assert_eq!(chunk, b"hello");
         server.await.expect("join");
     }

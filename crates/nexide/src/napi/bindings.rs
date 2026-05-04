@@ -543,23 +543,57 @@ pub unsafe extern "C" fn napi_module_register(module: *mut crate::napi::types::N
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_set_instance_data(
-    _env: napi_env,
-    _data: *mut c_void,
-    _finalize_cb: *mut c_void,
-    _finalize_hint: *mut c_void,
+    env: napi_env,
+    data: *mut c_void,
+    finalize_cb: *mut c_void,
+    finalize_hint: *mut c_void,
 ) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if env.ctx.is_null() {
+        return NapiStatus::GenericFailure;
+    }
+    let ctx = unsafe { &*env.ctx };
+    let finalize = if finalize_cb.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            std::mem::transmute::<
+                *mut c_void,
+                unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void),
+            >(finalize_cb)
+        })
+    };
+    *ctx.instance_data.borrow_mut() = Some(crate::napi::env::InstanceData {
+        data,
+        finalize,
+        finalize_hint,
+    });
     NapiStatus::Ok
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_get_instance_data(
-    _env: napi_env,
+    env: napi_env,
     data: *mut *mut c_void,
 ) -> NapiStatus {
     if data.is_null() {
         return NapiStatus::InvalidArg;
     }
-    unsafe { ptr::write(data, ptr::null_mut()) };
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    let ptr = if env.ctx.is_null() {
+        ptr::null_mut()
+    } else {
+        let ctx = unsafe { &*env.ctx };
+        ctx.instance_data
+            .borrow()
+            .as_ref()
+            .map_or(ptr::null_mut(), |id| id.data)
+    };
+    unsafe { ptr::write(data, ptr) };
     NapiStatus::Ok
 }
 
@@ -2719,19 +2753,44 @@ pub unsafe extern "C" fn napi_fatal_exception(env: napi_env, err: napi_value) ->
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_add_env_cleanup_hook(
-    _env: napi_env,
-    _fun: Option<unsafe extern "C" fn(*mut c_void)>,
-    _arg: *mut c_void,
+    env: napi_env,
+    fun: Option<unsafe extern "C" fn(*mut c_void)>,
+    arg: *mut c_void,
 ) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if env.ctx.is_null() {
+        return NapiStatus::GenericFailure;
+    }
+    let ctx = unsafe { &*env.ctx };
+    ctx.cleanup_hooks
+        .borrow_mut()
+        .push(crate::napi::env::CleanupHook { fun, arg });
     NapiStatus::Ok
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_remove_env_cleanup_hook(
-    _env: napi_env,
-    _fun: Option<unsafe extern "C" fn(*mut c_void)>,
-    _arg: *mut c_void,
+    env: napi_env,
+    fun: Option<unsafe extern "C" fn(*mut c_void)>,
+    arg: *mut c_void,
 ) -> NapiStatus {
+    let Some(env) = (unsafe { env_ref(env) }) else {
+        return NapiStatus::InvalidArg;
+    };
+    if env.ctx.is_null() {
+        return NapiStatus::GenericFailure;
+    }
+    let ctx = unsafe { &*env.ctx };
+    let mut hooks = ctx.cleanup_hooks.borrow_mut();
+    let target_fp = fun.map(|f| f as usize);
+    if let Some(pos) = hooks
+        .iter()
+        .position(|h| h.fun.map(|f| f as usize) == target_fp && h.arg == arg)
+    {
+        hooks.remove(pos);
+    }
     NapiStatus::Ok
 }
 

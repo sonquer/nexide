@@ -29,8 +29,26 @@ pub struct LoadSpec {
 pub struct LoadOutcome {
     /// Successful HTTP responses (`2xx`).
     pub ok: u64,
-    /// Non-2xx responses + transport-level errors.
+    /// Non-2xx responses + transport-level errors (sum of the buckets
+    /// below; kept for backwards-compat with table renderers).
     pub errors: u64,
+    /// Responses where the server replied with a non-2xx HTTP status.
+    /// A high count here means the server is *up* and answering, just
+    /// rejecting (5xx, 4xx) — typically queue-saturation / handler
+    /// crash mid-request.
+    pub http_errors: u64,
+    /// Transport-level failures: connection refused, RST, EOF before
+    /// response, or any other I/O error returned by the HTTP client.
+    /// A high count here means the server is *not accepting* / *not
+    /// responding* — TCP backlog overflow, listener crash, or runtime
+    /// hang. When this dominates, the bench should bail and dump
+    /// `docker logs`.
+    pub transport_errors: u64,
+    /// Subset of `transport_errors` where the underlying error was
+    /// the reqwest 10s per-request timeout. A high count here means
+    /// the server *accepts* but *never replies* — handler deadlock,
+    /// dispatcher queue stall, or V8 isolate stuck in GC.
+    pub timeout_errors: u64,
     /// Total wall-clock time observed by the harness.
     pub elapsed: Duration,
     /// Median latency.
@@ -69,7 +87,9 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
         .context("reqwest client")?;
     let histogram = Arc::new(Mutex::new(Histogram::<u64>::new_with_max(60_000_000, 3)?));
     let ok = Arc::new(AtomicU64::new(0));
-    let err = Arc::new(AtomicU64::new(0));
+    let http_err = Arc::new(AtomicU64::new(0));
+    let transport_err = Arc::new(AtomicU64::new(0));
+    let timeout_err = Arc::new(AtomicU64::new(0));
     let deadline = Instant::now() + spec.duration;
     let mut tasks = Vec::with_capacity(spec.connections);
     for _ in 0..spec.connections {
@@ -77,7 +97,9 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
         let url = spec.url.clone();
         let histogram = Arc::clone(&histogram);
         let ok = Arc::clone(&ok);
-        let err = Arc::clone(&err);
+        let http_err = Arc::clone(&http_err);
+        let transport_err = Arc::clone(&transport_err);
+        let timeout_err = Arc::clone(&timeout_err);
         tasks.push(tokio::spawn(async move {
             while Instant::now() < deadline {
                 let started = Instant::now();
@@ -93,11 +115,14 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
                         if status_ok {
                             ok.fetch_add(1, Ordering::Relaxed);
                         } else {
-                            err.fetch_add(1, Ordering::Relaxed);
+                            http_err.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    Err(_) => {
-                        err.fetch_add(1, Ordering::Relaxed);
+                    Err(err) => {
+                        if err.is_timeout() {
+                            timeout_err.fetch_add(1, Ordering::Relaxed);
+                        }
+                        transport_err.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -114,7 +139,10 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
     let p99 = Duration::from_micros(h.value_at_quantile(0.99));
     drop(h);
     let ok_total = ok.load(Ordering::Relaxed);
-    let err_total = err.load(Ordering::Relaxed);
+    let http_err_total = http_err.load(Ordering::Relaxed);
+    let transport_err_total = transport_err.load(Ordering::Relaxed);
+    let timeout_err_total = timeout_err.load(Ordering::Relaxed);
+    let err_total = http_err_total + transport_err_total;
     let rps = if elapsed.as_secs_f64() > 0.0 {
         ok_total as f64 / elapsed.as_secs_f64()
     } else {
@@ -123,6 +151,9 @@ pub async fn run_load(spec: LoadSpec) -> Result<LoadOutcome> {
     Ok(LoadOutcome {
         ok: ok_total,
         errors: err_total,
+        http_errors: http_err_total,
+        transport_errors: transport_err_total,
+        timeout_errors: timeout_err_total,
         elapsed,
         p50,
         p95,

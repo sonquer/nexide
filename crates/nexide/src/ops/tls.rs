@@ -7,6 +7,11 @@
 //! drop-in replacement for `TcpStream` from the JS side: read /
 //! write semantics are identical and all errors are mapped to the
 //! same Node-canonical codes used by [`super::net`].
+//!
+//! Structured `tracing` records emit on the `nexide::ops::tls`
+//! target. Handshake lifecycle (dial, upgrade, established) logs at
+//! `debug`; per-chunk I/O at `trace`; certificate / handshake
+//! failures at `warn`.
 
 use std::io;
 use std::sync::Arc;
@@ -20,6 +25,8 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 use super::net::{AddressInfo, NetError};
+
+const LOG_TARGET: &str = "nexide::ops::tls";
 
 fn shared_config() -> Arc<ClientConfig> {
     static CFG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
@@ -48,6 +55,51 @@ fn tls_error(err: &io::Error) -> NetError {
     mapped
 }
 
+/// Upgrades an existing TCP stream to TLS by performing a client
+/// handshake over it. Used for protocols that negotiate TLS over a
+/// plain TCP connection (e.g. PostgreSQL `SSLRequest`, SMTP
+/// `STARTTLS`, IMAP/POP3 `STARTTLS`).
+///
+/// # Errors
+/// Returns `NetError` if the underlying socket address cannot be
+/// queried or the TLS handshake fails (handshake errors are mapped
+/// to canonical Node codes via [`tls_error`]).
+#[tracing::instrument(
+    target = "nexide::ops::tls",
+    level = "debug",
+    name = "tls_upgrade",
+    skip_all,
+    fields(host = %host),
+    err(level = "warn", Display),
+)]
+pub async fn upgrade(
+    tcp: TcpStream,
+    host: &str,
+) -> Result<(TlsStream<TcpStream>, AddressInfo, AddressInfo), NetError> {
+    let local = tcp.local_addr().map_err(|e| tls_error(&e))?;
+    let remote = tcp.peer_addr().map_err(|e| tls_error(&e))?;
+    tracing::trace!(
+        target: LOG_TARGET,
+        local = %local,
+        remote = %remote,
+        "starting handshake on existing tcp stream",
+    );
+    let server_name = ServerName::try_from(host.to_owned())
+        .map_err(|_| NetError::new("ERR_INVALID_HOSTNAME", format!("invalid host {host}")))?;
+    let connector = TlsConnector::from(shared_config());
+    let stream = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| tls_error(&e))?;
+    tracing::debug!(
+        target: LOG_TARGET,
+        local = %local,
+        remote = %remote,
+        "tls handshake complete",
+    );
+    Ok((stream, local.into(), remote.into()))
+}
+
 /// Performs a TLS client handshake against `host:port` and returns
 /// the live stream plus address info pulled from the underlying TCP
 /// socket.
@@ -56,6 +108,14 @@ fn tls_error(err: &io::Error) -> NetError {
 /// Returns `NetError` on DNS, TCP or TLS handshake failures. The
 /// mapped error code mirrors what Node would expose under the same
 /// circumstances.
+#[tracing::instrument(
+    target = "nexide::ops::tls",
+    level = "debug",
+    name = "tls_connect",
+    skip_all,
+    fields(host = %host, port),
+    err(level = "warn", Display),
+)]
 pub async fn connect(
     host: &str,
     port: u16,
@@ -64,16 +124,7 @@ pub async fn connect(
     let tcp = TcpStream::connect(&target)
         .await
         .map_err(|e| tls_error(&e))?;
-    let local = tcp.local_addr().map_err(|e| tls_error(&e))?;
-    let remote = tcp.peer_addr().map_err(|e| tls_error(&e))?;
-    let server_name = ServerName::try_from(host.to_owned())
-        .map_err(|_| NetError::new("ERR_INVALID_HOSTNAME", format!("invalid host {host}")))?;
-    let connector = TlsConnector::from(shared_config());
-    let stream = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|e| tls_error(&e))?;
-    Ok((stream, local.into(), remote.into()))
+    upgrade(tcp, host).await
 }
 
 /// Reads up to `max` bytes from `stream`. Returns an empty `Vec` on
@@ -84,22 +135,90 @@ pub async fn read_chunk(
 ) -> Result<Vec<u8>, NetError> {
     let cap = max.clamp(1, 64 * 1024);
     let mut buf = vec![0u8; cap];
-    let n = stream.read(&mut buf).await.map_err(|e| tls_error(&e))?;
-    buf.truncate(n);
-    Ok(buf)
+    match stream.read(&mut buf).await {
+        Ok(n) => {
+            buf.truncate(n);
+            if n == 0 {
+                tracing::debug!(target: LOG_TARGET, "tls peer half-closed");
+            } else {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    bytes = n,
+                    capacity = cap,
+                    "tls read",
+                );
+            }
+            Ok(buf)
+        }
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            tracing::debug!(
+                target: LOG_TARGET,
+                error = %e,
+                "tls peer closed without close_notify; treating as clean eof",
+            );
+            Ok(Vec::new())
+        }
+        Err(e) => {
+            let mapped = tls_error(&e);
+            tracing::warn!(
+                target: LOG_TARGET,
+                code = mapped.code,
+                error = %e,
+                "tls read failed",
+            );
+            Err(mapped)
+        }
+    }
 }
 
 /// Writes `data` to `stream` and waits for the write half to flush.
 pub async fn write_all(stream: &mut TlsStream<TcpStream>, data: &[u8]) -> Result<(), NetError> {
-    stream.write_all(data).await.map_err(|e| tls_error(&e))?;
-    stream.flush().await.map_err(|e| tls_error(&e))?;
+    let total = data.len();
+    if let Err(e) = stream.write_all(data).await {
+        let mapped = tls_error(&e);
+        tracing::warn!(
+            target: LOG_TARGET,
+            code = mapped.code,
+            total,
+            error = %e,
+            "tls write failed",
+        );
+        return Err(mapped);
+    }
+    if let Err(e) = stream.flush().await {
+        let mapped = tls_error(&e);
+        tracing::warn!(
+            target: LOG_TARGET,
+            code = mapped.code,
+            total,
+            error = %e,
+            "tls flush failed",
+        );
+        return Err(mapped);
+    }
+    tracing::trace!(target: LOG_TARGET, bytes = total, "tls write completed");
     Ok(())
 }
 
 /// Cleanly shuts the TLS layer down, sending `close_notify` to the
 /// peer so the connection is not torn down ungracefully.
 pub async fn shutdown(stream: &mut TlsStream<TcpStream>) -> Result<(), NetError> {
-    stream.shutdown().await.map_err(|e| tls_error(&e))
+    match stream.shutdown().await {
+        Ok(()) => {
+            tracing::debug!(target: LOG_TARGET, "tls shutdown clean");
+            Ok(())
+        }
+        Err(e) => {
+            let mapped = tls_error(&e);
+            tracing::warn!(
+                target: LOG_TARGET,
+                code = mapped.code,
+                error = %e,
+                "tls shutdown failed",
+            );
+            Err(mapped)
+        }
+    }
 }
 
 #[cfg(test)]
