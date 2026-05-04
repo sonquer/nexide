@@ -1596,7 +1596,7 @@ fn op_cjs_compile_function<'s>(
                         &mut src_fresh,
                         &arg_names_fresh,
                         &[],
-                        v8::script_compiler::CompileOptions::NoCompileOptions,
+                        v8::script_compiler::CompileOptions::EagerCompile,
                         v8::script_compiler::NoCacheReason::NoReason,
                     )
                 })
