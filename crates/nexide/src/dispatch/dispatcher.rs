@@ -11,7 +11,10 @@ use tokio::sync::{mpsc, oneshot};
 use super::errors::DispatchError;
 use crate::engine::cjs::{FsResolver, ROOT_PARENT, default_registry};
 use crate::engine::{BootContext, V8Engine};
-use crate::ops::{HeaderPair, OsEnv, ProcessConfig, RequestMeta, RequestSlot, ResponsePayload};
+use crate::ops::{
+    HeaderPair, OsEnv, ProcessConfig, RequestFailure, RequestMeta, RequestSlot, ResponseHead,
+    ResponsePayload, StreamTaps,
+};
 use crate::sandbox_root_for;
 
 /// Plain-data view of an HTTP request used to cross thread boundaries.
@@ -39,6 +42,20 @@ impl ProtoRequest {
     }
 }
 
+/// Response yielded by the streaming dispatch path.
+///
+/// `head` is delivered as soon as the JS handler emits status+headers;
+/// `body` produces individual chunks (`Bytes`) as they are written by
+/// the handler, surfacing `RequestFailure` mid-stream when the
+/// handler errors after `head` has already been sent. Closing the
+/// channel signals end-of-stream.
+pub struct StreamingResponse {
+    /// Status + headers half (always set before `body` yields).
+    pub head: ResponseHead,
+    /// Body chunks as they are produced by the JS handler.
+    pub body: tokio::sync::mpsc::UnboundedReceiver<Result<Bytes, RequestFailure>>,
+}
+
 /// Cross-thread dispatcher contract used by the HTTP shield.
 ///
 /// Implementors must be `Send + Sync + 'static` so Axum can clone the
@@ -57,6 +74,27 @@ pub trait EngineDispatcher: Send + Sync + 'static {
     /// `504`).
     async fn dispatch(&self, request: ProtoRequest) -> Result<ResponsePayload, DispatchError>;
 
+    /// Streaming variant. Returns the response head as soon as JS
+    /// emits it and a chunk receiver that yields body bytes as they
+    /// are produced by the handler. Default implementation falls
+    /// back to the buffered [`Self::dispatch`] path so existing
+    /// dispatchers keep working without changes.
+    async fn dispatch_streaming(
+        &self,
+        request: ProtoRequest,
+    ) -> Result<StreamingResponse, DispatchError> {
+        let payload = self.dispatch(request).await?;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if !payload.body.is_empty() {
+            let _ = tx.send(Ok(payload.body));
+        }
+        drop(tx);
+        Ok(StreamingResponse {
+            head: payload.head,
+            body: rx,
+        })
+    }
+
     /// Total number of requests dispatched since the worker started
     /// (Query - telemetry only, no side effects).
     fn dispatch_count(&self) -> usize;
@@ -66,6 +104,12 @@ pub trait EngineDispatcher: Send + Sync + 'static {
 struct DispatchJob {
     slot: RequestSlot,
     reply: oneshot::Sender<Result<ResponsePayload, DispatchError>>,
+    streaming: Option<StreamingHandshake>,
+}
+
+struct StreamingHandshake {
+    head_tx: oneshot::Sender<ResponseHead>,
+    body_tx: tokio::sync::mpsc::UnboundedSender<Result<Bytes, RequestFailure>>,
 }
 
 /// Production [`EngineDispatcher`] backed by a dedicated thread that
@@ -117,6 +161,7 @@ impl EngineDispatcher for IsolateDispatcher {
             .send(DispatchJob {
                 slot,
                 reply: reply_tx,
+                streaming: None,
             })
             .await
             .map_err(|_| DispatchError::WorkerGone)?;
@@ -125,6 +170,57 @@ impl EngineDispatcher for IsolateDispatcher {
             self.dispatch_count.fetch_add(1, Ordering::Relaxed);
         }
         outcome
+    }
+
+    async fn dispatch_streaming(
+        &self,
+        request: ProtoRequest,
+    ) -> Result<StreamingResponse, DispatchError> {
+        let slot = request.into_slot()?;
+        let (reply_tx, mut reply_rx) = oneshot::channel();
+        let (head_tx, head_rx) = oneshot::channel();
+        let (body_tx, body_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.job_tx
+            .send(DispatchJob {
+                slot,
+                reply: reply_tx,
+                streaming: Some(StreamingHandshake { head_tx, body_tx }),
+            })
+            .await
+            .map_err(|_| DispatchError::WorkerGone)?;
+
+        tokio::select! {
+            biased;
+            head = head_rx => {
+                match head {
+                    Ok(head) => {
+                        self.dispatch_count.fetch_add(1, Ordering::Relaxed);
+                        Ok(StreamingResponse { head, body: body_rx })
+                    }
+                    Err(_) => {
+                        match (&mut reply_rx).await.map_err(|_| DispatchError::WorkerGone)? {
+                            Ok(_) => Err(DispatchError::WorkerGone),
+                            Err(err) => Err(err),
+                        }
+                    }
+                }
+            }
+            outcome = &mut reply_rx => {
+                let outcome = outcome.map_err(|_| DispatchError::WorkerGone)?;
+                match outcome {
+                    Ok(payload) => {
+                        self.dispatch_count.fetch_add(1, Ordering::Relaxed);
+                        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        if !payload.body.is_empty() {
+                            let _ = tx.send(Ok(payload.body));
+                        }
+                        drop(tx);
+                        Ok(StreamingResponse { head: payload.head, body: rx })
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+        }
     }
 
     fn dispatch_count(&self) -> usize {
@@ -218,7 +314,15 @@ async fn run_worker(
         let Some(job) = job_rx.recv().await else {
             break "channel closed";
         };
-        let rx = engine.borrow().enqueue(job.slot);
+        let rx = match job.streaming {
+            None => engine.borrow().enqueue(job.slot),
+            Some(handshake) => {
+                let (tx, rx) = oneshot::channel();
+                let taps = StreamTaps::new(handshake.head_tx, handshake.body_tx);
+                engine.borrow().enqueue_streaming(job.slot, tx, taps);
+                rx
+            }
+        };
         pump_signal.notify_one();
         let pump_signal_for_task = pump_signal.clone();
         tokio::task::spawn_local(async move {

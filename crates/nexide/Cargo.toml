@@ -57,6 +57,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1" }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "set-header", "compression-br", "compression-gzip", "compression-zstd"] }
 tracing = { workspace = true }

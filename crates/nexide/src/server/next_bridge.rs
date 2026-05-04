@@ -17,9 +17,10 @@ use axum::http::header::{ACCEPT, HeaderName, HeaderValue};
 use axum::http::{HeaderMap, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use tokio::sync::Semaphore;
+use tokio_stream::StreamExt;
 
 use super::fallback::{DynamicHandler, HandlerError};
-use crate::dispatch::{DispatchError, EngineDispatcher, ProtoRequest};
+use crate::dispatch::{DispatchError, EngineDispatcher, ProtoRequest, StreamingResponse};
 use crate::ops::HeaderPair;
 
 /// Maximum buffered request body size. Larger bodies are rejected
@@ -114,12 +115,12 @@ where
         };
 
         let t_dispatch_start = if breakdown { Some(Instant::now()) } else { None };
-        let outcome = self.dispatcher.dispatch(proto).await;
+        let outcome = self.dispatcher.dispatch_streaming(proto).await;
         let dispatch_elapsed = t_dispatch_start.map(|t| t.elapsed());
 
         let t_respond_start = if breakdown { Some(Instant::now()) } else { None };
         let mut response = match outcome {
-            Ok(payload) => payload_to_response(payload),
+            Ok(streaming) => streaming_to_response(streaming),
             Err(err) => error_response(&err, accept_header.as_ref()),
         };
         let respond_elapsed = t_respond_start.map(|t| t.elapsed());
@@ -229,13 +230,14 @@ async fn build_proto_request(req: Request<Body>) -> Result<ProtoRequest, Dispatc
     })
 }
 
-fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
-    let status = StatusCode::from_u16(payload.head.status).unwrap_or(StatusCode::BAD_GATEWAY);
+fn streaming_to_response(streaming: StreamingResponse) -> Response<Body> {
+    let StreamingResponse { head, body } = streaming;
+    let status = StatusCode::from_u16(head.status).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = Response::builder().status(status);
     let headers_mut = builder
         .headers_mut()
         .expect("response builder must accept headers");
-    for (name, value) in payload.head.headers {
+    for (name, value) in head.headers {
         let header_name = match canonical_header_name(&name) {
             Some(n) => n,
             None => match HeaderName::try_from(name) {
@@ -248,9 +250,11 @@ fn payload_to_response(payload: crate::ops::ResponsePayload) -> Response<Body> {
         };
         headers_mut.append(header_name, header_value);
     }
-    builder
-        .body(Body::from(payload.body))
-        .unwrap_or_else(|_| infallible_502())
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(body).map(|res| {
+        res.map_err(|err| std::io::Error::other(err.to_string()))
+    });
+    let axum_body = Body::from_stream(stream);
+    builder.body(axum_body).unwrap_or_else(|_| infallible_502())
 }
 
 #[inline]
@@ -437,6 +441,118 @@ mod tests {
             .expect("request");
         let response = handler.handle(req).await.expect("infallible");
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatcher_yields_chunks_progressively() {
+        use crate::ops::RequestFailure;
+
+        struct StreamingDispatcher {
+            count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl EngineDispatcher for StreamingDispatcher {
+            async fn dispatch(
+                &self,
+                _request: ProtoRequest,
+            ) -> Result<ResponsePayload, DispatchError> {
+                unreachable!("streaming path takes precedence");
+            }
+
+            async fn dispatch_streaming(
+                &self,
+                _request: ProtoRequest,
+            ) -> Result<StreamingResponse, DispatchError> {
+                self.count.fetch_add(1, Ordering::Relaxed);
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let _ = tx.send(Ok::<_, RequestFailure>(Bytes::from_static(b"chunk-1|")));
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    let _ = tx.send(Ok(Bytes::from_static(b"chunk-2|")));
+                    let _ = tx.send(Ok(Bytes::from_static(b"chunk-3")));
+                    drop(tx);
+                });
+                Ok(StreamingResponse {
+                    head: ResponseHead {
+                        status: 200,
+                        headers: vec![("content-type".into(), "text/plain".into())],
+                    },
+                    body: rx,
+                })
+            }
+
+            fn dispatch_count(&self) -> usize {
+                self.count.load(Ordering::Relaxed)
+            }
+        }
+
+        let dispatcher = Arc::new(StreamingDispatcher {
+            count: Arc::new(AtomicUsize::new(0)),
+        });
+        let handler = NextBridgeHandler::new(dispatcher);
+        let req = Request::builder()
+            .uri("/stream")
+            .body(Body::empty())
+            .expect("request");
+        let response = handler.handle(req).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect")
+            .to_bytes();
+        assert_eq!(&body[..], b"chunk-1|chunk-2|chunk-3");
+    }
+
+    #[tokio::test]
+    async fn streaming_dispatcher_propagates_mid_stream_error_via_body_close() {
+        use crate::ops::RequestFailure;
+
+        struct ErroringDispatcher;
+
+        #[async_trait]
+        impl EngineDispatcher for ErroringDispatcher {
+            async fn dispatch(
+                &self,
+                _request: ProtoRequest,
+            ) -> Result<ResponsePayload, DispatchError> {
+                unreachable!()
+            }
+
+            async fn dispatch_streaming(
+                &self,
+                _request: ProtoRequest,
+            ) -> Result<StreamingResponse, DispatchError> {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let _ = tx.send(Ok::<_, RequestFailure>(Bytes::from_static(b"partial")));
+                    let _ = tx.send(Err(RequestFailure::Handler("boom".into())));
+                });
+                Ok(StreamingResponse {
+                    head: ResponseHead {
+                        status: 200,
+                        headers: vec![],
+                    },
+                    body: rx,
+                })
+            }
+
+            fn dispatch_count(&self) -> usize {
+                0
+            }
+        }
+
+        let handler = NextBridgeHandler::new(Arc::new(ErroringDispatcher));
+        let req = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("request");
+        let response = handler.handle(req).await.expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let result = response.into_body().collect().await;
+        assert!(result.is_err(), "body must surface mid-stream error");
     }
 
     #[tokio::test]

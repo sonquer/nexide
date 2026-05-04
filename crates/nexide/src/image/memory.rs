@@ -10,10 +10,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use axum::http::HeaderValue;
 use bytes::Bytes;
 use parking_lot::RwLock;
 
 use super::cache::CacheEntry;
+use super::config::ImageConfig;
+use super::handler::build_content_disposition;
 
 const DEFAULT_MAX_ENTRIES: usize = 256;
 const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -21,24 +24,45 @@ const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Cheap-to-clone shared cached entry: bytes plus the metadata the
 /// HTTP layer needs to attach response headers without re-parsing the
 /// filename.
+///
+/// Carries precomputed `HeaderValue`s for `Cache-Control`, `ETag` and
+/// `Content-Disposition` so the hot cache-hit path skips four
+/// `format!()` allocations + four `HeaderValue::from_str` validations
+/// per request.
 #[derive(Debug, Clone)]
 pub(crate) struct HotEntry {
     pub(crate) bytes: Bytes,
-    pub(crate) max_age: u64,
     pub(crate) expire_at_ms: u128,
     pub(crate) etag: String,
-    #[allow(dead_code)]
-    pub(crate) extension: &'static str,
+    pub(crate) cache_control_hv: HeaderValue,
+    pub(crate) etag_hv: HeaderValue,
+    pub(crate) disposition_hv: HeaderValue,
 }
 
 impl HotEntry {
-    pub(crate) fn from_disk(entry: &CacheEntry) -> Self {
+    pub(crate) fn from_disk(
+        entry: &CacheEntry,
+        mime: &'static str,
+        url: &str,
+        cfg: &ImageConfig,
+    ) -> Self {
+        let cache_control_hv = HeaderValue::try_from(format!(
+            "public, max-age={}, must-revalidate",
+            entry.max_age
+        ))
+        .unwrap_or_else(|_| HeaderValue::from_static("public, must-revalidate"));
+        let etag_hv = HeaderValue::try_from(format!("\"{}\"", entry.etag))
+            .unwrap_or_else(|_| HeaderValue::from_static("\"\""));
+        let disposition_str = build_content_disposition(url, mime, &cfg.content_disposition_type);
+        let disposition_hv = HeaderValue::try_from(disposition_str)
+            .unwrap_or_else(|_| HeaderValue::from_static("inline"));
         Self {
             bytes: Bytes::from(entry.bytes.clone()),
-            max_age: entry.max_age,
             expire_at_ms: entry.expire_at_ms,
             etag: entry.etag.clone(),
-            extension: entry.extension,
+            cache_control_hv,
+            etag_hv,
+            disposition_hv,
         }
     }
 }
@@ -154,10 +178,11 @@ mod tests {
     fn entry(n: usize) -> Arc<HotEntry> {
         Arc::new(HotEntry {
             bytes: Bytes::from(vec![0u8; n]),
-            max_age: 60,
             expire_at_ms: 0,
             etag: "x".into(),
-            extension: "webp",
+            cache_control_hv: HeaderValue::from_static("public, max-age=60, must-revalidate"),
+            etag_hv: HeaderValue::from_static("\"x\""),
+            disposition_hv: HeaderValue::from_static("inline; filename=\"image.webp\""),
         })
     }
 

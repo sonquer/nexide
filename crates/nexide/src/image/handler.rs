@@ -214,7 +214,12 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
         } else {
             "STALE"
         };
-        let hot = Arc::new(super::memory::HotEntry::from_disk(&hit));
+        let hot = Arc::new(super::memory::HotEntry::from_disk(
+            &hit,
+            chosen.mime(),
+            &params.url,
+            &ctx.config,
+        ));
         ctx.mem.put(key.clone(), Arc::clone(&hot));
         return Ok(serve_hot(
             &hot,
@@ -257,7 +262,12 @@ async fn handle(ctx: &Arc<Ctx>, req: Request<Body>) -> Result<Response<Body>, Ha
     } else {
         debug!(target: "nexide::image", url = %url_owned, "cached optimized image");
     }
-    let hot = Arc::new(super::memory::HotEntry::from_disk(&entry));
+    let hot = Arc::new(super::memory::HotEntry::from_disk(
+        &entry,
+        chosen.mime(),
+        &params.url,
+        &ctx.config,
+    ));
     ctx.mem.put(key, Arc::clone(&hot));
 
     Ok(serve_hot(
@@ -322,7 +332,7 @@ fn serve_hot(
     chosen: OutputFormat,
     cache_state: &'static str,
     if_none_match: &Option<String>,
-    url: &str,
+    _url: &str,
     cfg: &ImageConfig,
 ) -> Response<Body> {
     if let Some(client_etag) = if_none_match
@@ -330,28 +340,12 @@ fn serve_hot(
     {
         let mut resp = Response::new(Body::empty());
         *resp.status_mut() = StatusCode::NOT_MODIFIED;
-        attach_headers(
-            resp.headers_mut(),
-            chosen.mime(),
-            entry.max_age,
-            &entry.etag,
-            cache_state,
-            url,
-            cfg,
-        );
+        attach_headers_from_hot(resp.headers_mut(), chosen.mime(), cache_state, entry, cfg);
         return resp;
     }
     let len = entry.bytes.len();
     let mut resp = Response::new(Body::from(entry.bytes.clone()));
-    attach_headers(
-        resp.headers_mut(),
-        chosen.mime(),
-        entry.max_age,
-        &entry.etag,
-        cache_state,
-        url,
-        cfg,
-    );
+    attach_headers_from_hot(resp.headers_mut(), chosen.mime(), cache_state, entry, cfg);
     resp.headers_mut()
         .insert(CONTENT_LENGTH, HeaderValue::from(len as u64));
     resp
@@ -413,7 +407,32 @@ fn attach_headers(
     }
 }
 
-fn build_content_disposition(url: &str, mime: &str, disposition_type: &str) -> String {
+fn attach_headers_from_hot(
+    headers: &mut HeaderMap,
+    mime: &'static str,
+    cache_state: &'static str,
+    entry: &super::memory::HotEntry,
+    cfg: &ImageConfig,
+) {
+    const HV_VARY_ACCEPT: HeaderValue = HeaderValue::from_static("Accept");
+    const HN_X_NEXTJS_CACHE_K: axum::http::HeaderName =
+        axum::http::HeaderName::from_static(X_NEXTJS_CACHE);
+    headers.insert(VARY, HV_VARY_ACCEPT);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    headers.insert(CACHE_CONTROL, entry.cache_control_hv.clone());
+    headers.insert(ETAG, entry.etag_hv.clone());
+    headers.insert(HN_X_NEXTJS_CACHE_K, HeaderValue::from_static(cache_state));
+    if let Ok(v) = HeaderValue::from_str(&cfg.content_security_policy) {
+        headers.insert(CONTENT_SECURITY_POLICY, v);
+    }
+    headers.insert(CONTENT_DISPOSITION, entry.disposition_hv.clone());
+}
+
+pub(super) fn build_content_disposition(
+    url: &str,
+    mime: &str,
+    disposition_type: &str,
+) -> String {
     let filename = filename_from_url(url, mime);
     format!("{disposition_type}; filename=\"{filename}\"")
 }

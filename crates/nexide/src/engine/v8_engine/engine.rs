@@ -328,6 +328,30 @@ impl V8Engine {
         rx
     }
 
+    /// Streaming variant of [`Self::enqueue_with`]: pushes the request
+    /// and immediately attaches the supplied [`crate::ops::StreamTaps`]
+    /// so that subsequent `send_head`/`send_chunk` ops fire the head
+    /// oneshot and forward chunks to the body channel as they arrive.
+    pub fn enqueue_streaming(
+        &self,
+        slot: RequestSlot,
+        completion: oneshot::Sender<Result<ResponsePayload, RequestFailure>>,
+        taps: crate::ops::StreamTaps,
+    ) -> RequestId {
+        let handle = self
+            .isolate
+            .get_slot::<BridgeStateHandle>()
+            .cloned()
+            .expect("bridge state must be installed");
+        let mut state = handle.0.borrow_mut();
+        let id = state.dispatch_table.insert(slot, completion);
+        if let Ok(inflight) = state.dispatch_table.get_mut(id) {
+            inflight.attach_taps(taps);
+        }
+        state.queue.push(id);
+        id
+    }
+
     /// Drains the dispatch table, failing every in-flight request
     /// with `RequestFailure::PumpDied(reason)`.
     pub fn fail_inflight(&self, reason: &str) {

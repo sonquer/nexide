@@ -379,6 +379,9 @@ fn throw_type_error<'s>(scope: &mut v8::PinScope<'s, '_>, message: &str) {
 /// completion oneshot with `Ok(payload)`, and removes the slot.
 fn settle_ok(table: &mut DispatchTable, id: RequestId) -> Result<(), String> {
     let inflight = table.get_mut(id).map_err(|e| e.to_string())?;
+    if let Some(taps) = inflight.stream_taps_mut() {
+        taps.finish();
+    }
     let response = std::mem::take(inflight.response_mut());
     let payload = response.finish().map_err(|e| e.to_string())?;
     if let Some(tx) = inflight.take_completion() {
@@ -391,6 +394,9 @@ fn settle_ok(table: &mut DispatchTable, id: RequestId) -> Result<(), String> {
 /// Settles a request with a handler error.
 fn settle_err(table: &mut DispatchTable, id: RequestId, msg: &str) -> Result<(), String> {
     let inflight = table.get_mut(id).map_err(|e| e.to_string())?;
+    if let Some(taps) = inflight.stream_taps_mut() {
+        taps.finish_error(crate::ops::RequestFailure::Handler(msg.to_owned()));
+    }
     if let Some(tx) = inflight.take_completion() {
         let _ = tx.send(Err(crate::ops::RequestFailure::Handler(msg.to_owned())));
     }
@@ -676,10 +682,14 @@ fn op_nexide_send_head<'s>(
     let result = {
         let mut state = handle.0.borrow_mut();
         match state.dispatch_table.get_mut(id) {
-            Ok(slot) => slot
-                .response_mut()
-                .send_head(head)
-                .map_err(|e| e.to_string()),
+            Ok(slot) => {
+                if let Some(taps) = slot.stream_taps_mut() {
+                    taps.fire_head(head.clone());
+                }
+                slot.response_mut()
+                    .send_head(head)
+                    .map_err(|e| e.to_string())
+            }
             Err(err) => Err(err.to_string()),
         }
     };
@@ -707,10 +717,25 @@ fn op_nexide_send_chunk<'s>(
     let result = {
         let mut state = handle.0.borrow_mut();
         match state.dispatch_table.get_mut(id) {
-            Ok(slot) => slot
-                .response_mut()
-                .send_chunk(bytes)
-                .map_err(|e| e.to_string()),
+            Ok(slot) => {
+                if let Some(taps) = slot.stream_taps_mut() {
+                    if taps.body_open() {
+                        if taps.push_chunk(bytes.clone()).is_err() {
+                            Err("response stream cancelled by client".to_owned())
+                        } else {
+                            Ok(())
+                        }
+                    } else {
+                        slot.response_mut()
+                            .send_chunk(bytes)
+                            .map_err(|e| e.to_string())
+                    }
+                } else {
+                    slot.response_mut()
+                        .send_chunk(bytes)
+                        .map_err(|e| e.to_string())
+                }
+            }
             Err(err) => Err(err.to_string()),
         }
     };
@@ -761,10 +786,30 @@ fn op_nexide_send_response<'s>(
         let mut state = handle.0.borrow_mut();
         let table = &mut state.dispatch_table;
         let inflight = table.get_mut(id).map_err(|e| e.to_string())?;
-        let response = inflight.response_mut();
-        response.send_head(head).map_err(|e| e.to_string())?;
+        let streaming = inflight
+            .stream_taps_mut()
+            .map(|t| t.body_open())
+            .unwrap_or(false);
+        if let Some(taps) = inflight.stream_taps_mut() {
+            taps.fire_head(head.clone());
+        }
+        inflight
+            .response_mut()
+            .send_head(head)
+            .map_err(|e| e.to_string())?;
         if !body.is_empty() {
-            response.send_chunk(body).map_err(|e| e.to_string())?;
+            if streaming {
+                if let Some(taps) = inflight.stream_taps_mut()
+                    && taps.push_chunk(body).is_err()
+                {
+                    return Err("response stream cancelled by client".to_owned());
+                }
+            } else {
+                inflight
+                    .response_mut()
+                    .send_chunk(body)
+                    .map_err(|e| e.to_string())?;
+            }
         }
         drop(state);
         settle_ok(&mut handle.0.borrow_mut().dispatch_table, id)
