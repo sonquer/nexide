@@ -2785,9 +2785,10 @@ pub unsafe extern "C" fn napi_remove_env_cleanup_hook(
     let ctx = unsafe { &*env.ctx };
     let mut hooks = ctx.cleanup_hooks.borrow_mut();
     let target_fp = fun.map(|f| f as usize);
-    if let Some(pos) = hooks.iter().position(|h| {
-        h.fun.map(|f| f as usize) == target_fp && h.arg == arg
-    }) {
+    if let Some(pos) = hooks
+        .iter()
+        .position(|h| h.fun.map(|f| f as usize) == target_fp && h.arg == arg)
+    {
         hooks.remove(pos);
     }
     NapiStatus::Ok

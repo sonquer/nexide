@@ -144,7 +144,12 @@ fn install_ops<'s>(scope: &mut v8::PinScope<'s, '_>, ops: v8::Local<'s, v8::Obje
     install_fn(scope, ops, "op_fs_realpath_async", op_fs_realpath_async);
     install_fn(scope, ops, "op_url_parse", op_url_parse);
     install_fn(scope, ops, "op_url_can_parse", op_url_can_parse);
-    install_fn(scope, ops, "op_os_network_interfaces", op_os_network_interfaces);
+    install_fn(
+        scope,
+        ops,
+        "op_os_network_interfaces",
+        op_os_network_interfaces,
+    );
     install_fn(scope, ops, "op_fs_chmod", op_fs_chmod);
     install_fn(scope, ops, "op_fs_chmod_async", op_fs_chmod_async);
     install_fn(scope, ops, "op_fs_symlink", op_fs_symlink);
@@ -2299,7 +2304,10 @@ fn admit_for_async(
     }
 }
 
-fn map_tokio_io_err<P: AsRef<std::path::Path>>(err: std::io::Error, _path: P) -> (&'static str, String) {
+fn map_tokio_io_err<P: AsRef<std::path::Path>>(
+    err: std::io::Error,
+    _path: P,
+) -> (&'static str, String) {
     (io_error_code(&err), err.to_string())
 }
 
@@ -2444,7 +2452,14 @@ fn op_fs_stat_async<'s>(
     let Some(promise) = schedule_fs(scope, work, |scope, t| {
         let (size, is_file, is_dir, is_symlink, mtime_ms, mode) = t;
         let obj = v8::Object::new(scope);
-        let names = ["size", "is_file", "is_dir", "is_symlink", "mtime_ms", "mode"];
+        let names = [
+            "size",
+            "is_file",
+            "is_dir",
+            "is_symlink",
+            "mtime_ms",
+            "mode",
+        ];
         let values: [v8::Local<'_, v8::Value>; 6] = [
             v8::Number::new(scope, size as f64).into(),
             v8::Boolean::new(scope, is_file).into(),
@@ -2725,11 +2740,12 @@ fn op_url_parse<'s>(
     };
 
     let arr = v8::Array::new(scope, 10);
-    let put_str = |scope: &mut v8::PinScope<'_, '_>, arr: v8::Local<'_, v8::Array>, idx: i32, s: &str| {
-        let v = v8::String::new(scope, s).unwrap();
-        let i = v8::Integer::new(scope, idx);
-        arr.set(scope, i.into(), v.into());
-    };
+    let put_str =
+        |scope: &mut v8::PinScope<'_, '_>, arr: v8::Local<'_, v8::Array>, idx: i32, s: &str| {
+            let v = v8::String::new(scope, s).unwrap();
+            let i = v8::Integer::new(scope, idx);
+            arr.set(scope, i.into(), v.into());
+        };
     let put_null = |scope: &mut v8::PinScope<'_, '_>, arr: v8::Local<'_, v8::Array>, idx: i32| {
         let v = v8::null(scope);
         let i = v8::Integer::new(scope, idx);
@@ -2773,9 +2789,7 @@ fn op_url_can_parse<'s>(
     let input = string_arg(scope, &args, 0);
     let ok = if args.get(1).is_string() {
         let base = string_arg(scope, &args, 1);
-        url::Url::parse(&base)
-            .and_then(|b| b.join(&input))
-            .is_ok()
+        url::Url::parse(&base).and_then(|b| b.join(&input)).is_ok()
     } else {
         url::Url::parse(&input).is_ok()
     };
@@ -2792,10 +2806,7 @@ fn op_url_can_parse<'s>(
 // these ops because the tests do not exercise them; in production
 // the sandbox check is what matters.
 
-fn fs_admit_or_throw(
-    scope: &mut v8::PinScope<'_, '_>,
-    path: &str,
-) -> Option<std::path::PathBuf> {
+fn fs_admit_or_throw(scope: &mut v8::PinScope<'_, '_>, path: &str) -> Option<std::path::PathBuf> {
     match admit_for_async(scope, path) {
         Ok(p) => Some(p),
         Err((code, msg)) => {
@@ -2812,7 +2823,9 @@ fn op_fs_chmod<'s>(
 ) {
     let path = string_arg(scope, &args, 0);
     let mode = args.get(1).uint32_value(scope).unwrap_or(0);
-    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else {
+        return;
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2835,7 +2848,9 @@ fn op_fs_chmod_async<'s>(
 ) {
     let path = string_arg(scope, &args, 0);
     let mode = args.get(1).uint32_value(scope).unwrap_or(0);
-    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else {
+        return;
+    };
     let work = async move {
         #[cfg(unix)]
         {
@@ -2864,7 +2879,9 @@ fn op_fs_symlink<'s>(
 ) {
     let target = string_arg(scope, &args, 0);
     let link = string_arg(scope, &args, 1);
-    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else { return; };
+    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else {
+        return;
+    };
     #[cfg(unix)]
     let res = std::os::unix::fs::symlink(&target, &link_admitted);
     #[cfg(windows)]
@@ -2883,8 +2900,12 @@ fn op_fs_link<'s>(
 ) {
     let existing = string_arg(scope, &args, 0);
     let link = string_arg(scope, &args, 1);
-    let Some(existing_admitted) = fs_admit_or_throw(scope, &existing) else { return; };
-    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else { return; };
+    let Some(existing_admitted) = fs_admit_or_throw(scope, &existing) else {
+        return;
+    };
+    let Some(link_admitted) = fs_admit_or_throw(scope, &link) else {
+        return;
+    };
     if let Err(err) = std::fs::hard_link(&existing_admitted, &link_admitted) {
         throw_error(scope, &format!("{}: {}", io_error_code(&err), err));
     }
@@ -2897,7 +2918,9 @@ fn op_fs_truncate<'s>(
 ) {
     let path = string_arg(scope, &args, 0);
     let len = args.get(1).number_value(scope).unwrap_or(0.0) as u64;
-    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else {
+        return;
+    };
     let res = std::fs::OpenOptions::new()
         .write(true)
         .open(&admitted)
@@ -2915,7 +2938,9 @@ fn op_fs_utimes<'s>(
     let path = string_arg(scope, &args, 0);
     let atime = args.get(1).number_value(scope).unwrap_or(0.0);
     let mtime = args.get(2).number_value(scope).unwrap_or(0.0);
-    let Some(admitted) = fs_admit_or_throw(scope, &path) else { return; };
+    let Some(admitted) = fs_admit_or_throw(scope, &path) else {
+        return;
+    };
     let to_systime = |ms: f64| -> std::time::SystemTime {
         let d = std::time::Duration::from_secs_f64((ms / 1000.0).max(0.0));
         std::time::SystemTime::UNIX_EPOCH + d
@@ -2980,29 +3005,23 @@ fn op_os_network_interfaces<'s>(
         for (i, iface) in list.iter().enumerate() {
             let entry = v8::Object::new(scope);
             let (address, netmask, family) = match &iface.addr {
-                if_addrs::IfAddr::V4(v4) => (
-                    v4.ip.to_string(),
-                    v4.netmask.to_string(),
-                    "IPv4",
-                ),
-                if_addrs::IfAddr::V6(v6) => (
-                    v6.ip.to_string(),
-                    v6.netmask.to_string(),
-                    "IPv6",
-                ),
+                if_addrs::IfAddr::V4(v4) => (v4.ip.to_string(), v4.netmask.to_string(), "IPv4"),
+                if_addrs::IfAddr::V6(v6) => (v6.ip.to_string(), v6.netmask.to_string(), "IPv6"),
             };
             let internal = iface.is_loopback();
             let mac = String::new();
             let cidr = match &iface.addr {
-                if_addrs::IfAddr::V4(v4) => format!(
-                    "{}/{}",
-                    v4.ip,
-                    u32::from(v4.netmask).count_ones()
-                ),
+                if_addrs::IfAddr::V4(v4) => {
+                    format!("{}/{}", v4.ip, u32::from(v4.netmask).count_ones())
+                }
                 if_addrs::IfAddr::V6(v6) => format!(
                     "{}/{}",
                     v6.ip,
-                    v6.netmask.octets().iter().map(|b| b.count_ones()).sum::<u32>()
+                    v6.netmask
+                        .octets()
+                        .iter()
+                        .map(|b| b.count_ones())
+                        .sum::<u32>()
                 ),
             };
             let pairs: [(&str, v8::Local<'_, v8::Value>); 6] = [
@@ -7851,10 +7870,7 @@ fn op_upgrade_socket_read_async<'s>(
     let tx = handle.0.borrow().async_completions_tx.clone();
 
     let Some(socket) = crate::ops::upgrade_socket::handle(id) else {
-        let err = crate::ops::NetError::new(
-            "EPIPE",
-            "upgrade socket is closed",
-        );
+        let err = crate::ops::NetError::new("EPIPE", "upgrade socket is closed");
         reject_net(scope, v8::Local::new(scope, &global), &err);
         rv.set(promise.into());
         return;
@@ -7869,12 +7885,9 @@ fn op_upgrade_socket_read_async<'s>(
             Ok(None) => Box::new(|scope, resolver| {
                 resolver.resolve(scope, v8::null(scope).into());
             }),
-            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => {
-                net_settler_err(crate::ops::NetError::new(
-                    "EPIPE",
-                    "upgrade socket is closed",
-                ))
-            }
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => net_settler_err(
+                crate::ops::NetError::new("EPIPE", "upgrade socket is closed"),
+            ),
             Err(crate::ops::upgrade_socket::UpgradeSocketError::Aborted(_, msg)) => {
                 net_settler_err(crate::ops::NetError::new("ECONNRESET", &msg))
             }
@@ -7906,10 +7919,7 @@ fn op_upgrade_socket_write_async<'s>(
     let bytes = match read_bytes_arg(scope, args.get(1)) {
         Some(b) => b.to_vec(),
         None => {
-            let err = crate::ops::NetError::new(
-                "ERR_INVALID_ARG_TYPE",
-                "expected Uint8Array",
-            );
+            let err = crate::ops::NetError::new("ERR_INVALID_ARG_TYPE", "expected Uint8Array");
             reject_net(scope, v8::Local::new(scope, &global), &err);
             rv.set(promise.into());
             return;
@@ -7917,10 +7927,7 @@ fn op_upgrade_socket_write_async<'s>(
     };
 
     let Some(socket) = crate::ops::upgrade_socket::handle(id) else {
-        let err = crate::ops::NetError::new(
-            "EPIPE",
-            "upgrade socket is closed",
-        );
+        let err = crate::ops::NetError::new("EPIPE", "upgrade socket is closed");
         reject_net(scope, v8::Local::new(scope, &global), &err);
         rv.set(promise.into());
         return;
@@ -7931,12 +7938,9 @@ fn op_upgrade_socket_write_async<'s>(
             Ok(()) => Box::new(|scope, resolver| {
                 resolver.resolve(scope, v8::undefined(scope).into());
             }),
-            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => {
-                net_settler_err(crate::ops::NetError::new(
-                    "EPIPE",
-                    "upgrade socket is closed",
-                ))
-            }
+            Err(crate::ops::upgrade_socket::UpgradeSocketError::Closed(_)) => net_settler_err(
+                crate::ops::NetError::new("EPIPE", "upgrade socket is closed"),
+            ),
             Err(crate::ops::upgrade_socket::UpgradeSocketError::Aborted(_, msg)) => {
                 net_settler_err(crate::ops::NetError::new("ECONNRESET", &msg))
             }

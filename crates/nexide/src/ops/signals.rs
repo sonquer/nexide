@@ -41,7 +41,9 @@ fn queue() -> &'static Mutex<Vec<&'static str>> {
 /// recovered through `into_inner`) so a panicking JS poll cannot
 /// permanently silence the bridge.
 pub fn push(name: &'static str) {
-    let mut g = queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut g = queue()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     g.push(name);
 }
 
@@ -49,7 +51,9 @@ pub fn push(name: &'static str) {
 /// previous call (in arrival order).
 #[must_use]
 pub fn drain() -> Vec<&'static str> {
-    let mut g = queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut g = queue()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::mem::take(&mut *g)
 }
 

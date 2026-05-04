@@ -278,15 +278,20 @@ async fn http2_loads_and_exposes_constants() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn http2_throws_on_actual_use() {
+async fn http2_server_throws_client_returns_session() {
     assert_passes(
         "const h2 = require('node:http2');\n\
          let threw = false;\n\
          try { h2.createServer(); } catch { threw = true; }\n\
          if (!threw) throw new Error('createServer should throw');\n\
          threw = false;\n\
-         try { h2.connect('https://example.com'); } catch { threw = true; }\n\
-         if (!threw) throw new Error('connect should throw');\n",
+         try { h2.createSecureServer(); } catch { threw = true; }\n\
+         if (!threw) throw new Error('createSecureServer should throw');\n\
+         const session = h2.connect('https://example.com');\n\
+         if (!session || typeof session.request !== 'function') {\n\
+           throw new Error('connect should return a session with request()');\n\
+         }\n\
+         session.destroy();\n",
     )
     .await;
 }

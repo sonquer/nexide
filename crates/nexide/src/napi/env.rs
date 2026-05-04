@@ -10,7 +10,8 @@ use crate::napi::types::napi_value;
 /// Per-addon-instance data stored via `napi_set_instance_data`.
 pub struct InstanceData {
     pub data: *mut c_void,
-    pub finalize: Option<unsafe extern "C" fn(env: *mut c_void, data: *mut c_void, hint: *mut c_void)>,
+    pub finalize:
+        Option<unsafe extern "C" fn(env: *mut c_void, data: *mut c_void, hint: *mut c_void)>,
     pub finalize_hint: *mut c_void,
 }
 

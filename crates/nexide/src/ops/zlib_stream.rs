@@ -9,7 +9,9 @@
 
 use std::io::Write;
 
-use brotli::{CompressorWriter as BrotliCompressorWriter, DecompressorWriter as BrotliDecompressorWriter};
+use brotli::{
+    CompressorWriter as BrotliCompressorWriter, DecompressorWriter as BrotliDecompressorWriter,
+};
 use flate2::Compression;
 use flate2::write::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
@@ -83,7 +85,12 @@ impl ZlibStream {
                 // for one-shot but level=6 maps reasonably well for
                 // streaming.
                 let quality = level.min(11);
-                Self::BrotliCompress(Box::new(BrotliCompressorWriter::new(Vec::new(), 4096, quality, 22)))
+                Self::BrotliCompress(Box::new(BrotliCompressorWriter::new(
+                    Vec::new(),
+                    4096,
+                    quality,
+                    22,
+                )))
             }
             ZlibKind::BrotliDecompress => {
                 Self::BrotliDecompress(Box::new(BrotliDecompressorWriter::new(Vec::new(), 4096)))
